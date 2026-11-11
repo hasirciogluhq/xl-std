@@ -1,0 +1,2 @@
+// std/archive: archive formats. `tar` reads and writes tar archives in memory and extracts them to, or builds them from, a directory.
+export * as tar from "tar"

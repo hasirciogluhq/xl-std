@@ -33,12 +33,11 @@ fn succeeded(r: Result<String, CompressError>) -> bool {
 fn roundTrip(t: *T, data: *String, level: i32) {
     local packed: String = deflate(data, level)
     local back: Result<String, CompressError> = inflate(&packed, LIMIT)
-    local out: String = String()
+    // The payload is read in place: copying it out of the `Ok` would leave two owners of one buffer.
     switch back {
-        case Result.Ok(v) { out = v }
+        case Result.Ok(v) { expectTrue(t, sameBytes(&v, data)) }
         case Result.Err(e) { expectTrue(t, false) }
     }
-    expectTrue(t, sameBytes(&out, data))
 }
 
 fn levels(t: *T) {

@@ -1,0 +1,154 @@
+// Unit: archive/tar — building archives in memory and reading them back: names (short, split across the ustar prefix, pax), directories,
+// file contents, padding, checksums, truncation, and the numeric field forms.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEqUInt, expectTrue, expectEqStr
+from "std/str/string" import String
+from "std/collections/vec" import Vec
+from "std/collections/result" import Result
+from "std/archive/tar" import Writer, Entry, Kind, Error, list, contents
+
+fn repeat(unit: str, n: usize) -> String {
+    local s: String = String()
+    for i in 0..n { s.append(unit) }
+    return s
+}
+
+fn basic(t: *T) {
+    local w: Writer = Writer()
+    local dir: String = String("pkg")
+    local file: String = String("pkg/a.txt")
+    local data: String = String("hello tar")
+    w.addDir(&dir, 493, 1700000000)
+    w.addFile(&file, &data, 420, 1700000000)
+    local archive: String = w.finish()
+    expectEqUInt(t, archive.length() % 10240, 0)
+    local listed: Result<Vec<Entry>, Error> = list(&archive)
+    switch listed {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) {
+            expectEqUInt(t, entries.length(), 2)
+            expectEqStr(t, entries.get(0).name.asStr(), "pkg/")
+            expectTrue(t, entries.get(0).kind == Kind.Dir)
+            expectEqStr(t, entries.get(1).name.asStr(), "pkg/a.txt")
+            expectTrue(t, entries.get(1).kind == Kind.File)
+            expectEqUInt(t, entries.get(1).size, 9)
+            expectEqUInt(t, entries.get(1).mode as u64, 420)
+            expectEqUInt(t, entries.get(1).mtime as u64, 1700000000)
+            local back: String = contents(&archive, entries.get(1))
+            expectTrue(t, back.equals("hello tar"))
+        }
+    }
+}
+
+// A name of 120 bytes splits at a `/` into the ustar prefix and name; one of 400 bytes (no split fits) goes into a pax header.
+fn longNames(t: *T) {
+    local w: Writer = Writer()
+    local split: String = repeat("dir/", 25)               // 100 bytes of directories
+    split.append("file.txt")
+    local huge: String = repeat("segment0123456789/", 22)  // 396 bytes: no `/` leaves a 100-byte tail
+    huge.append("leaf.txt")
+    local one: String = String("1")
+    local two: String = String("22")
+    w.addFile(&split, &one, 420, 0)
+    w.addFile(&huge, &two, 420, 0)
+    local archive: String = w.finish()
+    local listed: Result<Vec<Entry>, Error> = list(&archive)
+    switch listed {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) {
+            expectEqUInt(t, entries.length(), 2)
+            expectTrue(t, entries.get(0).name.equals(&split))
+            expectTrue(t, entries.get(1).name.equals(&huge))
+            local c: String = contents(&archive, entries.get(1))
+            expectTrue(t, c.equals("22"))
+        }
+    }
+}
+
+fn emptyAndPadding(t: *T) {
+    local w: Writer = Writer()
+    local name: String = String("empty")
+    local none: String = String()
+    local five: String = String("12345")
+    local also: String = String("second")
+    w.addFile(&name, &none, 420, 0)
+    w.addFile(&also, &five, 420, 0)
+    local archive: String = w.finish()
+    local listed: Result<Vec<Entry>, Error> = list(&archive)
+    switch listed {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) {
+            expectEqUInt(t, entries.length(), 2)
+            expectEqUInt(t, entries.get(0).size, 0)
+            expectEqUInt(t, entries.get(1).size, 5)
+        }
+    }
+}
+
+fn symlink(t: *T) {
+    local w: Writer = Writer()
+    local name: String = String("link")
+    local target: String = String("a.txt")
+    w.addSymlink(&name, &target, 0)
+    local archive: String = w.finish()
+    local listed: Result<Vec<Entry>, Error> = list(&archive)
+    switch listed {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) {
+            expectTrue(t, entries.get(0).kind == Kind.Symlink)
+            expectEqStr(t, entries.get(0).linkName.asStr(), "a.txt")
+            expectEqUInt(t, entries.get(0).size, 0)
+        }
+    }
+}
+
+fn corruption(t: *T) {
+    local w: Writer = Writer()
+    local name: String = String("f")
+    local data: String = String("data")
+    w.addFile(&name, &data, 420, 0)
+    local archive: String = w.finish()
+    // A flipped header byte breaks the checksum.
+    local bad: String = archive.clone()
+    bad.ptr[3] = bad.ptr[3] ^ 1
+    switch list(&bad) {
+        case Result.Err(e) { expectTrue(t, e == Error.Checksum) }
+        case Result.Ok(entries) { expectTrue(t, false) }
+    }
+    // An archive cut inside the file data.
+    local cut: String = archive.slice(0, 512 + 2)
+    switch list(&cut) {
+        case Result.Err(e) { expectTrue(t, e == Error.Truncated) }
+        case Result.Ok(entries) { expectTrue(t, false) }
+    }
+}
+
+fn endOfData(t: *T) {
+    // No terminator blocks at all: reading ends at the end of the data.
+    local w: Writer = Writer()
+    local name: String = String("f")
+    local data: String = String("x")
+    w.addFile(&name, &data, 420, 0)
+    local archive: String = w.finish()
+    local short: String = archive.slice(0, 1024)
+    switch list(&short) {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) { expectEqUInt(t, entries.length(), 1) }
+    }
+    local empty: String = String()
+    switch list(&empty) {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) { expectEqUInt(t, entries.length(), 0) }
+    }
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "files and directories", basic)
+    test(&s, "long names", longNames)
+    test(&s, "empty files and padding", emptyAndPadding)
+    test(&s, "symbolic link", symlink)
+    test(&s, "corruption", corruption)
+    test(&s, "end of data", endOfData)
+    return suiteRun(&s)
+}

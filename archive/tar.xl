@@ -1,0 +1,548 @@
+// std/archive/tar: the tar archive format, read and written entirely in memory (a String), with extraction to and creation from a directory.
+//
+// Format: POSIX.1-1988 "ustar" (512-byte blocks: a header, then the file data padded to a block, https://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html
+// section "ustar Interchange Format") plus the extensions real archives use:
+// - pax extended headers (POSIX.1-2001, type `x` for the next entry and `g` for global): `path`, `linkpath`, `size`, `mtime`, so names
+//   longer than ustar's 100 + 155 bytes and sizes of 8 GiB or more are read and written;
+// - GNU long names (types `L` and `K`), which `tar --format=gnu` writes;
+// - numeric fields in octal, and the GNU base-256 form (high bit of the first byte) for values that do not fit.
+// Reading checks every header checksum. Names are exactly what the archive holds; `extract` refuses a name that could leave the
+// destination (an absolute path, a `..` segment, a drive letter or a backslash).
+//
+// What is not done: device nodes, FIFOs and sparse files are listed as `Other` and skipped on extraction; symbolic and hard links are
+// listed but not created; permissions, ownership and times are read and written in the archive but not applied to extracted files (the
+// std library has no chmod or utime yet). A `.tar.gz` is `std/compress` `gunzip` followed by `list`.
+from "../str/string" import String, split
+from "../str/str" import findLast
+from "../collections/vec" import Vec
+from "../collections/result" import Result
+from "../io/files" import makeDirAll, isDir, exists
+from "../io/fs" import fsWrite, fsReadAllString
+from "../io/dir" import fsListDir, DirEntry
+from "../io/stat" import fsStat, FILE_MODE_TYPE, FILE_MODE_DIR
+
+define BLOCK = 512
+define RECORD = 10240           // GNU tar pads an archive to this multiple; readers do not need it
+
+/// What an entry is.
+export enum Kind: i32 {
+    File
+    Dir
+    Symlink
+    Hardlink
+    Other
+}
+
+/// Why an archive could not be read, extracted or created.
+export enum Error: i32 {
+    Truncated     // the archive ends inside a header or a file
+    Invalid       // a field is not valid (a number, a pax record, a size that overflows)
+    Checksum      // a header checksum does not match
+    UnsafePath    // an entry name would leave the destination directory
+    Io            // a directory or file could not be created, written or read
+}
+
+/// One entry of an archive: its metadata and where its data lies. The data itself is read with `contents`.
+export class Entry {
+    name: String
+    linkName: String
+    kind: Kind
+    mode: u32
+    size: u64
+    mtime: i64
+    offset: usize         // of the file data in the archive
+
+    fn init(self) {
+        self.kind = Kind.Other
+        self.mode = 0
+        self.size = 0
+        self.mtime = 0
+        self.offset = 0
+    }
+}
+
+// ---- header fields -----------------------------------------------------------------------------
+
+/// The numeric field `h[at..at+n)`: octal digits (leading spaces and zeros allowed, ended by a space or NUL), or the GNU base-256 form.
+/// -1 when it is neither.
+fn number(h: *u8, at: usize, n: usize) -> i64 {
+    if (h[at] & 0x80) != 0 {
+        // Base 256, big-endian, the high bit marks the form (a leading 0xff would be negative, which no size or time here is).
+        if h[at] == 0xff { return -1 }
+        local v: u64 = (h[at] & 0x7f) as u64
+        for i in 1..n {
+            if v >> 55 != 0 { return -1 }
+            v = (v << 8) | (h[at + i] as u64)
+        }
+        return v as i64
+    }
+    local v: u64 = 0
+    local i: usize = 0
+    while i < n && h[at + i] == 32 { i++ }
+    while i < n && h[at + i] >= 48 && h[at + i] <= 55 {
+        v = (v << 3) | ((h[at + i] - 48) as u64)
+        i++
+    }
+    while i < n && (h[at + i] == 0 || h[at + i] == 32) { i++ }
+    return i == n || h[at + i - 1] == 0 || h[at + i - 1] == 32 ? v as i64 : -1
+}
+
+/// The text of the string field `h[at..at+n)`, up to its first NUL.
+fn text(h: *u8, at: usize, n: usize) -> String {
+    local s: String = String()
+    local i: usize = 0
+    while i < n && h[at + i] != 0 {
+        s.push(h[at + i])
+        i++
+    }
+    return s
+}
+
+/// Writes `v` as `n - 1` octal digits and a NUL, or in base 256 when it does not fit.
+fn putNumber(h: *u8, at: usize, n: usize, v: u64) {
+    if v >= (1 << (3 * ((n - 1) as u64))) {
+        h[at] = 0x80
+        for i in 1..n { h[at + i] = ((v >> (8 * ((n - 1 - i) as u64))) & 0xff) as u8 }
+        return
+    }
+    for i in 0..n - 1 { h[at + i] = (48 + ((v >> (3 * ((n - 2 - i) as u64))) & 7)) as u8 }
+    h[at + n - 1] = 0
+}
+
+/// The header checksum: the sum of the 512 bytes with the checksum field counted as spaces.
+fn checksum(h: *u8) -> u32 {
+    local sum: u32 = 0
+    for i in 0..BLOCK {
+        sum += i >= 148 && i < 156 ? 32 : h[i] as u32
+    }
+    return sum
+}
+
+fn isZeroBlock(h: *u8) -> bool {
+    for i in 0..BLOCK {
+        if h[i] != 0 { return false }
+    }
+    return true
+}
+
+fn roundUp(n: u64) -> u64 {
+    return (n + 511) & ~511
+}
+
+/// The pax records in `body` (`<length> <key>=<value>\n`, the length counting the whole record), applied to `e`. False when malformed.
+fn applyPax(body: str, e: *Entry, sizeOverride: *i64) -> bool {
+    local at: usize = 0
+    while at < body.len {
+        local len: usize = 0
+        local i: usize = at
+        while i < body.len && body[i] >= 48 && body[i] <= 57 {
+            len = len * 10 + ((body[i] - 48) as usize)
+            i++
+        }
+        if i >= body.len || body[i] != 32 || len == 0 || at + len > body.len { return false }
+        local record: String = String(body).slice(i + 1, at + len - i - 2)       // without the trailing newline
+        local eq: i64 = record.find("=")
+        if eq < 0 { return false }
+        local key: String = record.slice(0, eq as usize)
+        local value: String = record.slice(eq as usize + 1, record.length() - eq as usize - 1)
+        if key.equals("path") {
+            e.name = value
+        } else if key.equals("linkpath") {
+            e.linkName = value
+        } else if key.equals("size") {
+            local n: i64 = 0
+            for j in 0..value.length() {
+                if value.at(j) < 48 || value.at(j) > 57 { return false }
+                n = n * 10 + ((value.at(j) - 48) as i64)
+            }
+            *sizeOverride = n
+        } else if key.equals("mtime") {
+            // Seconds, possibly with a fraction (`1700000000.5`): the whole seconds are kept.
+            local n: i64 = 0
+            for j in 0..value.length() {
+                if value.at(j) == 46 { break }
+                if value.at(j) < 48 || value.at(j) > 57 { return false }
+                n = n * 10 + ((value.at(j) - 48) as i64)
+            }
+            e.mtime = n
+        }
+        at += len
+    }
+    return true
+}
+
+/// The entries of the archive in order. Reading stops at the first all-zero block (the end marker) or at the end of the data.
+export fn list(archive: *String) -> Result<Vec<Entry>, Error> {
+    local entries: Vec<Entry> = Vec<Entry>()
+    local pos: usize = 0
+    // Names and sizes that a preceding `x`, `L` or `K` header sets for the next entry.
+    local pending: Entry = Entry()
+    local havePending: bool = false
+    local sizeOverride: i64 = -1
+    while pos + BLOCK <= archive.len {
+        local h: *u8 = &archive.ptr[pos]
+        if isZeroBlock(h) { break }
+        if checksum(h) as i64 != number(h, 148, 8) {
+            local bad: Result<Vec<Entry>, Error> = Result.Err(Error.Checksum)
+            return bad
+        }
+        local kind: u8 = h[156]
+        local size: i64 = number(h, 124, 12)
+        if size < 0 {
+            local bad: Result<Vec<Entry>, Error> = Result.Err(Error.Invalid)
+            return bad
+        }
+        if kind == 0x78 || kind == 0x67 || kind == 0x4c || kind == 0x4b {          // x g L K
+            if size > 1 << 24 || pos + BLOCK + size as usize > archive.len {
+                local bad: Result<Vec<Entry>, Error> = Result.Err(size > 1 << 24 ? Error.Invalid : Error.Truncated)
+                return bad
+            }
+            local body: String = String(archive.asStr()).slice(pos + BLOCK, size as usize)
+            if kind == 0x78 {
+                if !applyPax(body.asStr(), &pending, &sizeOverride) {
+                    local bad: Result<Vec<Entry>, Error> = Result.Err(Error.Invalid)
+                    return bad
+                }
+                havePending = true
+            } else if kind == 0x4c || kind == 0x4b {
+                local name: String = text(body.ptr, 0, body.length())
+                if kind == 0x4c { pending.name = name } else { pending.linkName = name }
+                havePending = true
+            }
+            pos += BLOCK + roundUp(size as u64) as usize
+            continue
+        }
+        local e: Entry = Entry()
+        e.name = text(h, 0, 100)
+        local prefix: String = text(h, 345, 155)
+        if prefix.length() > 0 && archive.ptr[pos + 257] == 0x75 {              // "ustar": the prefix is a directory path
+            local joined: String = String(prefix.asStr())
+            joined.push(47)
+            joined.append(&e.name)
+            e.name = joined
+        }
+        e.linkName = text(h, 157, 100)
+        e.mode = number(h, 100, 8) as u32
+        e.mtime = number(h, 136, 12)
+        e.kind = kind == 0 || kind == 0x30 || kind == 0x37 ? Kind.File : kind == 0x35 ? Kind.Dir : kind == 0x32 ? Kind.Symlink : kind == 0x31 ? Kind.Hardlink : Kind.Other
+        if havePending {
+            if pending.name.length() > 0 { e.name = pending.name.clone() }
+            if pending.linkName.length() > 0 { e.linkName = pending.linkName.clone() }
+            if pending.mtime != 0 { e.mtime = pending.mtime }
+            if sizeOverride >= 0 { size = sizeOverride }
+            pending = Entry()
+            havePending = false
+            sizeOverride = -1
+        }
+        // A directory, link or device has no data in the archive even when its size field says otherwise.
+        local hasData: bool = e.kind == Kind.File || e.kind == Kind.Other
+        e.size = (hasData ? size : 0) as u64
+        e.offset = pos + BLOCK
+        if e.size > 0 && e.offset + e.size as usize > archive.len {
+            local bad: Result<Vec<Entry>, Error> = Result.Err(Error.Truncated)
+            return bad
+        }
+        pos = e.offset + roundUp(e.size) as usize
+        entries.push(e)
+    }
+    local ok: Result<Vec<Entry>, Error> = Result.Ok(entries)
+    return ok
+}
+
+/// The contents of a file entry.
+export fn contents(archive: *String, e: *Entry) -> String {
+    return String(archive.asStr()).slice(e.offset, e.size as usize)
+}
+
+// ---- writing -----------------------------------------------------------------------------------
+
+define MODE_FILE = 420          // 0644
+define MODE_DIR = 493           // 0755
+define MODE_LINK = 511          // 0777
+
+fn digitsOf(n: usize) -> usize {
+    local d: usize = 1
+    local rest: usize = n
+    while rest >= 10 {
+        rest /= 10
+        d++
+    }
+    return d
+}
+
+/// Appends one pax record `<length> <key>=<value>\n` to `out`; the length counts its own digits.
+fn addPax(out: *String, key: str, value: *String) {
+    local body: String = String(" ")
+    body.append(key)
+    body.append("=")
+    body.append(value)
+    body.push(10)
+    local digits: usize = 1
+    while digitsOf(body.length() + digits) != digits { digits++ }
+    local total: usize = body.length() + digits
+    local reversed: String = String()
+    local rest: usize = total
+    while rest > 0 {
+        reversed.push((48 + rest % 10) as u8)
+        rest /= 10
+    }
+    for i in 0..reversed.length() { out.push(reversed.at(reversed.length() - 1 - i)) }
+    out.append(&body)
+}
+
+/// A 512-byte ustar header block. `prefix` is the directory part of a split name (empty when the name fits the 100-byte field).
+fn block(name: *String, prefix: *String, kind: u8, mode: u32, size: u64, mtime: i64, link: *String) -> String {
+    local h: [u8; 512]
+    for i in 0..BLOCK { h[i] = 0 }
+    for i in 0..name.length() { h[i] = name.at(i) }
+    putNumber(&h[0], 100, 8, mode as u64)
+    putNumber(&h[0], 108, 8, 0)
+    putNumber(&h[0], 116, 8, 0)
+    putNumber(&h[0], 124, 12, size)
+    putNumber(&h[0], 136, 12, (mtime < 0 ? 0 : mtime) as u64)
+    h[156] = kind
+    for i in 0..(link.length() < 100 ? link.length() : 100) { h[157 + i] = link.at(i) }
+    local magic: str = "ustar"
+    for i in 0..5 { h[257 + i] = magic[i] }
+    h[263] = 48
+    h[264] = 48
+    for i in 0..prefix.length() { h[345 + i] = prefix.at(i) }
+    // The checksum: six octal digits, a NUL and a space.
+    local sum: u32 = checksum(&h[0])
+    for i in 0..6 { h[148 + i] = (48 + ((sum >> (3 * (5 - i) as u32)) & 7)) as u8 }
+    h[154] = 0
+    h[155] = 32
+    local out: String = String()
+    for i in 0..BLOCK { out.push(h[i]) }
+    return out
+}
+
+/// Builds an archive in memory: `addFile`, `addDir` and `addSymlink` append entries, `finish` ends it and returns the bytes.
+/// A name longer than ustar holds goes into a pax header, so any length works.
+export class Writer {
+    out: String
+
+    fn init(self) {
+    }
+
+    /// Appends the header of one entry (with a preceding pax header when ustar cannot hold its name, link or time).
+    fn header(self, name: *String, kind: u8, mode: u32, size: u64, mtime: i64, link: *String) {
+        local empty: String = String()
+        local fieldName: String = name.clone()
+        local prefix: String = String()
+        local extended: String = String()
+        if name.length() > 100 {
+            // ustar: a prefix of up to 155 bytes and a name of up to 100, split at a `/`; otherwise pax carries the whole name.
+            local at: i64 = -1
+            for i in 0..name.length() {
+                local tail: usize = name.length() - i - 1
+                if name.at(i) == 47 && i <= 155 && tail <= 100 && tail > 0 { at = i as i64 }
+            }
+            if at >= 0 {
+                prefix = name.slice(0, at as usize)
+                fieldName = name.slice(at as usize + 1, name.length() - at as usize - 1)
+            } else {
+                addPax(&extended, "path", name)
+                fieldName = name.slice(0, 100)
+            }
+        }
+        if link.length() > 100 { addPax(&extended, "linkpath", link) }
+        if mtime < 0 {
+            local zero: String = String("0")
+            addPax(&extended, "mtime", &zero)
+        }
+        if extended.length() > 0 {
+            local paxName: String = String("././@PaxHeader")
+            local head: String = block(&paxName, &empty, 0x78, MODE_FILE, extended.length() as u64, 0, &empty)
+            self.out.append(&head)
+            self.out.append(&extended)
+            for i in 0..(roundUp(extended.length() as u64) as usize - extended.length()) { self.out.push(0) }
+        }
+        local head: String = block(&fieldName, &prefix, kind, mode, size, mtime, link)
+        self.out.append(&head)
+    }
+
+    /// Appends a regular file.
+    fn addFile(self, name: *String, data: *String, mode: u32, mtime: i64) {
+        local none: String = String()
+        self.header(name, 0x30, mode, data.length() as u64, mtime, &none)
+        self.out.append(data)
+        for i in 0..(roundUp(data.length() as u64) as usize - data.length()) { self.out.push(0) }
+    }
+
+    /// Appends a directory; a trailing `/` is added to the name when it has none.
+    fn addDir(self, name: *String, mode: u32, mtime: i64) {
+        local dir: String = name.clone()
+        if !dir.endsWith("/") { dir.push(47) }
+        local none: String = String()
+        self.header(&dir, 0x35, mode, 0, mtime, &none)
+    }
+
+    /// Appends a symbolic link to `target`.
+    fn addSymlink(self, name: *String, target: *String, mtime: i64) {
+        self.header(name, 0x32, MODE_LINK, 0, mtime, target)
+    }
+
+    /// Ends the archive (two zero blocks, then padding to a 10240-byte record) and returns it.
+    fn finish(self) -> String {
+        for i in 0..2 * BLOCK { self.out.push(0) }
+        while self.out.length() % RECORD != 0 { self.out.push(0) }
+        return self.out.clone()
+    }
+}
+
+// ---- directories -------------------------------------------------------------------------------
+
+/// The name of a directory listing entry.
+fn nameOf(e: *DirEntry) -> String {
+    local s: String = String()
+    local i: usize = 0
+    while e.name[i] != 0 {
+        s.push(e.name[i])
+        i++
+    }
+    return s
+}
+
+/// Adds the contents of `root/rel` and, recursively, its subdirectories to `w`, in name order so the archive does not depend on the
+/// order the file system lists. False when something cannot be read.
+fn addTree(w: *Writer, root: *String, rel: *String) -> bool {
+    local dir: String = String(root.asStr())
+    if rel.length() > 0 {
+        dir.push(47)
+        dir.append(rel)
+    }
+    local listing: Vec<DirEntry> = Vec<DirEntry>()
+    listing.reserve(4096)
+    local count: usize = fsListDir(dir.cstr(), listing.data, 4096)
+    local names: Vec<String> = Vec<String>()
+    for i in 0..count { names.push(nameOf(&listing.data[i])) }
+    // The order is an index list sorted by name (insertion sort: directories are small, and equal names cannot occur).
+    local order: Vec<usize> = Vec<usize>()
+    for i in 0..names.length() { order.push(i) }
+    for i in 1..order.length() {
+        local j: usize = i
+        while j > 0 && names.get(*order.get(j - 1)).compare(names.get(*order.get(j)).asStr()) > 0 {
+            local above: usize = *order.get(j - 1)
+            order.set(j - 1, *order.get(j))
+            order.set(j, above)
+            j--
+        }
+    }
+    for k in 0..order.length() {
+        local child: String = String(rel.asStr())
+        if child.length() > 0 { child.push(47) }
+        child.append(names.get(*order.get(k)))
+        local full: String = String(root.asStr())
+        full.push(47)
+        full.append(&child)
+        local st = fsStat(full.cstr())
+        if !st.ok { return false }
+        local mode: u32 = st.mode & 511
+        if (st.mode & FILE_MODE_TYPE) == FILE_MODE_DIR {
+            w.addDir(&child, mode, st.mtimeSec)
+            if !addTree(w, root, &child) { return false }
+        } else {
+            local data: String = fsReadAllString(full.cstr())
+            if data.length() as i64 != st.size { return false }
+            w.addFile(&child, &data, mode, st.mtimeSec)
+        }
+    }
+    return true
+}
+
+/// An archive of everything under directory `dir`: names relative to it, a directory before its contents, entries in name order.
+export fn create(dir: *String) -> Result<String, Error> {
+    local w: Writer = Writer()
+    local rel: String = String()
+    if !isDir(dir) || !addTree(&w, dir, &rel) {
+        local bad: Result<String, Error> = Result.Err(Error.Io)
+        return bad
+    }
+    local ok: Result<String, Error> = Result.Ok(w.finish())
+    return ok
+}
+
+// ---- extraction --------------------------------------------------------------------------------
+
+/// The name made safe to join under a destination: `.` segments and empty ones are dropped. Empty when the name is absolute or has a `..`
+/// segment, a drive letter or a backslash, and also for a name that is only `.`, so the caller tells the two apart with `isRoot`.
+fn safeName(name: *String) -> String {
+    local clean: String = String()
+    if name.startsWith("/") || name.find("\\") >= 0 || name.find(":") >= 0 { return clean }
+    local parts: Vec<String> = split(name.asStr(), "/")
+    for i in 0..parts.length() {
+        local p: *String = parts.get(i)
+        if p.equals("..") { return String() }
+        if p.length() == 0 || p.equals(".") { continue }
+        if clean.length() > 0 { clean.push(47) }
+        clean.append(p)
+    }
+    return clean
+}
+
+/// True for the archive root (`./`, `.` or an empty name), which `git archive` and `tar -C dir .` write as their first entry.
+fn isRoot(name: *String) -> bool {
+    return name.equals("./") || name.equals(".") || name.equals("")
+}
+
+/// Extracts every file and directory of `archive` under `dest` (created when missing) and returns how many files were written. Links and
+/// special files are skipped. Every name is checked before anything is written, so an archive with one unsafe name (`UnsafePath`) writes
+/// nothing.
+export fn extract(archive: *String, dest: *String) -> Result<usize, Error> {
+    local listed: Result<Vec<Entry>, Error> = list(archive)
+    switch listed {
+        case Result.Err(e) {
+            local bad: Result<usize, Error> = Result.Err(e)
+            return bad
+        }
+        case Result.Ok(entries) {
+            for i in 0..entries.length() {
+                local e: *Entry = entries.get(i)
+                if safeName(&e.name).length() == 0 && !isRoot(&e.name) {
+                    local bad: Result<usize, Error> = Result.Err(Error.UnsafePath)
+                    return bad
+                }
+            }
+            if !makeDirAll(dest) {
+                local bad: Result<usize, Error> = Result.Err(Error.Io)
+                return bad
+            }
+            local written: usize = 0
+            for i in 0..entries.length() {
+                local e: *Entry = entries.get(i)
+                local name: String = safeName(&e.name)
+                if name.length() == 0 { continue }
+                local target: String = String(dest.asStr())
+                target.push(47)
+                target.append(&name)
+                if e.kind == Kind.Dir {
+                    if !makeDirAll(&target) {
+                        local bad: Result<usize, Error> = Result.Err(Error.Io)
+                        return bad
+                    }
+                } else if e.kind == Kind.File {
+                    // A file may come before its directory entry (or without one): its parents are made here.
+                    local slash: i64 = findLast(name.asStr(), "/")
+                    if slash > 0 {
+                        local parent: String = target.slice(0, dest.length() + 1 + slash as usize)
+                        if !makeDirAll(&parent) {
+                            local bad: Result<usize, Error> = Result.Err(Error.Io)
+                            return bad
+                        }
+                    }
+                    local data: String = contents(archive, e)
+                    if !fsWrite(target.cstr(), data.asStr()) {
+                        local bad: Result<usize, Error> = Result.Err(Error.Io)
+                        return bad
+                    }
+                    written++
+                }
+            }
+            local ok: Result<usize, Error> = Result.Ok(written)
+            return ok
+        }
+    }
+    local bad: Result<usize, Error> = Result.Err(Error.Invalid)
+    return bad
+}

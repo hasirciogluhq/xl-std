@@ -293,7 +293,7 @@ fn flush(e: *Encoder, data: *String, first: usize, to: usize, final: bool, onlyS
     // Dynamic: code lengths from the frequencies, and the header that transmits them.
     local litLen: [u8; 288]
     local distLen: [u8; 30]
-    lengths(&e.litFreq[0], 286, 15, &litLen[0])
+    lengths(&e.litFreq[0], 288, 15, &litLen[0])    // 286 and 287 never occur: their lengths are zeroed too
     lengths(&e.distFreq[0], 30, 15, &distLen[0])
     local nlit: usize = 286
     while nlit > 257 && litLen[nlit - 1] == 0 { nlit-- }
