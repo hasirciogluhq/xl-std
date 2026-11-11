@@ -1,0 +1,122 @@
+// archive: tar and gzip interoperate with the system tools. Archives built here are listed and unpacked by `tar` and checked by `gzip -t`;
+// archives and gzip files made by `tar` and `gzip` are read here. Needs `tar` and `gzip` on PATH (every Linux and macOS host has them).
+from "std" import String, print, fsWrite, fsReadAllString, Vec
+from "std/io/files" import makeDirAll, removeAll, exists
+from "std/os/process" import Command
+from "std/compress" import gzip, gunzip, CompressError
+from "std/archive/tar" import list, extract, create, contents, Entry, Kind, Error
+from "std/collections/result" import Result
+
+define LIMIT = 1 << 28
+
+fn fail(msg: str) -> i32 {
+    print("FAIL ")
+    print(msg)
+    print("\n")
+    return 1
+}
+
+/// Runs `program args...` and returns its exit code, or -1 when it cannot start; the standard output goes to `out`.
+fn run(out: *String, program: str, a: str, b: str, c: str, d: str) -> i32 {
+    local cmd: Command = Command(String(program))
+    if a.len > 0 { cmd.arg(String(a)) }
+    if b.len > 0 { cmd.arg(String(b)) }
+    if c.len > 0 { cmd.arg(String(c)) }
+    if d.len > 0 { cmd.arg(String(d)) }
+    if cmd.output() != nil { return -1 }
+    out.append(&cmd.outText)
+    return cmd.status.code
+}
+
+fn write(path: str, data: *String) -> bool {
+    local p: String = String(path)
+    return fsWrite(p.cstr(), data.asStr())
+}
+
+fn same(path: str, want: str) -> bool {
+    local p: String = String(path)
+    local got: String = fsReadAllString(p.cstr())
+    return got.equals(want)
+}
+
+@entry fn main() -> i32 {
+    local work: String = String("xl_archive_e2e")
+    removeAll(&work)
+    local deep: String = String("xl_archive_e2e/src/")
+    local longDir: String = String("d012345678901234567890123456789/d012345678901234567890123456789/d012345678901234567890123456789/d012345678901234567890123456789")
+    deep.append(&longDir)
+    if !makeDirAll(&deep) { return fail("makeDirAll") }
+    local sub: String = String("xl_archive_e2e/src/a/b")
+    if !makeDirAll(&sub) { return fail("makeDirAll sub") }
+    if !write("xl_archive_e2e/src/a/b/file1", &String("one")) { return fail("write file1") }
+    if !write("xl_archive_e2e/src/c.txt", &String("two")) { return fail("write c.txt") }
+    local longFile: String = String("xl_archive_e2e/src/")
+    longFile.append(&longDir)
+    longFile.append("/long.txt")
+    local three: String = String("three")
+    if !write(longFile.asStr(), &three) { return fail("write long file") }
+
+    // Ours -> the system's: create from the directory, then `tar tf` lists it and `tar xf` unpacks it.
+    local src: String = String("xl_archive_e2e/src")
+    local made: Result<String, Error> = create(&src)
+    switch made {
+        case Result.Err(e) { return fail("create") }
+        case Result.Ok(archive) {
+            if !write("xl_archive_e2e/ours.tar", &archive) { return fail("write ours.tar") }
+        }
+    }
+    local listing: String = String()
+    if run(&listing, "tar", "tf", "xl_archive_e2e/ours.tar", "", "") != 0 { return fail("tar tf ours.tar") }
+    if !listing.contains("a/b/file1") || !listing.contains("c.txt") || !listing.contains("long.txt") { return fail("tar tf listing") }
+    local unpack: String = String("xl_archive_e2e/by_tar")
+    makeDirAll(&unpack)
+    local sink: String = String()
+    if run(&sink, "tar", "xf", "xl_archive_e2e/ours.tar", "-C", "xl_archive_e2e/by_tar") != 0 { return fail("tar xf ours.tar") }
+    if !same("xl_archive_e2e/by_tar/a/b/file1", "one") || !same("xl_archive_e2e/by_tar/c.txt", "two") { return fail("tar xf content") }
+
+    // The system's -> ours: `tar cf` (long name included), read with `list` and unpacked with `extract`.
+    if run(&sink, "tar", "cf", "xl_archive_e2e/theirs.tar", "-C", "xl_archive_e2e/src") != 0 { }
+    local args: String = String()
+    if run(&args, "tar", "-cf", "xl_archive_e2e/theirs.tar", "-C", "xl_archive_e2e/src") == 0 { return fail("tar -cf without members must fail") }
+    if run(&sink, "sh", "-c", "tar -cf xl_archive_e2e/theirs.tar -C xl_archive_e2e/src .", "", "") != 0 { return fail("tar -cf theirs.tar") }
+    local theirs: String = fsReadAllString(String("xl_archive_e2e/theirs.tar").cstr())
+    local listed: Result<Vec<Entry>, Error> = list(&theirs)
+    switch listed {
+        case Result.Err(e) { return fail("list theirs.tar") }
+        case Result.Ok(entries) {
+            local found: bool = false
+            for i in 0..entries.length() {
+                if entries.get(i).name.contains("long.txt") { found = true }
+            }
+            if !found { return fail("long name in theirs.tar") }
+        }
+    }
+    local dest: String = String("xl_archive_e2e/by_us")
+    switch extract(&theirs, &dest) {
+        case Result.Err(e) { return fail("extract theirs.tar") }
+        case Result.Ok(count) {
+            if count != 3 { return fail("extract count") }
+        }
+    }
+    if !same("xl_archive_e2e/by_us/a/b/file1", "one") || !same("xl_archive_e2e/by_us/c.txt", "two") { return fail("extract content") }
+
+    // gzip both ways.
+    local data: String = String()
+    for i in 0..5000 { data.append("a line of text that repeats, number ") }
+    local gz: String = gzip(&data, 9)
+    if !write("xl_archive_e2e/ours.gz", &gz) { return fail("write ours.gz") }
+    if run(&sink, "gzip", "-t", "xl_archive_e2e/ours.gz", "", "") != 0 { return fail("gzip -t of our output") }
+    if !write("xl_archive_e2e/plain", &data) { return fail("write plain") }
+    local theirsGz: String = String()
+    if run(&theirsGz, "gzip", "-9", "-c", "xl_archive_e2e/plain", "") != 0 { return fail("gzip -9 -c") }
+    switch gunzip(&theirsGz, LIMIT) {
+        case Result.Err(e) { return fail("gunzip of gzip -9") }
+        case Result.Ok(back) {
+            if !back.equals(&data) { return fail("gunzip content") }
+        }
+    }
+
+    removeAll(&work)
+    print("archive ok\n")
+    return 0
+}
