@@ -33,7 +33,13 @@ export fn fsStat(path: *u8) -> FileStat {
 
 #elif os == "macos"
 
+// On x86-64 the plain `stat` symbol is the legacy one (32-bit st_ino, st_mode at 8); the layout below is `stat$INODE64`, which
+// <sys/stat.h> selects there. arm64 has only the 64-bit-inode symbol, under the plain name.
+#if arch == "x86_64"
+@mangle("stat$INODE64") @library("System") declare fn stat(path: *u8, buf: *void) -> i32
+#else
 @library("System") declare fn stat(path: *u8, buf: *void) -> i32
+#endif
 
 export fn fsStat(path: *u8) -> FileStat {
     local b: [u64; 32]

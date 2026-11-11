@@ -53,8 +53,15 @@ export fn fsListDir(path: *u8, out: *DirEntry, max: usize) -> usize {
 
 // macOS: opendir, readdir and closedir from libSystem. struct dirent (sys/dirent.h, 64-bit inode layout): d_ino u64 at 0,
 // d_seekoff u64 at 8, d_reclen u16 at 16, d_namlen u16 at 18, d_type u8 at 20, d_name from 21 (NUL terminated).
+// On x86-64 the plain `opendir`/`readdir` symbols are the legacy ones (32-bit d_ino, d_name at 8); <dirent.h> selects the
+// `$INODE64` pair there. arm64 has only the 64-bit-inode symbols, under the plain names.
+#if arch == "x86_64"
+@mangle("opendir$INODE64") @library("System") declare fn opendir(path: *u8) -> *void
+@mangle("readdir$INODE64") @library("System") declare fn readdir(dir: *void) -> *void
+#else
 @library("System") declare fn opendir(path: *u8) -> *void
 @library("System") declare fn readdir(dir: *void) -> *void
+#endif
 @library("System") declare fn closedir(dir: *void) -> i32
 
 export struct DirEntry {
