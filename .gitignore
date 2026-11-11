@@ -1,0 +1,19 @@
+# Compiled objects and binaries
+*.o
+*.ll
+*.bc
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# Package and compiler caches (xlang.toml / xlang.lock are committed, downloaded sources are not)
+.xlang/
+.xlang-cache/
+
+# macOS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
