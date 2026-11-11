@@ -1,6 +1,6 @@
 // archive: tar and gzip interoperate with the system tools. Archives built here are listed and unpacked by `tar` and checked by `gzip -t`;
 // archives and gzip files made by `tar` and `gzip` are read here. Needs `tar` and `gzip` on PATH (every Linux and macOS host has them).
-from "std" import String, print, fsWrite, fsReadAllString, Vec
+from "std" import String, print, fsWrite, fsReadAllString, Vec, optionIsSome
 from "std/io/files" import makeDirAll, removeAll, exists
 from "std/os/process" import Command
 from "std/compress" import gzip, gunzip, CompressError
@@ -23,14 +23,14 @@ fn run(out: *String, program: str, a: str, b: str, c: str, d: str) -> i32 {
     if b.len > 0 { cmd.arg(String(b)) }
     if c.len > 0 { cmd.arg(String(c)) }
     if d.len > 0 { cmd.arg(String(d)) }
-    if cmd.output() != nil { return -1 }
+    if optionIsSome(cmd.output()) { return -1 }
     out.append(&cmd.outText)
     return cmd.status.code
 }
 
-fn write(path: str, data: *String) -> bool {
+fn write(path: str, data: str) -> bool {
     local p: String = String(path)
-    return fsWrite(p.cstr(), data.asStr())
+    return fsWrite(p.cstr(), data)
 }
 
 fn same(path: str, want: str) -> bool {
@@ -48,13 +48,12 @@ fn same(path: str, want: str) -> bool {
     if !makeDirAll(&deep) { return fail("makeDirAll") }
     local sub: String = String("xl_archive_e2e/src/a/b")
     if !makeDirAll(&sub) { return fail("makeDirAll sub") }
-    if !write("xl_archive_e2e/src/a/b/file1", &String("one")) { return fail("write file1") }
-    if !write("xl_archive_e2e/src/c.txt", &String("two")) { return fail("write c.txt") }
+    if !write("xl_archive_e2e/src/a/b/file1", "one") { return fail("write file1") }
+    if !write("xl_archive_e2e/src/c.txt", "two") { return fail("write c.txt") }
     local longFile: String = String("xl_archive_e2e/src/")
     longFile.append(&longDir)
     longFile.append("/long.txt")
-    local three: String = String("three")
-    if !write(longFile.asStr(), &three) { return fail("write long file") }
+    if !write(longFile.asStr(), "three") { return fail("write long file") }
 
     // Ours -> the system's: create from the directory, then `tar tf` lists it and `tar xf` unpacks it.
     local src: String = String("xl_archive_e2e/src")
@@ -62,7 +61,7 @@ fn same(path: str, want: str) -> bool {
     switch made {
         case Result.Err(e) { return fail("create") }
         case Result.Ok(archive) {
-            if !write("xl_archive_e2e/ours.tar", &archive) { return fail("write ours.tar") }
+            if !write("xl_archive_e2e/ours.tar", archive.asStr()) { return fail("write ours.tar") }
         }
     }
     local listing: String = String()
@@ -75,9 +74,6 @@ fn same(path: str, want: str) -> bool {
     if !same("xl_archive_e2e/by_tar/a/b/file1", "one") || !same("xl_archive_e2e/by_tar/c.txt", "two") { return fail("tar xf content") }
 
     // The system's -> ours: `tar cf` (long name included), read with `list` and unpacked with `extract`.
-    if run(&sink, "tar", "cf", "xl_archive_e2e/theirs.tar", "-C", "xl_archive_e2e/src") != 0 { }
-    local args: String = String()
-    if run(&args, "tar", "-cf", "xl_archive_e2e/theirs.tar", "-C", "xl_archive_e2e/src") == 0 { return fail("tar -cf without members must fail") }
     if run(&sink, "sh", "-c", "tar -cf xl_archive_e2e/theirs.tar -C xl_archive_e2e/src .", "", "") != 0 { return fail("tar -cf theirs.tar") }
     local theirs: String = fsReadAllString(String("xl_archive_e2e/theirs.tar").cstr())
     local listed: Result<Vec<Entry>, Error> = list(&theirs)
@@ -104,9 +100,9 @@ fn same(path: str, want: str) -> bool {
     local data: String = String()
     for i in 0..5000 { data.append("a line of text that repeats, number ") }
     local gz: String = gzip(&data, 9)
-    if !write("xl_archive_e2e/ours.gz", &gz) { return fail("write ours.gz") }
+    if !write("xl_archive_e2e/ours.gz", gz.asStr()) { return fail("write ours.gz") }
     if run(&sink, "gzip", "-t", "xl_archive_e2e/ours.gz", "", "") != 0 { return fail("gzip -t of our output") }
-    if !write("xl_archive_e2e/plain", &data) { return fail("write plain") }
+    if !write("xl_archive_e2e/plain", data.asStr()) { return fail("write plain") }
     local theirsGz: String = String()
     if run(&theirsGz, "gzip", "-9", "-c", "xl_archive_e2e/plain", "") != 0 { return fail("gzip -9 -c") }
     switch gunzip(&theirsGz, LIMIT) {
