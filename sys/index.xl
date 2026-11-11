@@ -7,4 +7,5 @@
 export * from "sock"
 export * from "env"
 export * from "proc"
+export * from "spawn"
 export * from "uring"

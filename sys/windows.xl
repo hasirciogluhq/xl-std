@@ -32,7 +32,8 @@ define STATUS_PIPE_BROKEN = 0xC000014B
 
 global ioStatus: [i64; 2]
 
-fn stdHandle(fd: i32) -> i64 {
+/// The handle behind descriptor `fd`: the process's standard handle for 0, 1 and 2, otherwise the descriptor itself.
+export fn sysStdHandle(fd: i32) -> i64 {
     if fd == 0 { return GetStdHandle(-10) }
     if fd == 1 { return GetStdHandle(-11) }
     if fd == 2 { return GetStdHandle(-12) }
@@ -58,7 +59,7 @@ export fn sysWrite(fd: i32, buf: *u8, n: usize) -> isize {
 
 /// Writes to a file handle through NtWriteFile. A socket fd is not valid here.
 export fn sysWriteFile(fd: i32, buf: *u8, n: usize) -> isize {
-    local h: i64 = stdHandle(fd)
+    local h: i64 = sysStdHandle(fd)
     local io: [i64; 2]
     local len: u32 = n as u32
     if n > 1073741824 { len = 1073741824 }
@@ -69,7 +70,7 @@ export fn sysWriteFile(fd: i32, buf: *u8, n: usize) -> isize {
 
 export fn sysRead(fd: i32, buf: *u8, n: usize) -> isize {
     if isSocket(fd) { return sockRecv(fd, buf, n) }
-    local h: i64 = stdHandle(fd)
+    local h: i64 = sysStdHandle(fd)
     local io: [i64; 2]
     local len: u32 = n as u32
     if n > 1073741824 { len = 1073741824 }

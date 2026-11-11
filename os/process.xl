@@ -1,151 +1,457 @@
-// std/os/process: process identity, signals to a process, waiting for a child, and starting a child.
-// Linux (raw syscalls, numbers from xlang-docs/std/syscalls): getpid (39 / 172), kill (62 / 129), wait4 (61 / 260), clone (56 / 220)
-// with SIGCHLD and no sharing, execve (59 / 221) and exit (60 / 93). The child of processSpawn gets an empty environment.
-// processSpawnOut also redirects the child's stdout and stderr into a file: Linux opens the file in the child and
-// duplicates it onto fds 1 and 2 with dup3 (x86_64 292, arm64 24; https://man7.org/linux/man-pages/man2/dup.2.html),
-// macOS uses posix_spawn_file_actions_addopen / _adddup2
-// (https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/posix_spawn_file_actions_addclose.3.html).
-// macOS (libSystem, the documented interface): getpid, kill, wait4 and posix_spawn.
-// Signal handlers (rt_sigaction, sigaction) are not part of this module.
+// std/os/process: the identity of this process, starting child processes, talking to them through pipes, waiting for them,
+// stopping them, and testing whether this process runs with administrator rights.
+//
+//     local cmd: Command = Command(String("git"))
+//     cmd.arg(String("status"))
+//     cmd.cwd(String("/work"))
+//     if optionIsSome(cmd.output()) { /* could not start */ }
+//     print(&cmd.outText)                         // what it wrote; cmd.status.code is its exit status
+//
+// A `Command` is both the description of a child (program, arguments, environment, working directory, what its standard streams
+// are connected to) and, after `start`, the running child, as `exec.Cmd` is in Go. It owns the pipes and the process handle, and
+// releases them when it is dropped. The OS work is in `std/sys/spawn`: this file is the same on every OS except for the program
+// search (Windows searches PATH itself, as CreateProcessW does) and the null device.
+//
+// Why one class and not a `Result<Child, Error>`: a payload bound in a `switch` is a copy, so a droppable payload (a child that owns
+// pipes) cannot be taken out of a `Result` yet (see known-limitations.md). Failure is therefore `Option<ProcessError>`: None is success.
+//
+// Behavior that depends on the OS, in one place:
+//   * Signals: POSIX delivers the signal. Windows has none, so every `Signal` ends the process with TerminateProcess (exit code 1);
+//     `terminate` and `kill` act alike there, and a child ended this way reports `signal` 0 and `code` 1.
+//   * A child ended by a signal reports `code` -1 and the signal number in `signal` (POSIX only).
+//   * Environment: a child gets the environment of this process plus the variables set with `env`, unless `clearEnv` was called.
+//   * Descriptors: a child gets exactly its three standard streams. No other descriptor or handle of this process leaks into it.
+//   * A started child that is never waited for stays a zombie until this process ends: wait for the children you start.
+from "../sys" import SpawnSpec, SysChild, sysSpawn, sysSpawnPipe, sysProcWait, sysProcSignal, sysProcRelease, sysProcId, sysIsElevated, sysPollIn
+from "../sys" import sysClose, sysOpenRead, sysOpenWrite, sysExePath
+from "../io/stream" import Stream
+from "../str/str" import fromParts
+from "../str/string" import String, split
+from "../collections/vec" import Vec
+from "../collections/option" import Option, optionIsSome
+from "env" import list as environment, set as setVariable, lookup
 
-#if os == "linux"
-
-from "../sys" import sysOpenWrite, sysClose
-
-#if arch == "x86_64"
-define PROC_GETPID = 39
-define PROC_KILL = 62
-define PROC_WAIT4 = 61
-define PROC_CLONE = 56
-define PROC_EXECVE = 59
-define PROC_DUP3 = 292
-define PROC_EXIT = 60
-#elif arch == "aarch64"
-define PROC_GETPID = 172
-define PROC_KILL = 129
-define PROC_WAIT4 = 260
-define PROC_CLONE = 220
-define PROC_EXECVE = 221
-define PROC_DUP3 = 24
-define PROC_EXIT = 93
-#endif
-define PROC_SIGCHLD = 17
-
-export fn processId() -> i32 {
-    return syscall(PROC_GETPID) as i32
+/// What a standard stream of the child is connected to.
+export enum Stdio: i32 {
+    Inherit    // the stream of this process
+    Piped      // a pipe: the other end is `Command.inPipe`, `outPipe` or `errPipe`
+    Null       // the null device: reads give end-of-file, writes are discarded
 }
 
-export fn processKill(pid: i32, sig: i32) -> i32 {
-    return syscall(PROC_KILL, pid, sig) as i32
+/// Signals every OS can name (the same numbers on Linux and macOS). See the notes at the top for Windows.
+export enum Signal: i32 {
+    Hangup = 1
+    Interrupt = 2
+    Quit = 3
+    Kill = 9
+    Terminate = 15
 }
 
-/// Waits for `pid` (-1 for any child); writes the wait status to `*status`; returns the pid reaped, or -1.
-export fn processWait(pid: i32, status: *i32) -> i32 {
-    return syscall(PROC_WAIT4, pid, status, 0, 0) as i32
+export enum ProcessErrorKind: i32 {
+    NotFound            // no such program, or no such working directory
+    PermissionDenied    // the file is not executable by this user
+    AlreadyStarted      // `start` on a command that has been started
+    Other
 }
 
-/// Starts `path` with the argument vector `argv` (NULL-terminated) in an empty environment. Returns the child's pid, or -1.
-export fn processSpawn(path: *u8, argv: **u8) -> i32 {
-    local envp: [usize; 1] = [0]
-    local pid: i64 = syscall(PROC_CLONE, PROC_SIGCHLD, 0, 0, 0, 0)
-    if pid < 0 { return -1 }
-    if pid == 0 {
-        // child: replace the image, and leave with status 127 when that fails
-        syscall(PROC_EXECVE, path, argv, &envp[0])
-        syscall(PROC_EXIT, 127)
-    }
-    return pid as i32
+/// Why a child could not be started. `code` is the OS error (errno, or GetLastError on Windows); 0 when the OS gave none.
+export struct ProcessError {
+    kind: ProcessErrorKind
+    code: i32
 }
 
-/// Like processSpawn, with the child's stdout and stderr both written to the file `outPath` (created or truncated).
-/// Returns the child's pid, or -1; a child that cannot open the file leaves with status 127.
-export fn processSpawnOut(path: *u8, argv: **u8, outPath: *u8) -> i32 {
-    local envp: [usize; 1] = [0]
-    local pid: i64 = syscall(PROC_CLONE, PROC_SIGCHLD, 0, 0, 0, 0)
-    if pid < 0 { return -1 }
-    if pid == 0 {
-        local fd: i32 = sysOpenWrite(outPath, false)
-        if fd < 0 { syscall(PROC_EXIT, 127) }
-        syscall(PROC_DUP3, fd, 1, 0)
-        syscall(PROC_DUP3, fd, 2, 0)
-        if fd > 2 { sysClose(fd) }
-        syscall(PROC_EXECVE, path, argv, &envp[0])
-        syscall(PROC_EXIT, 127)
-    }
-    return pid as i32
+/// How a child ended: `code` is its exit status (-1 when a signal ended it) and `signal` the signal number (0 for a normal exit).
+export struct ExitStatus {
+    code: i32
+    signal: i32
+    success: bool    // exited normally with status 0
 }
 
-#elif os == "macos"
-
-@library("System") declare fn getpid() -> i32
-@library("System") declare fn kill(pid: i32, sig: i32) -> i32
-@library("System") declare fn wait4(pid: i32, status: *i32, options: i32, rusage: *void) -> i32
-@library("System") declare fn posix_spawn(pid: *i32, path: *u8, fileActions: *void, attr: *void, argv: **u8, envp: **u8) -> i32
-@library("System") declare fn posix_spawn_file_actions_init(actions: **void) -> i32
-@library("System") declare fn posix_spawn_file_actions_destroy(actions: **void) -> i32
-@library("System") declare fn posix_spawn_file_actions_addopen(actions: **void, fd: i32, path: *u8, oflag: i32, mode: i32) -> i32
-@library("System") declare fn posix_spawn_file_actions_adddup2(actions: **void, fd: i32, newfd: i32) -> i32
-
-// <fcntl.h> on macOS: O_WRONLY 0x1, O_CREAT 0x200, O_TRUNC 0x400; file mode 0644.
-define PROC_OUT_FLAGS = 1537
-define PROC_OUT_MODE = 420
-
-export fn processId() -> i32 {
-    return getpid()
+/// An `ExitStatus` for a child that exited with `code`, or was ended by `signal` (then `code` is -1).
+export fn exited(code: i32, signal: i32) -> ExitStatus {
+    return ExitStatus { code: code, signal: signal, success: signal == 0 && code == 0 }
 }
 
-export fn processKill(pid: i32, sig: i32) -> i32 {
-    return kill(pid, sig)
-}
-
-export fn processWait(pid: i32, status: *i32) -> i32 {
-    return wait4(pid, status, 0, nil)
-}
-
-/// Starts `path` with `argv` (NULL-terminated) through posix_spawn in an empty environment. Returns the child's pid, or -1.
-export fn processSpawn(path: *u8, argv: **u8) -> i32 {
-    local envp: [usize; 1] = [0]
-    local pid: i32 = 0
-    if posix_spawn(&pid, path, nil, nil, argv, &envp[0] as **u8) != 0 { return -1 }
-    return pid
-}
-
-/// Like processSpawn, with the child's stdout and stderr both written to the file `outPath` (created or truncated).
-/// Returns the child's pid, or -1.
-export fn processSpawnOut(path: *u8, argv: **u8, outPath: *u8) -> i32 {
-    local envp: [usize; 1] = [0]
-    local actions: *void = nil
-    if posix_spawn_file_actions_init(&actions) != 0 { return -1 }
-    local pid: i32 = -1
-    if posix_spawn_file_actions_addopen(&actions, 1, outPath, PROC_OUT_FLAGS, PROC_OUT_MODE) == 0 &&
-       posix_spawn_file_actions_adddup2(&actions, 1, 2) == 0 {
-        local started: i32 = 0
-        if posix_spawn(&started, path, &actions as *void, nil, argv, &envp[0] as **u8) == 0 { pid = started }
-    }
-    posix_spawn_file_actions_destroy(&actions)
-    return pid
-}
-
+#if os == "windows"
+define NULL_DEVICE = "NUL"
+define ERROR_FILE_NOT_FOUND = 2
+define ERROR_PATH_NOT_FOUND = 3
+define ERROR_ACCESS_DENIED = 5
 #else
-
-export fn processId() -> i32 {
-    return -1
-}
-
-export fn processKill(pid: i32, sig: i32) -> i32 {
-    return -1
-}
-
-export fn processWait(pid: i32, status: *i32) -> i32 {
-    return -1
-}
-
-export fn processSpawn(path: *u8, argv: **u8) -> i32 {
-    return -1
-}
-
-export fn processSpawnOut(path: *u8, argv: **u8, outPath: *u8) -> i32 {
-    return -1
-}
-
+define NULL_DEVICE = "/dev/null"
+define ENOENT = 2
+define EPERM = 1
+define EACCES = 13
 #endif
+
+fn errorOf(code: i32) -> ProcessError {
+#if os == "windows"
+    if code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND { return ProcessError { kind: ProcessErrorKind.NotFound, code: code } }
+    if code == ERROR_ACCESS_DENIED { return ProcessError { kind: ProcessErrorKind.PermissionDenied, code: code } }
+#else
+    if code == ENOENT { return ProcessError { kind: ProcessErrorKind.NotFound, code: code } }
+    if code == EACCES || code == EPERM { return ProcessError { kind: ProcessErrorKind.PermissionDenied, code: code } }
+#endif
+    return ProcessError { kind: ProcessErrorKind.Other, code: code }
+}
+
+/// The process id of this process.
+export fn id() -> i32 {
+    return sysProcId()
+}
+
+/// The path of the running executable, or None when the OS cannot tell (or it does not fit in 4 KiB).
+export fn executable() -> Option<String> {
+    local buf: [u8; 4096]
+    local n: isize = sysExePath(&buf[0], 4096)
+    if n <= 0 { return Option.None }
+    return Option.Some(String(fromParts(&buf[0], n as usize)))
+}
+
+/// Whether the process `pid` exists (a zombie counts as existing on POSIX until it is reaped).
+export fn exists(pid: i32) -> bool {
+    return sysProcSignal(pid, 0, 0) == 0
+}
+
+/// Sends `sig` to the process `pid`; false when it does not exist or this user may not signal it.
+export fn signal(pid: i32, sig: Signal) -> bool {
+    return sysProcSignal(pid, 0, sig as i32) == 0
+}
+
+/// Asks the process `pid` to stop (SIGTERM; on Windows the same as `kill`).
+export fn terminate(pid: i32) -> bool {
+    return signal(pid, Signal.Terminate)
+}
+
+/// Ends the process `pid` at once and without cleanup (SIGKILL, TerminateProcess).
+export fn kill(pid: i32) -> bool {
+    return signal(pid, Signal.Kill)
+}
+
+/// Whether this process has administrator rights: the effective user is root on Linux and macOS; on Windows the process token is
+/// elevated (an administrator that started the program "as administrator", or any administrator when UAC is off).
+export fn isElevated() -> bool {
+    return sysIsElevated()
+}
+
+/// How to start a child, and the child once it runs. Describe it with the setters, then `start` (talk to it through the pipes),
+/// `run` (wait for it, capturing nothing unless the streams are piped), or `output` (capture what it writes).
+export class Command {
+    // ---- the description ----
+    program: String
+    args: Vec<String>
+    varNames: Vec<String>      // variables set with `env`, applied over the inherited ones
+    varValues: Vec<String>
+    cleanEnv: bool
+    dir: String
+    hasDir: bool
+    inMode: Stdio
+    outMode: Stdio
+    errMode: Stdio
+    outFile: String            // stdout and stderr go to this file when `hasOutFile`
+    hasOutFile: bool
+
+    // ---- the child, once started ----
+    pid: i32                   // -1 until started
+    handle: i64                // the process handle (Windows); 0 elsewhere
+    finished: bool
+    status: ExitStatus         // valid once `finished`
+    inPipe: Stream             // write here to feed the child; open only when stdin was `Piped`
+    outPipe: Stream
+    errPipe: Stream
+    outText: String            // what `run` read from stdout and stderr when they were `Piped`
+    errText: String
+
+    /// `program` is a path, or a name searched on PATH (a name that contains a directory separator is never searched).
+    fn init(self, program: String) {
+        self.program = program
+        self.cleanEnv = false
+        self.hasDir = false
+        self.inMode = Stdio.Inherit
+        self.outMode = Stdio.Inherit
+        self.errMode = Stdio.Inherit
+        self.hasOutFile = false
+        self.pid = -1
+        self.handle = 0
+        self.finished = false
+        self.status = exited(0, 0)
+        self.inPipe = Stream(-1, true)
+        self.outPipe = Stream(-1, true)
+        self.errPipe = Stream(-1, true)
+    }
+
+    fn drop(self) {
+        self.release()
+    }
+
+    // ---- the setters ----
+
+    fn arg(self, a: String) {
+        self.args.push(a)
+    }
+
+    /// Sets the variable `name` for the child (it replaces an inherited variable of the same name).
+    fn env(self, name: String, value: String) {
+        self.varNames.push(name)
+        self.varValues.push(value)
+    }
+
+    /// The child starts with only the variables set by `env`.
+    fn clearEnv(self) {
+        self.cleanEnv = true
+    }
+
+    fn cwd(self, path: String) {
+        self.dir = path
+        self.hasDir = true
+    }
+
+    fn stdin(self, mode: Stdio) {
+        self.inMode = mode
+    }
+
+    fn stdout(self, mode: Stdio) {
+        self.outMode = mode
+    }
+
+    fn stderr(self, mode: Stdio) {
+        self.errMode = mode
+    }
+
+    /// Writes the child's stdout and stderr into the file `path`, created or truncated. Replaces `stdout` and `stderr`.
+    fn redirect(self, path: String) {
+        self.outFile = path
+        self.hasOutFile = true
+    }
+
+    // ---- starting ----
+
+    /// The environment the child gets: this process's (unless cleared) with the `env` variables applied.
+    fn environment(self) -> Vec<String> {
+        local all: Vec<String> = Vec<String>()
+        if !self.cleanEnv { all = environment() }
+        for i in 0..self.varNames.length() { setVariable(&all, self.varNames.get(i), self.varValues.get(i)) }
+        return all
+    }
+
+    /// The executables to try for the program: itself when it names a path, else `<dir>/<program>` for each directory of PATH
+    /// (an empty entry is the current directory), the way execvp searches. The PATH of the child's environment is used, with
+    /// the default `/usr/bin:/bin` when it has none.
+    fn candidates(self, env: *Vec<String>) -> Vec<String> {
+        local found: Vec<String> = Vec<String>()
+        if self.program.contains("/") {
+            found.push(self.program.clone())
+            return found
+        }
+        local key: String = String("PATH")
+        local path: String = String("/usr/bin:/bin")
+        local fromEnv: Option<String> = lookup(env, &key)
+        switch fromEnv {
+            case Option.Some(p) { path = p.clone() }     // a payload bound by `switch` is a copy: clone to keep it
+            case Option.None {}
+        }
+        local dirs: Vec<String> = split(path.asStr(), ":")
+        for i in 0..dirs.length() {
+            local full: String = dirs.get(i).length() == 0 ? String(".") : dirs.get(i).clone()
+            full.push(b'/')
+            full.append(&self.program)
+            found.push(full)
+        }
+        return found
+    }
+
+    /// Starts the child. None on success; the pipes of the streams that were `Piped` are then open. A command starts once.
+    fn start(self) -> Option<ProcessError> {
+        if self.pid >= 0 { return Option.Some(ProcessError { kind: ProcessErrorKind.AlreadyStarted, code: 0 }) }
+        // The OS gets C strings: these vectors hold pointers into the Strings above, which outlive the call.
+        local env: Vec<String> = self.environment()
+        local argv: Vec<*u8> = Vec<*u8>()
+        argv.push(self.program.cstr())
+        for i in 0..self.args.length() { argv.push(self.args.get(i).cstr()) }
+        argv.push(nil)
+        local choices: Vec<String> = Vec<String>()
+#if os != "windows"
+        choices = self.candidates(&env)
+#endif
+        local programs: Vec<*u8> = Vec<*u8>()
+        for i in 0..choices.length() { programs.push(choices.get(i).cstr()) }
+        programs.push(nil)
+        local envp: Vec<*u8> = Vec<*u8>()
+        for i in 0..env.length() { envp.push(env.get(i).cstr()) }
+        envp.push(nil)
+
+        // Each standard stream: the end the child gets (-1: its own), and the end this process keeps (-1: none).
+        local (inChild, inParent) = wire(self.inMode, true)
+        local (outChild, outParent) = wire(self.outMode, false)
+        local (errChild, errParent) = wire(self.errMode, false)
+        if self.hasOutFile {
+            closeEnd(outChild)
+            closeEnd(errChild)
+            closeEnd(outParent)
+            closeEnd(errParent)
+            outChild = sysOpenWrite(self.outFile.cstr(), false)
+            errChild = outChild
+            outParent = -1
+            errParent = -1
+        }
+        local failed: bool = inChild == -2 || outChild == -2 || errChild == -2 || (self.hasOutFile && outChild < 0)
+
+        local spec: SpawnSpec = SpawnSpec { programs: programs.data, argv: argv.data, envp: envp.data, cwd: nil,
+                                            stdin: inChild, stdout: outChild, stderr: errChild }
+        if self.hasDir { spec.cwd = self.dir.cstr() }
+#if os == "windows"
+        // CreateProcessW inherits the environment itself when it is given none.
+        if !self.cleanEnv && self.varNames.length() == 0 { spec.envp = nil }
+#endif
+        local started: SysChild = SysChild { pid: -1, handle: 0, error: 0 }
+        local rc: i32 = failed ? -1 : sysSpawn(&spec, &started)
+
+        // The child has its copies now (or never will): this process drops its ends of them.
+        closeEnd(inChild)
+        closeEnd(outChild)
+        if errChild != outChild { closeEnd(errChild) }
+        if rc < 0 {
+            closeEnd(inParent)
+            closeEnd(outParent)
+            closeEnd(errParent)
+            return Option.Some(errorOf(failed ? 0 : started.error))
+        }
+        self.pid = started.pid
+        self.handle = started.handle
+        self.finished = false
+        self.inPipe = Stream(inParent, true)
+        self.outPipe = Stream(outParent, true)
+        self.errPipe = Stream(errParent, true)
+        return Option.None
+    }
+
+    // ---- the running child ----
+
+    fn id(self) -> i32 {
+        return self.pid
+    }
+
+    /// Reaps the child if it has ended (waiting for it when `block`). True once it has ended; false before `start`.
+    fn poll(self, block: bool) -> bool {
+        if self.finished { return true }
+        if self.pid < 0 { return false }
+        local raw: SysChild = SysChild { pid: self.pid, handle: self.handle, error: 0 }
+        local code: i32 = 0
+        local sig: i32 = 0
+        local r: i32 = sysProcWait(&raw, block, &code, &sig)
+        if r == 0 { return false }
+        // r < 0: the child cannot be waited for (somebody else reaped it); report it as ended without a status.
+        self.status = exited(r > 0 ? code : -1, r > 0 ? sig : 0)
+        self.finished = true
+        self.release()
+        return true
+    }
+
+    /// Waits for the child to end and returns how it ended. Its standard input is closed first, so a child that reads until
+    /// end-of-file can finish.
+    fn wait(self) -> ExitStatus {
+        self.inPipe.close()
+        self.poll(true)
+        return self.status
+    }
+
+    /// The status when the child has ended, None while it still runs. Does not block.
+    fn tryWait(self) -> Option<ExitStatus> {
+        if !self.poll(false) { return Option.None }
+        return Option.Some(self.status)
+    }
+
+    fn isRunning(self) -> bool {
+        return self.pid >= 0 && !self.poll(false)
+    }
+
+    /// Sends `sig` to the child; false when it is not running or the OS refuses.
+    fn signal(self, sig: Signal) -> bool {
+        if self.pid < 0 || self.finished { return false }
+        return sysProcSignal(self.pid, self.handle, sig as i32) == 0
+    }
+
+    /// Asks the child to stop (SIGTERM; on Windows the same as `kill`).
+    fn terminate(self) -> bool {
+        return self.signal(Signal.Terminate)
+    }
+
+    /// Ends the child at once and without cleanup (SIGKILL, TerminateProcess). Call `wait` afterwards to reap it.
+    fn kill(self) -> bool {
+        return self.signal(Signal.Kill)
+    }
+
+    /// Releases the process handle (Windows); nothing to do elsewhere. Safe to call twice.
+    fn release(self) {
+        if self.handle == 0 { return }
+        local raw: SysChild = SysChild { pid: self.pid, handle: self.handle, error: 0 }
+        sysProcRelease(&raw)
+        self.handle = 0
+    }
+
+    /// Reads the child's stdout and stderr to end-of-file at the same time (so neither pipe can fill up and block the child) into
+    /// `outText` and `errText`, then waits for it. A stream that was not `Piped` is skipped.
+    fn collect(self) -> ExitStatus {
+        self.inPipe.close()
+        while self.outPipe.isOpen() || self.errPipe.isOpen() {
+            local fds: [i32; 2]
+            local streams: [*Stream; 2]
+            local sinks: [*String; 2]
+            local n: usize = 0
+            if self.outPipe.isOpen() {
+                fds[n] = self.outPipe.fd
+                streams[n] = &self.outPipe
+                sinks[n] = &self.outText
+                n++
+            }
+            if self.errPipe.isOpen() {
+                fds[n] = self.errPipe.fd
+                streams[n] = &self.errPipe
+                sinks[n] = &self.errText
+                n++
+            }
+            local ready: i32 = sysPollIn(&fds[0], n, -1)
+            if ready < 0 { break }
+            if streams[ready].readSome(sinks[ready]) <= 0 { streams[ready].close() }
+        }
+        return self.wait()
+    }
+
+    /// Starts the child and waits for it to end; the result is in `status`, and `outText` and `errText` hold what a piped stdout
+    /// and stderr produced. None on success (the child may still have failed: see `status`).
+    fn run(self) -> Option<ProcessError> {
+        local failure: Option<ProcessError> = self.start()
+        if optionIsSome(failure) { return failure }
+        self.collect()
+        return Option.None
+    }
+
+    /// Like `run`, with stdout and stderr captured unless set otherwise, and stdin the null device.
+    fn output(self) -> Option<ProcessError> {
+        if self.inMode == Stdio.Inherit { self.inMode = Stdio.Null }
+        if self.outMode == Stdio.Inherit { self.outMode = Stdio.Piped }
+        if self.errMode == Stdio.Inherit { self.errMode = Stdio.Piped }
+        return self.run()
+    }
+}
+
+/// Connects one standard stream: (the end for the child, the end this process keeps). -1 means "none"; the child end -2 means the
+/// pipe or the null device could not be created.
+fn wire(mode: Stdio, input: bool) -> (i32, i32) {
+    switch mode {
+        case Stdio.Piped {
+            local ends: [i32; 2]
+            if sysSpawnPipe(&ends[0]) < 0 { return (-2, -1) }
+            return input ? (ends[0], ends[1]) : (ends[1], ends[0])
+        }
+        case Stdio.Null {
+            local null: i32 = input ? sysOpenRead(NULL_DEVICE) : sysOpenWrite(NULL_DEVICE, false)
+            return (null < 0 ? -2 : null, -1)
+        }
+        default { return (-1, -1) }
+    }
+}
+
+fn closeEnd(fd: i32) {
+    if fd >= 0 { sysClose(fd) }
+}

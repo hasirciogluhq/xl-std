@@ -1,0 +1,736 @@
+// std/sys/spawn: starting, signalling and reaping child processes, the process id, and the elevation check. One area, three
+// bodies; every OS fills the same two structs and returns the same results, so `std/os/process` is written once.
+//
+// Linux (raw syscalls, numbers in xlang-docs/std/syscalls): the parent opens a close-on-exec pipe, forks with `clone(SIGCHLD)`
+//   (no CLONE_VM: a fork), and the child redirects its descriptors, changes directory and tries `execve` on each candidate.
+//   When every `execve` fails, the child writes its errno into the pipe and exits with 127; the parent reads the pipe, so a
+//   missing program is reported as an error of `sysSpawn` and not as a child that exits with 127. A successful `execve` closes
+//   the pipe (O_CLOEXEC), and the parent reads end-of-file.
+//   https://man7.org/linux/man-pages/man2/clone.2.html, https://man7.org/linux/man-pages/man2/execve.2.html,
+//   https://man7.org/linux/man-pages/man2/pipe.2.html (pipe2, O_CLOEXEC), https://man7.org/linux/man-pages/man2/dup.2.html (dup3),
+//   https://man7.org/linux/man-pages/man2/wait4.2.html, https://man7.org/linux/man-pages/man2/kill.2.html,
+//   https://man7.org/linux/man-pages/man2/geteuid.2.html, https://man7.org/linux/man-pages/man2/poll.2.html (ppoll),
+//   https://man7.org/linux/man-pages/man2/fcntl.2.html (F_DUPFD_CLOEXEC, F_SETFD), https://man7.org/linux/man-pages/man2/chdir.2.html,
+//   https://man7.org/linux/man-pages/man2/sigaction.2.html (rt_sigaction).
+// macOS (libSystem, the documented interface): `posix_spawn` with file actions and the attribute POSIX_SPAWN_CLOEXEC_DEFAULT, which
+//   closes every descriptor the file actions do not name, so a pipe end of this process never leaks into a child.
+//   https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/posix_spawn.3.html
+//   Numbers and constants read from https://github.com/apple-oss-distributions/xnu: bsd/kern/syscalls.master (fcntl 92, pipe 42),
+//   bsd/sys/fcntl.h, bsd/sys/spawn.h, bsd/sys/poll.h, bsd/sys/wait.h.
+// Windows (kernel32 and advapi32, checked against Microsoft Learn): `CreateProcessW` with a STARTUPINFOEXW whose
+//   PROC_THREAD_ATTRIBUTE_HANDLE_LIST names exactly the handles the child inherits, so no other inheritable handle of this process
+//   leaks into it (https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw,
+//   https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
+//
+// A path, an argument and a variable are NUL-terminated C strings: this is the boundary to the OS. `std/os/process` owns them as
+// `String` and `Vec<String>`. Descriptors are `i32`; on Windows a descriptor is the low 32 bits of a kernel handle, as in `std/sys`.
+
+/// What to start. Every pointer stays valid for the call; arrays of pointers end with nil.
+export struct SpawnSpec {
+    programs: **u8   // Linux, macOS: the executables to try in order (the PATH search is done by the caller). Windows: unused.
+    argv: **u8       // argv[0] first. Windows joins them into one quoted command line; its first token is searched on PATH.
+    envp: **u8       // "NAME=value" entries; nil keeps the environment of this process (Windows only: Unix always gets a list)
+    cwd: *u8         // working directory; nil keeps the current one
+    stdin: i32       // descriptor the child gets as 0; -1 keeps the descriptor of this process
+    stdout: i32      // ... as 1
+    stderr: i32      // ... as 2
+}
+
+/// A started child. `handle` is the process handle on Windows (the exit status is read through it) and 0 elsewhere.
+/// `error` is the OS error code (errno, or GetLastError on Windows) when `sysSpawn` fails.
+export struct SysChild {
+    pid: i32
+    handle: i64
+    error: i32
+}
+
+#if os == "linux"
+
+from "linux" import sysClose, sysRead
+
+#if arch == "x86_64"
+define SYS_WRITE = 1
+define SYS_GETPID = 39
+define SYS_KILL = 62
+define SYS_WAIT4 = 61
+define SYS_CLONE = 56
+define SYS_EXECVE = 59
+define SYS_EXIT = 60
+define SYS_DUP3 = 292
+define SYS_PIPE2 = 293
+define SYS_FCNTL = 72
+define SYS_CHDIR = 80
+define SYS_GETEUID = 107
+define SYS_PPOLL = 271
+define SYS_SIGACTION = 13
+#elif arch == "aarch64"
+define SYS_WRITE = 64
+define SYS_GETPID = 172
+define SYS_KILL = 129
+define SYS_WAIT4 = 260
+define SYS_CLONE = 220
+define SYS_EXECVE = 221
+define SYS_EXIT = 93
+define SYS_DUP3 = 24
+define SYS_PIPE2 = 59
+define SYS_FCNTL = 25
+define SYS_CHDIR = 49
+define SYS_GETEUID = 175
+define SYS_PPOLL = 73
+define SYS_SIGACTION = 134
+#endif
+
+define SIGCHLD = 17
+define SIGPIPE = 13
+define O_CLOEXEC = 0x80000          // 02000000 octal, the same on x86-64 and arm64
+define F_SETFD = 2
+define F_DUPFD_CLOEXEC = 1030       // <linux/fcntl.h>: F_LINUX_SPECIFIC_BASE + 6
+define WNOHANG = 1
+define EINTR = 4
+define EPERM = 1
+define ENOENT = 2
+define ENOTDIR = 20
+define POLL_READY = 0x19            // POLLIN | POLLERR | POLLHUP: a read will not block
+
+/// Moves a descriptor below 3 above them (close-on-exec), so redirecting 0, 1 and 2 in the child never overwrites an end
+/// that has still to be copied. Only matters when this process has closed one of its own standard descriptors.
+fn lift(fd: *i32) {
+    if *fd >= 3 { return }
+    local moved: i32 = syscall(SYS_FCNTL, *fd, F_DUPFD_CLOEXEC, 3) as i32
+    if moved < 0 { return }
+    sysClose(*fd)
+    *fd = moved
+}
+
+global sigpipeIgnored: bool
+
+/// The one-time process state of this area (users never call it): a write to a pipe whose reader has gone must fail with EPIPE
+/// instead of ending the process with SIGPIPE, so SIGPIPE is ignored once per process, as `std/sys/sock` does for sockets.
+fn spawnUp() {
+    if sigpipeIgnored { return }
+    local ignore: [u64; 4] = [1, 0, 0, 0]       // kernel struct sigaction: handler SIG_IGN (1), flags, restorer, mask
+    syscall(SYS_SIGACTION, SIGPIPE, &ignore[0], 0, 8)
+    sigpipeIgnored = true
+}
+
+/// A pipe for a child: `fds[0]` reads, `fds[1]` writes, both close-on-exec (a child gets only the end the spawn copies onto 0, 1 or 2).
+export fn sysSpawnPipe(fds: *i32) -> i32 {
+    spawnUp()
+    if syscall(SYS_PIPE2, fds, O_CLOEXEC) < 0 { return -1 }
+    for i in 0..2 { lift(&fds[i]) }
+    return 0
+}
+
+/// The forked child. Only system calls run here: the heap and its locks belong to the parent's other threads. Never returns.
+fn childMain(spec: *SpawnSpec, report: i32) {
+    // The child must not inherit an ignored SIGPIPE: `std/sys/sock` ignores it process-wide and an ignored signal survives execve.
+    local dfl: [u64; 4] = [0, 0, 0, 0]          // kernel struct sigaction: handler SIG_DFL, flags, restorer, mask
+    syscall(SYS_SIGACTION, SIGPIPE, &dfl[0], 0, 8)
+    local src: [i32; 3] = [spec.stdin, spec.stdout, spec.stderr]
+    for fd in 0..3 {
+        if src[fd] < 0 { continue }
+        if src[fd] == fd {
+            syscall(SYS_FCNTL, fd, F_SETFD, 0)   // keep it open across execve
+        } else {
+            syscall(SYS_DUP3, src[fd], fd, 0)    // the copy is not close-on-exec
+        }
+    }
+    for fd in 0..3 {
+        if src[fd] > 2 { sysClose(src[fd]) }     // a plain file opened by the caller: only the copy stays
+    }
+    local errno: i32 = ENOENT
+    local moved: i32 = spec.cwd == nil ? 0 : syscall(SYS_CHDIR, spec.cwd) as i32
+    if moved < 0 {
+        errno = -moved
+    } else {
+        // The first error that is not "not found" wins, like execvp: a candidate that exists but is not executable is the real answer.
+        for local k := 0; spec.programs[k] != nil; k++ {
+            local r: i32 = syscall(SYS_EXECVE, spec.programs[k], spec.argv, spec.envp) as i32
+            if r != -ENOENT && r != -ENOTDIR { errno = -r }
+        }
+    }
+    syscall(SYS_WRITE, report, &errno as *u8, 4)
+    syscall(SYS_EXIT, 127)
+}
+
+export fn sysSpawn(spec: *SpawnSpec, out: *SysChild) -> i32 {
+    *out = SysChild { pid: -1, handle: 0, error: 0 }
+    local report: [i32; 2]
+    local r: i64 = syscall(SYS_PIPE2, &report[0], O_CLOEXEC)
+    if r < 0 {
+        out.error = -(r as i32)
+        return -1
+    }
+    local pid: i64 = syscall(SYS_CLONE, SIGCHLD, 0, 0, 0, 0)
+    if pid == 0 { childMain(spec, report[1]) }
+    sysClose(report[1])
+    if pid < 0 {
+        sysClose(report[0])
+        out.error = -(pid as i32)
+        return -1
+    }
+    local errno: i32 = 0
+    local got: isize = sysRead(report[0], &errno as *u8, 4)
+    while got == -EINTR { got = sysRead(report[0], &errno as *u8, 4) }
+    sysClose(report[0])
+    if got == 4 {
+        local status: i32 = 0
+        syscall(SYS_WAIT4, pid, &status, 0, 0)   // reap the child that failed to start
+        out.error = errno
+        return -1
+    }
+    out.pid = pid as i32
+    return 0
+}
+
+/// Reaps `c` when it has ended. 1: ended (`*code` is the exit status, or -1 when a signal ended it, which is `*sig`); 0: still
+/// running (only without `block`); -1: error. A reaped child cannot be waited for again.
+export fn sysProcWait(c: *SysChild, block: bool, code: *i32, sig: *i32) -> i32 {
+    local status: i32 = 0
+    local r: i64 = 0
+    while true {
+        r = syscall(SYS_WAIT4, c.pid, &status, block ? 0 : WNOHANG, 0)
+        if r != -EINTR { break }
+    }
+    if r < 0 { return -1 }
+    if r == 0 { return 0 }
+    // wait(2): the low 7 bits are the terminating signal (0 for a normal exit), bits 8..15 the exit status.
+    *sig = status & 0x7f
+    *code = *sig == 0 ? (status >> 8) & 0xff : -1
+    return 1
+}
+
+/// Sends signal `sig` (0 only tests that the process exists: EPERM means it exists but belongs to another user). 0 on success,
+/// -1 otherwise. `handle` is unused here.
+export fn sysProcSignal(pid: i32, handle: i64, sig: i32) -> i32 {
+    local r: i64 = syscall(SYS_KILL, pid, sig)
+    return r == 0 || (sig == 0 && r == -EPERM) ? 0 : -1
+}
+
+/// Windows closes the process handle here; there is nothing to release on Linux.
+export fn sysProcRelease(c: *SysChild) {
+}
+
+/// The path of the running executable, UTF-8, NUL-terminated, in `buf` (capacity `cap`). Its length, or -1 when it does not fit.
+/// Linux: the target of the symlink /proc/self/exe (readlink 89 on x86-64, readlinkat 78 on arm64, which has no readlink).
+export fn sysExePath(buf: *u8, cap: usize) -> isize {
+    local link: *u8 = "/proc/self/exe"
+#if arch == "x86_64"
+    local n: i64 = syscall(89, link, buf, cap - 1)
+#else
+    local n: i64 = syscall(78, -100, link, buf, cap - 1)
+#endif
+    if n <= 0 || n as usize >= cap - 1 { return -1 }    // readlink truncates silently: a full buffer may be cut
+    buf[n as usize] = 0
+    return n as isize
+}
+
+export fn sysProcId() -> i32 {
+    return syscall(SYS_GETPID) as i32
+}
+
+/// Whether the effective user is root (uid 0).
+export fn sysIsElevated() -> bool {
+    return syscall(SYS_GETEUID) == 0
+}
+
+/// Waits until one of the `n` (at most 4) descriptors can be read without blocking, or has reached end-of-file or failed.
+/// Returns its index, -1 on timeout, -2 on error. `timeoutMs` < 0 waits for ever.
+export fn sysPollIn(fds: *i32, n: usize, timeoutMs: i32) -> i32 {
+    local pfd: [i32; 8]       // struct pollfd { int fd; short events; short revents; } per entry
+    for i in 0..n {
+        pfd[2 * i] = fds[i]
+        pfd[2 * i + 1] = 1    // POLLIN
+    }
+    local tmo: [i64; 2] = [(timeoutMs / 1000) as i64, ((timeoutMs % 1000) * 1000000) as i64]
+    local limit: *i64 = nil                  // nil waits for ever
+    if timeoutMs >= 0 { limit = &tmo[0] }
+    local r: i64 = 0
+    while true {
+        r = syscall(SYS_PPOLL, &pfd[0], n, limit, 0, 8)
+        if r != -EINTR { break }
+    }
+    if r < 0 { return -2 }
+    for i in 0..n {
+        if ((pfd[2 * i + 1] >> 16) & POLL_READY) != 0 { return i as i32 }
+    }
+    return -1
+}
+
+#elif os == "macos"
+
+from "macos" import sysClose, sysPipe
+
+@library("System") declare fn getpid() -> i32
+@library("System") declare fn kill(pid: i32, sig: i32) -> i32
+@library("System") declare fn wait4(pid: i32, status: *i32, options: i32, rusage: *void) -> i32
+@library("System") declare fn geteuid() -> u32
+@library("System") declare fn poll(fds: *i32, n: u32, timeoutMs: i32) -> i32
+@library("System") declare fn __error() -> *i32          // address of errno
+@library("System") declare fn posix_spawn(pid: *i32, path: *u8, fileActions: *void, attr: *void, argv: **u8, envp: **u8) -> i32
+@library("System") declare fn posix_spawn_file_actions_init(actions: **void) -> i32
+@library("System") declare fn posix_spawn_file_actions_destroy(actions: **void) -> i32
+@library("System") declare fn posix_spawn_file_actions_adddup2(actions: **void, fd: i32, newfd: i32) -> i32
+@library("System") declare fn posix_spawn_file_actions_addinherit_np(actions: **void, fd: i32) -> i32
+@library("System") declare fn posix_spawn_file_actions_addchdir_np(actions: **void, path: *u8) -> i32
+@library("System") declare fn posix_spawnattr_init(attr: **void) -> i32
+@library("System") declare fn posix_spawnattr_destroy(attr: **void) -> i32
+@library("System") declare fn posix_spawnattr_setflags(attr: **void, flags: i16) -> i32
+@library("System") declare fn posix_spawnattr_setsigdefault(attr: **void, set: *u32) -> i32
+
+define SYS_FCNTL = 92                    // bsd/kern/syscalls.master
+define F_SETFD = 2                       // bsd/sys/fcntl.h
+define F_DUPFD_CLOEXEC = 67
+define F_SETNOSIGPIPE = 73               // bsd/sys/fcntl.h: per-descriptor SIGPIPE suppression
+define FD_CLOEXEC = 1
+define POSIX_SPAWN_SETSIGDEF = 0x4       // bsd/sys/spawn.h
+define POSIX_SPAWN_CLOEXEC_DEFAULT = 0x4000
+define SIGPIPE_BIT = 0x1000              // sigset_t is a 32-bit mask on Darwin: signal 13 is bit 12
+define WNOHANG = 1                       // bsd/sys/wait.h
+define EINTR = 4
+define EPERM = 1
+define ENOENT = 2
+define ENOTDIR = 20
+define POLL_READY = 0x19                 // bsd/sys/poll.h: POLLIN 0x1 | POLLERR 0x8 | POLLHUP 0x10
+
+/// See the Linux body: a descriptor below 3 moves above them, so the file actions never overwrite an end still to be copied.
+fn lift(fd: *i32) {
+    syscall(SYS_FCNTL, *fd, F_SETFD, FD_CLOEXEC)
+    if *fd >= 3 { return }
+    local moved: i32 = syscall(SYS_FCNTL, *fd, F_DUPFD_CLOEXEC, 3) as i32
+    if moved < 0 { return }
+    sysClose(*fd)
+    *fd = moved
+}
+
+/// A pipe for a child: `fds[0]` reads, `fds[1]` writes, both close-on-exec. macOS has no `pipe2`, so another thread that forks between
+/// the two calls could inherit an end; a spawn by this module never does (POSIX_SPAWN_CLOEXEC_DEFAULT).
+export fn sysSpawnPipe(fds: *i32) -> i32 {
+    if sysPipe(fds, false) < 0 { return -1 }
+    for i in 0..2 {
+        syscall(SYS_FCNTL, fds[i], F_SETNOSIGPIPE, 1)   // a write to a gone reader fails with EPIPE instead of raising SIGPIPE
+        lift(&fds[i])
+    }
+    return 0
+}
+
+/// Applies the redirections of `spec` as file actions. The first failing call's error code, 0 when all succeeded.
+fn fileActions(actions: **void, spec: *SpawnSpec) -> i32 {
+    local src: [i32; 3] = [spec.stdin, spec.stdout, spec.stderr]
+    for fd in 0..3 {
+        // POSIX_SPAWN_CLOEXEC_DEFAULT closes everything not named: a descriptor that stays as it is must be named too.
+        local rc: i32 = src[fd] < 0 || src[fd] == fd ? posix_spawn_file_actions_addinherit_np(actions, fd)
+                                                      : posix_spawn_file_actions_adddup2(actions, src[fd], fd)
+        if rc != 0 { return rc }
+    }
+    return spec.cwd == nil ? 0 : posix_spawn_file_actions_addchdir_np(actions, spec.cwd)
+}
+
+export fn sysSpawn(spec: *SpawnSpec, out: *SysChild) -> i32 {
+    *out = SysChild { pid: -1, handle: 0, error: 0 }
+    local actions: *void = nil
+    local attr: *void = nil
+    local rc: i32 = posix_spawn_file_actions_init(&actions)
+    if rc != 0 {
+        out.error = rc
+        return -1
+    }
+    defer posix_spawn_file_actions_destroy(&actions)
+    // An ignored SIGPIPE survives exec and `std/sys/sock` ignores it process-wide: the child gets the default action back.
+    local sigdef: u32 = SIGPIPE_BIT
+    rc = posix_spawnattr_init(&attr)
+    if rc != 0 {
+        out.error = rc
+        return -1
+    }
+    defer posix_spawnattr_destroy(&attr)
+    rc = posix_spawnattr_setflags(&attr, (POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT) as i16)
+    if rc == 0 { rc = posix_spawnattr_setsigdefault(&attr, &sigdef) }
+    if rc == 0 { rc = fileActions(&actions, spec) }
+    if rc != 0 {
+        out.error = rc
+        return -1
+    }
+    // Like execvp: "not found" moves on to the next candidate, any other error is remembered and the search goes on.
+    local failure: i32 = ENOENT
+    for local k := 0; spec.programs[k] != nil; k++ {
+        local pid: i32 = 0
+        rc = posix_spawn(&pid, spec.programs[k], &actions as *void, &attr as *void, spec.argv, spec.envp)
+        if rc == 0 {
+            out.pid = pid
+            return 0
+        }
+        if rc != ENOENT && rc != ENOTDIR { failure = rc }
+    }
+    out.error = failure
+    return -1
+}
+
+/// See the Linux body.
+export fn sysProcWait(c: *SysChild, block: bool, code: *i32, sig: *i32) -> i32 {
+    local status: i32 = 0
+    local r: i32 = 0
+    while true {
+        r = wait4(c.pid, &status, block ? 0 : WNOHANG, nil)
+        if r >= 0 || *__error() != EINTR { break }
+    }
+    if r < 0 { return -1 }
+    if r == 0 { return 0 }
+    // bsd/sys/wait.h: _WSTATUS is the low 7 bits (0 = exited), WEXITSTATUS is bits 8..15.
+    *sig = status & 0x7f
+    *code = *sig == 0 ? (status >> 8) & 0xff : -1
+    return 1
+}
+
+export fn sysProcSignal(pid: i32, handle: i64, sig: i32) -> i32 {
+    return kill(pid, sig) == 0 || (sig == 0 && *__error() == EPERM) ? 0 : -1
+}
+
+export fn sysProcRelease(c: *SysChild) {
+}
+
+@library("System") declare fn _NSGetExecutablePath(buf: *u8, size: *u32) -> i32
+
+/// The path of the running executable, NUL-terminated, in `buf` (capacity `cap`). Its length, or -1 when it does not fit.
+/// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/dyld.3.html
+export fn sysExePath(buf: *u8, cap: usize) -> isize {
+    local size: u32 = cap as u32
+    if _NSGetExecutablePath(buf, &size) != 0 { return -1 }
+    local n: usize = 0
+    while buf[n] != 0 { n++ }
+    return n as isize
+}
+
+export fn sysProcId() -> i32 {
+    return getpid()
+}
+
+export fn sysIsElevated() -> bool {
+    return geteuid() == 0
+}
+
+/// See the Linux body.
+export fn sysPollIn(fds: *i32, n: usize, timeoutMs: i32) -> i32 {
+    local pfd: [i32; 8]
+    for i in 0..n {
+        pfd[2 * i] = fds[i]
+        pfd[2 * i + 1] = 1    // POLLIN
+    }
+    local r: i32 = 0
+    while true {
+        r = poll(&pfd[0], n as u32, timeoutMs)
+        if r >= 0 || *__error() != EINTR { break }
+    }
+    if r < 0 { return -2 }
+    for i in 0..n {
+        if ((pfd[2 * i + 1] >> 16) & POLL_READY) != 0 { return i as i32 }
+    }
+    return -1
+}
+
+#elif os == "windows"
+
+from "windows" import sysClose, sysMap, sysUnmap, sysStdHandle
+from "../encoding/utf16" import fromUtf8, toUtf8
+
+@library("kernel32") declare fn CreatePipe(read: *i64, write: *i64, attrs: *void, size: u32) -> i32
+@library("kernel32") declare fn SetHandleInformation(h: i64, mask: u32, flags: u32) -> i32
+@library("kernel32") declare fn CreateProcessW(app: *u16, cmd: *u16, procAttrs: *void, threadAttrs: *void, inherit: i32, flags: u32,
+                                               env: *u16, cwd: *u16, startup: *u64, info: *u64) -> i32
+@library("kernel32") declare fn InitializeProcThreadAttributeList(list: *u64, count: u32, flags: u32, size: *usize) -> i32
+@library("kernel32") declare fn UpdateProcThreadAttribute(list: *u64, flags: u32, attr: usize, value: *i64, size: usize, prev: *void,
+                                                          returned: *usize) -> i32
+@library("kernel32") declare fn DeleteProcThreadAttributeList(list: *u64)
+@library("kernel32") declare fn WaitForSingleObject(h: i64, ms: u32) -> u32
+@library("kernel32") declare fn GetExitCodeProcess(h: i64, code: *u32) -> i32
+@library("kernel32") declare fn TerminateProcess(h: i64, code: u32) -> i32
+@library("kernel32") declare fn OpenProcess(access: u32, inherit: i32, pid: u32) -> i64
+@library("kernel32") declare fn CloseHandle(h: i64) -> i32
+@library("kernel32") declare fn GetCurrentProcessId() -> u32
+@library("kernel32") declare fn GetCurrentProcess() -> i64
+@library("kernel32") declare fn GetLastError() -> u32
+@library("kernel32") declare fn PeekNamedPipe(h: i64, buf: *void, size: u32, read: *u32, available: *u32, left: *u32) -> i32
+@library("kernel32") declare fn Sleep(ms: u32)
+@library("advapi32") declare fn OpenProcessToken(process: i64, access: u32, token: *i64) -> i32
+@library("advapi32") declare fn GetTokenInformation(token: i64, infoClass: i32, info: *u32, len: u32, returned: *u32) -> i32
+
+define HANDLE_FLAG_INHERIT = 1
+define EXTENDED_STARTUPINFO_PRESENT = 0x80000
+define CREATE_UNICODE_ENVIRONMENT = 0x400
+define STARTF_USESTDHANDLES = 0x100
+define PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x20002
+define PROCESS_TERMINATE = 0x1
+define PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+define SYNCHRONIZE = 0x100000
+define TOKEN_QUERY = 0x8
+define TOKEN_ELEVATION_CLASS = 20          // TOKEN_INFORMATION_CLASS: TokenElevation, a TOKEN_ELEVATION { DWORD TokenIsElevated }
+define WAIT_OBJECT_0 = 0
+define WAIT_TIMEOUT = 0x102
+define INFINITE = 0xFFFFFFFF
+define COMMAND_CHARS = 32768                // CreateProcessW: lpCommandLine is at most 32,767 characters including the NUL
+define KILLED_EXIT_CODE = 1
+
+/// A pipe for a child: `fds[0]` reads, `fds[1]` writes. Neither end is inheritable; `sysSpawn` makes the child's end inheritable
+/// for exactly one call (through the handle list), so no other child of this process can get it.
+export fn sysSpawnPipe(fds: *i32) -> i32 {
+    local r: i64 = 0
+    local w: i64 = 0
+    if CreatePipe(&r, &w, nil, 0) == 0 { return -1 }
+    fds[0] = r as i32
+    fds[1] = w as i32
+    return 0
+}
+
+/// Appends `arg` to the command line `out` at `at` as one CommandLineToArgvW argument and returns the new length, or 0 when it does
+/// not fit. Rules: https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments - a backslash is literal unless
+/// it precedes a quote, so a run of backslashes before a quote (or before the closing quote) is doubled and the quote is escaped.
+fn putArg(out: *u16, at: usize, arg: *u8) -> usize {
+    local n: usize = cstrLen(arg)
+    if n >= 4096 { return 0 }
+    local plain: bool = n > 0
+    for i in 0..n {
+        if arg[i] == b' ' || arg[i] == b'\t' || arg[i] == b'\n' || arg[i] == 11 || arg[i] == b'"' { plain = false }
+    }
+    local wide: [u16; 4096]
+    local w: usize = fromUtf8(arg, n, &wide[0], 4096, false)
+    local p: usize = at
+    if p + 2 * w + 3 >= COMMAND_CHARS { return 0 }
+    if plain {
+        for i in 0..w { emit(out, &p, wide[i]) }
+        return p
+    }
+    emit(out, &p, b'"' as u16)
+    local slashes: usize = 0
+    for i in 0..w {
+        if wide[i] == b'\\' as u16 {
+            slashes++
+            emit(out, &p, wide[i])
+            continue
+        }
+        if wide[i] == b'"' as u16 {
+            for r in 0..slashes { emit(out, &p, b'\\' as u16) }   // double the run before the quote
+            emit(out, &p, b'\\' as u16)                              // and escape the quote itself
+        }
+        slashes = 0
+        emit(out, &p, wide[i])
+    }
+    for r in 0..slashes { emit(out, &p, b'\\' as u16) }            // the run before the closing quote
+    emit(out, &p, b'"' as u16)
+    return p
+}
+
+fn cstrLen(s: *u8) -> usize {
+    local n: usize = 0
+    while s[n] != 0 { n++ }
+    return n
+}
+
+/// Writes `c` at `*at` and advances `*at`.
+fn emit(out: *u16, at: *usize, c: u16) {
+    out[*at] = c
+    *at += 1
+}
+
+/// The command line for `argv`, NUL-terminated, in `out`; false when it exceeds 32,767 characters.
+fn commandLine(argv: **u8, out: *u16) -> bool {
+    local at: usize = 0
+    for local k := 0; argv[k] != nil; k++ {
+        if k > 0 { emit(out, &at, b' ' as u16) }
+        local next: usize = putArg(out, at, argv[k])
+        if next == 0 { return false }
+        at = next
+    }
+    out[at] = 0
+    return true
+}
+
+/// The UTF-16 environment block for `envp`: each entry NUL-terminated, then one more NUL. Mapped with `sysMap`; nil when it cannot
+/// be built. `*bytes` is the mapping size to pass to `sysUnmap`.
+fn envBlock(envp: **u8, bytes: *usize) -> *u16 {
+    local units: usize = 1
+    for local k := 0; envp[k] != nil; k++ {
+        local n: usize = 0
+        while envp[k][n] != 0 { n++ }
+        units += n + 1
+    }
+    *bytes = (units + 1) * 2
+    local block: *u16 = sysMap(*bytes) as *u16
+    if block == nil { return nil }
+    local at: usize = 0
+    for local k := 0; envp[k] != nil; k++ {
+        local n: usize = 0
+        while envp[k][n] != 0 { n++ }
+        at += fromUtf8(envp[k], n, &block[at], units - at, true) + 1
+    }
+    block[at] = 0
+    return block
+}
+
+/// An inheritable copy of what the child gets as standard handle `which` (-10, -11, -12): the descriptor of the spec, or the one
+/// of this process when the spec says -1.
+fn inheritable(fd: i32, which: i32) -> i64 {
+    local h: i64 = fd >= 0 ? fd as i64 : sysStdHandle(which)
+    if h != 0 && h != -1 { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) }
+    return h
+}
+
+export fn sysSpawn(spec: *SpawnSpec, out: *SysChild) -> i32 {
+    *out = SysChild { pid: -1, handle: 0, error: 0 }
+    local cmd: [u16; COMMAND_CHARS]
+    if !commandLine(spec.argv, &cmd[0]) {
+        out.error = 206                                 // ERROR_FILENAME_EXCED_RANGE
+        return -1
+    }
+    local wcwd: [u16; 1024]
+    local dir: *u16 = nil                               // nil keeps the current directory
+    if spec.cwd != nil {
+        dir = &wcwd[0]
+        local n: usize = 0
+        while spec.cwd[n] != 0 { n++ }
+        if n >= 1024 {
+            out.error = 206
+            return -1
+        }
+        fromUtf8(spec.cwd, n, &wcwd[0], 1024, true)
+    }
+    local envBytes: usize = 0
+    local env: *u16 = nil
+    if spec.envp != nil { env = envBlock(spec.envp, &envBytes) }
+    if spec.envp != nil && env == nil {
+        out.error = 8                                   // ERROR_NOT_ENOUGH_MEMORY
+        return -1
+    }
+    // The handle list holds each distinct handle once: a duplicate makes CreateProcessW fail with ERROR_INVALID_PARAMETER.
+    local std: [i64; 3] = [inheritable(spec.stdin, 0), inheritable(spec.stdout, 1), inheritable(spec.stderr, 2)]
+    local list: [i64; 3]
+    local count: u32 = 0
+    for i in 0..3 {
+        local seen: bool = std[i] == 0 || std[i] == -1
+        for j in 0..count { if list[j] == std[i] { seen = true } }
+        if !seen {
+            list[count] = std[i]
+            count++
+        }
+    }
+    // STARTUPINFOEXW (x64): STARTUPINFOW is 104 bytes (cb @0, dwFlags @60, hStdInput @80, hStdOutput @88, hStdError @96), then
+    // lpAttributeList @104; 112 bytes in all. https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-startupinfoexw
+    local si: [u64; 14]
+    si[0] = 112
+    si[7] = (STARTF_USESTDHANDLES as u64) << 32
+    si[10] = std[0] as u64
+    si[11] = std[1] as u64
+    si[12] = std[2] as u64
+    local attrs: [u64; 32]                              // the attribute list for one attribute is about 48 bytes
+    local size: usize = 0
+    InitializeProcThreadAttributeList(nil, 1, 0, &size)  // fails with ERROR_INSUFFICIENT_BUFFER and reports the size
+    local ok: bool = size <= 256 && InitializeProcThreadAttributeList(&attrs[0], 1, 0, &size) != 0
+    local failed: u32 = 0
+    if ok {
+        defer DeleteProcThreadAttributeList(&attrs[0])
+        si[13] = &attrs[0] as u64
+        local pi: [u64; 3]                              // PROCESS_INFORMATION: hProcess @0, hThread @8, dwProcessId @16
+        if count > 0 && UpdateProcThreadAttribute(&attrs[0], 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &list[0], count * 8, nil, nil) == 0 {
+            failed = GetLastError()
+        } else if CreateProcessW(nil, &cmd[0], nil, nil, 1, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, env,
+                                 dir, &si[0], &pi[0]) == 0 {
+            failed = GetLastError()
+        } else {
+            out.pid = (pi[2] & 0xffffffff) as i32
+            out.handle = pi[0] as i64
+            CloseHandle(pi[1] as i64)                   // the primary thread handle is not needed
+        }
+    } else {
+        failed = size > 256 ? 8 : GetLastError()
+    }
+    if env != nil { sysUnmap(env as *void, envBytes) }
+    if out.pid < 0 {
+        out.error = failed as i32
+        return -1
+    }
+    return 0
+}
+
+/// 1: ended (`*code` is the exit code, `*sig` is 0: Windows has no signals); 0: still running (only without `block`); -1: error.
+export fn sysProcWait(c: *SysChild, block: bool, code: *i32, sig: *i32) -> i32 {
+    local r: u32 = WaitForSingleObject(c.handle, block ? INFINITE : 0)
+    if r == WAIT_TIMEOUT { return 0 }
+    if r != WAIT_OBJECT_0 { return -1 }
+    local exit: u32 = 0
+    if GetExitCodeProcess(c.handle, &exit) == 0 { return -1 }
+    *code = exit as i32
+    *sig = 0
+    return 1
+}
+
+/// `sig` 0 tests that the process is still running. Any other value ends it with TerminateProcess (exit code 1): Windows has no
+/// signals and no way to ask an arbitrary process to stop that always works. The handle of the child is used when there is one, so a
+/// reused pid is never hit; otherwise the pid is opened. 0 on success, -1 otherwise.
+export fn sysProcSignal(pid: i32, handle: i64, sig: i32) -> i32 {
+    local h: i64 = handle
+    if h == 0 {
+        h = OpenProcess(sig == 0 ? PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE : PROCESS_TERMINATE, 0, pid as u32)
+        if h == 0 { return -1 }
+    }
+    local result: i32 = 0
+    if sig == 0 {
+        result = WaitForSingleObject(h, 0) == WAIT_TIMEOUT ? 0 : -1
+    } else if TerminateProcess(h, KILLED_EXIT_CODE) == 0 {
+        result = -1
+    }
+    if handle == 0 { CloseHandle(h) }
+    return result
+}
+
+/// Closes the process handle of a child that is no longer used.
+export fn sysProcRelease(c: *SysChild) {
+    if c.handle != 0 { CloseHandle(c.handle) }
+    c.handle = 0
+}
+
+@library("kernel32") declare fn GetModuleFileNameW(module: i64, name: *u16, size: u32) -> u32
+
+/// The path of the running executable, UTF-8, NUL-terminated, in `buf` (capacity `cap`). Its length, or -1 when it does not fit.
+/// https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulefilenamew (a full buffer means truncation)
+export fn sysExePath(buf: *u8, cap: usize) -> isize {
+    local wide: [u16; 2048]
+    local n: u32 = GetModuleFileNameW(0, &wide[0], 2048)
+    if n == 0 || n >= 2048 { return -1 }
+    local bytes: usize = toUtf8(&wide[0], n as usize, buf, cap, true)
+    return bytes == 0 ? -1 : bytes as isize
+}
+
+export fn sysProcId() -> i32 {
+    return GetCurrentProcessId() as i32
+}
+
+/// Whether the process token is elevated (an administrator running with the full token). With UAC off, an administrator is
+/// elevated and a standard user is not.
+export fn sysIsElevated() -> bool {
+    local token: i64 = 0
+    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == 0 { return false }
+    local elevated: u32 = 0
+    local returned: u32 = 0
+    local ok: bool = GetTokenInformation(token, TOKEN_ELEVATION_CLASS, &elevated, 4, &returned) != 0
+    CloseHandle(token)
+    return ok && elevated != 0
+}
+
+/// Pipes cannot be waited on together with WaitForMultipleObjects reliably, so this polls: PeekNamedPipe reports buffered bytes, or
+/// failure when the write end has closed (end-of-file), either of which makes a read return at once. See the Linux body for the result.
+export fn sysPollIn(fds: *i32, n: usize, timeoutMs: i32) -> i32 {
+    local waited: i32 = 0
+    while true {
+        for i in 0..n {
+            local available: u32 = 0
+            if PeekNamedPipe(fds[i] as i64, nil, 0, nil, &available, nil) == 0 || available > 0 { return i as i32 }
+        }
+        if timeoutMs >= 0 && waited >= timeoutMs { return -1 }
+        Sleep(1)
+        waited++
+    }
+    return -1
+}
+
+#else
+
+#endif

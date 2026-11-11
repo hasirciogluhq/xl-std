@@ -1,6 +1,6 @@
 #!/bin/bash
-# End-to-end tests: build each program with the compiler and run it.
-#   test/e2e/run.sh [path/to/xlang]
+# End-to-end tests of the standard library: build each program with `xlc` against this repository's stdlib and run it.
+#   test/e2e/run.sh [path/to/xlc]        (default: $XLC, else `xlc` on PATH)
 #
 # Runs natively; when Docker is available, also on Linux aarch64 and x86_64 (cross-built); when
 # `cxrun` (CrossOver/Wine: `cxrun <exe>` runs a Windows executable and returns its exit status) is on
@@ -22,8 +22,16 @@
 # server/client pairs keep their own sequential loop, because each one needs a free port and a running peer.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
-xlang=${1:-$root/outputs/xlang}
+root=$(cd "$here/../.." && pwd)        # the stdlib: this repository (index.xl at its root)
+xlc=${1:-${XLC:-xlc}}                  # the compiler under test
+# `xlc` takes the stdlib as a module root and loads it with `--import`; this function keeps the `"$xlang" build <src> <flags>` calls below
+# short. `xlang` holds the function's name, so "$xlang" runs it.
+xlbuild() {
+  shift                                # the word `build`
+  local src=$1; shift
+  "$xlc" "$src" -M "std=$root" --import std -DfeatureDefaultAllocator=true "$@"
+}
+xlang=xlbuild
 work=$(mktemp -d)
 trap 'rm -rf "$work"; [ -n "${spid:-}" ] && kill "$spid" 2>/dev/null' EXIT
 pass=0; fail=0; skip=0
@@ -41,6 +49,7 @@ tests=(
   "tuple_return|0|tuple return ok|0|1"
   "tuple_destructure|0|tuple destructuring ok|0|1"
   "proc_list|0|pid|0|1"
+  "process|0|process ok|0|1"
   "router|0|router ok|0|1"
   "stdlib|0|499500|0|1"
   "fsjson|0||0|1"
@@ -332,8 +341,15 @@ if [ "$host_os" = Darwin ] && wantName shared_hook; then
   fi
 fi
 
-# Package system (local git repositories, no network): see packages.sh.
-. "$here/packages.sh"
+# Package system (local git repositories, no network): see packages.sh. The package manager is a command of the `xlang` CLI, not of
+# the compiler, so these cases run only where that CLI is installed.
+if command -v xlang >/dev/null 2>&1; then
+  compiler_call=$xlang; xlang=$(command -v xlang)
+  . "$here/packages.sh"
+  xlang=$compiler_call
+else
+  wantName packages && skipLine packages "the xlang CLI is not installed"
+fi
 
 countLoad
 echo "e2e: $pass passed, $fail failed, $skip skipped"

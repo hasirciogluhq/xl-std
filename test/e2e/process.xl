@@ -1,0 +1,309 @@
+// process: std/os/process end to end. The program starts itself as the child (std/os/process `executable`), and the environment
+// variable XL_CHILD tells the copy which role to play, so the same test runs on every OS without any external tool.
+//
+//   parent: start, pipes, output capture, exit codes, signals, environment, working directory, redirection, error kinds,
+//           and that no pipe end leaks into a second child.
+//   child:  cat | exit | stderr | env | envcount | wait | marker | lines
+from "std" import print, println, eprint, String, Option, stdin, fsReadAllString, fsRemove, fsWrite, optionIsSome
+from "std/os/process" import Command, ProcessError, ProcessErrorKind, Stdio, ExitStatus
+from "std/os/process" import id, exists, isElevated, executable
+from "std/os/env" import get, list
+
+define MARKER = "xl_process_marker.txt"
+
+global failures: i32
+
+fn check(ok: bool, what: str) {
+    if !ok {
+        println("FAIL: {}", what)
+        failures++
+    }
+}
+
+fn variable(key: str) -> Option<String> {
+    local name: String = String(key)
+    return get(&name)
+}
+
+// ---- the child side --------------------------------------------------------------------------------------------------------
+
+fn child(role: *String) -> i32 {
+    if role.equals("cat") {
+        local all: String = stdin().readAll()
+        print(&all)
+        return 0
+    }
+    if role.equals("exit") { return 3 }
+    if role.equals("stderr") {
+        eprint("oops")
+        return 7
+    }
+    if role.equals("env") {
+        local probe: Option<String> = variable("XL_PROBE")
+        switch probe {
+            case Option.Some(v) { print(&v) }
+            case Option.None { print("unset") }
+        }
+        return 0
+    }
+    if role.equals("envcount") {
+        println("{}", list().length())
+        return 0
+    }
+    if role.equals("wait") {
+        stdin().readAll()                 // blocks until the parent closes the pipe (or kills this process)
+        return 0
+    }
+    if role.equals("marker") { return fsWrite(MARKER, "done") ? 0 : 1 }
+    if role.equals("lines") {
+        println("one")
+        println("two")
+        return 0
+    }
+    return 99
+}
+
+// ---- the parent side -------------------------------------------------------------------------------------------------------
+
+/// A command that starts this program in `role`.
+fn helper(role: str) -> Command {
+    local path: String = String()
+    local exe: Option<String> = executable()
+    switch exe {
+        case Option.Some(p) { path = p.clone() }        // a payload bound by `switch` is a copy: clone to keep it
+        case Option.None {}
+    }
+    local cmd: Command = Command(path)
+    cmd.env(String("XL_CHILD"), String(role))
+    return cmd
+}
+
+/// Starts `cmd`; a failure to start fails the test.
+fn started(cmd: *Command, what: str) -> bool {
+    local failure: Option<ProcessError> = cmd.start()
+    if optionIsSome(failure) {
+        check(false, what)
+        return false
+    }
+    return true
+}
+
+/// Runs `cmd` to the end with `output`; a failure to start fails the test.
+fn captured(cmd: *Command, what: str) -> bool {
+    local failure: Option<ProcessError> = cmd.output()
+    check(!optionIsSome(failure), what)
+    return !optionIsSome(failure)
+}
+
+/// Whether `line` holds exactly `want`.
+fn isLine(line: Option<String>, want: str) -> bool {
+    switch line {
+        case Option.Some(s) { return s.equals(want) }
+        case Option.None { return false }
+    }
+    return false
+}
+
+fn identity() {
+    check(id() > 0, "id is positive")
+    check(exists(id()), "this process exists")
+    check(!exists(0x7ffffff0), "an unused pid does not exist")
+    isElevated()                           // either answer is right; the call must not fail
+    local exe: Option<String> = executable()
+    switch exe {
+        case Option.Some(p) { check(p.length() > 0, "executable path is not empty") }
+        case Option.None { check(false, "executable path is known") }
+    }
+}
+
+fn pipesAndOutput() {
+    local big: String = String()
+    for i in 0..20000 { big.append("0123456789\n") }          // 220 KB: more than any pipe buffer
+    local cat: Command = helper("cat")
+    cat.stdin(Stdio.Piped)
+    cat.stdout(Stdio.Piped)
+    if started(&cat, "start cat") {
+        check(cat.inPipe.write(&big), "write 220 KB to the child's stdin")
+        cat.inPipe.close()
+        local echoed: String = cat.outPipe.readAll()
+        check(echoed.equals(&big), "cat returns what it was given")
+        check(cat.wait().success, "cat exits 0")
+    }
+
+    local quiet: Command = helper("cat")
+    quiet.stdin(Stdio.Null)
+    if captured(&quiet, "output of cat with null stdin") {
+        check(quiet.outText.length() == 0 && quiet.status.success, "null stdin is end-of-file at once")
+    }
+
+    local noisy: Command = helper("stderr")
+    if captured(&noisy, "output of stderr") {
+        check(noisy.errText.equals("oops") && noisy.outText.length() == 0, "stderr is captured apart from stdout")
+        check(noisy.status.code == 7 && noisy.status.signal == 0, "exit code 7")
+    }
+
+    local lines: Command = helper("lines")
+    lines.stdout(Stdio.Piped)
+    if started(&lines, "start lines") {
+        check(isLine(lines.outPipe.readLine(), "one"), "first line")
+        check(isLine(lines.outPipe.readLine(), "two"), "second line")
+        check(!optionIsSome(lines.outPipe.readLine()), "end of the lines")
+        lines.wait()
+    }
+}
+
+fn statusCodes() {
+    local code: Command = helper("exit")
+    code.stdout(Stdio.Null)
+    if started(&code, "start exit") {
+        local s: ExitStatus = code.wait()
+        check(s.code == 3 && !s.success && s.signal == 0, "status of exit 3")
+    }
+
+    local missing: Command = Command(String("xl-no-such-program-for-the-test"))
+    local failure: Option<ProcessError> = missing.start()
+    switch failure {
+        case Option.Some(e) { check(e.kind == ProcessErrorKind.NotFound, "a missing program is NotFound") }
+        case Option.None { check(false, "a missing program does not start") }
+    }
+
+    local badDir: Command = helper("exit")
+    badDir.cwd(String("/xl-no-such-directory-for-the-test"))
+    local dirFailure: Option<ProcessError> = badDir.start()
+    check(optionIsSome(dirFailure), "a missing working directory is an error")
+
+    local twice: Command = helper("exit")
+    twice.stdout(Stdio.Null)
+    if started(&twice, "first start") {
+        local again: Option<ProcessError> = twice.start()
+        switch again {
+            case Option.Some(e) { check(e.kind == ProcessErrorKind.AlreadyStarted, "a second start is refused") }
+            case Option.None { check(false, "a second start is refused") }
+        }
+        twice.wait()
+    }
+}
+
+fn environment() {
+    local probe: Command = helper("env")
+    probe.env(String("XL_PROBE"), String("hello"))
+    if captured(&probe, "env probe") { check(probe.outText.equals("hello"), "a variable set with env reaches the child") }
+
+    local plain: Command = helper("env")
+    if captured(&plain, "env plain") { check(plain.outText.equals("unset"), "an unset variable stays unset") }
+
+    local clean: Command = helper("envcount")
+    clean.clearEnv()
+    if captured(&clean, "envcount") {
+        check(clean.outText.length() > 0 && clean.outText.at(0) == b'1', "clearEnv leaves only the variables set with env")
+    }
+
+    local inherit: Command = helper("envcount")
+    if captured(&inherit, "envcount inherit") { check(inherit.outText.length() > 0, "the child inherits the environment") }
+}
+
+fn workingDirectory() {
+#if os == "windows"
+    local dir: String = String("C:\\Windows\\Temp")
+    local sep: str = "\\"
+#else
+    local dir: String = String("/tmp")
+    local sep: str = "/"
+#endif
+    local marker: Command = helper("marker")
+    marker.cwd(dir.clone())
+    marker.stdout(Stdio.Null)
+    if started(&marker, "start in another directory") {
+        check(marker.wait().success, "marker child succeeds")
+    }
+    local path: String = dir.clone()
+    path.append(sep)
+    path.append(MARKER)
+    check(fsReadAllString(path.cstr()).equals("done"), "the child wrote its file in the working directory")
+    fsRemove(path.cstr())
+}
+
+fn redirect() {
+    local path: String = String("xl_process_redirect.txt")
+    local lines: Command = helper("lines")
+    lines.redirect(path.clone())
+    if started(&lines, "start with redirect") {
+        check(lines.wait().success, "redirect child succeeds")
+    }
+    check(fsReadAllString(path.cstr()).contains("one"), "stdout went to the file")
+    fsRemove(path.cstr())
+}
+
+fn stopping() {
+    // A child blocked on its stdin: still running until it is stopped.
+    local sleeper: Command = helper("wait")
+    sleeper.stdin(Stdio.Piped)
+    if started(&sleeper, "start wait") {
+        check(sleeper.isRunning(), "a blocked child is running")
+        check(!optionIsSome(sleeper.tryWait()), "tryWait is None while it runs")
+        check(exists(sleeper.id()), "the child's pid exists")
+        check(sleeper.kill(), "kill reaches the child")
+        local s: ExitStatus = sleeper.wait()
+        check(!s.success, "a killed child did not succeed")
+#if os != "windows"
+        check(s.signal == 9 && s.code == -1, "SIGKILL is reported as signal 9")
+#endif
+        check(!sleeper.isRunning() && !sleeper.kill(), "a reaped child is not running and cannot be killed again")
+    }
+
+    local polite: Command = helper("wait")
+    polite.stdin(Stdio.Piped)
+    if started(&polite, "start wait for terminate") {
+        check(polite.terminate(), "terminate reaches the child")
+        local s: ExitStatus = polite.wait()
+#if os != "windows"
+        check(s.signal == 15, "SIGTERM is reported as signal 15")
+#endif
+        check(!s.success, "a terminated child did not succeed")
+    }
+
+    // Closing the child's stdin lets it finish on its own.
+    local graceful: Command = helper("wait")
+    graceful.stdin(Stdio.Piped)
+    if started(&graceful, "start wait for end of input") {
+        graceful.inPipe.close()
+        check(graceful.wait().success, "the child ends when its input ends")
+        check(optionIsSome(graceful.tryWait()), "tryWait has the status after wait")
+    }
+}
+
+/// A pipe end of this process must reach no child but the one it is meant for: if the second child inherited the write end of the
+/// first one's stdin, the first would never see end-of-file.
+fn noLeak() {
+    local first: Command = helper("cat")
+    first.stdin(Stdio.Piped)
+    first.stdout(Stdio.Piped)
+    local second: Command = helper("wait")
+    second.stdin(Stdio.Piped)
+    if started(&first, "start first") && started(&second, "start second") {
+        first.inPipe.close()
+        check(first.outPipe.readAll().length() == 0, "the first child saw end-of-file")
+        check(first.wait().success, "the first child ended while the second still runs")
+        check(second.isRunning(), "the second child is still running")
+        second.kill()
+        second.wait()
+    }
+}
+
+@entry fn main() -> i32 {
+    local role: Option<String> = variable("XL_CHILD")
+    switch role {
+        case Option.Some(r) { return child(&r) }
+        case Option.None {}
+    }
+    identity()
+    pipesAndOutput()
+    statusCodes()
+    environment()
+    workingDirectory()
+    redirect()
+    stopping()
+    noLeak()
+    if failures == 0 { println("process ok") }
+    return failures
+}

@@ -1,0 +1,107 @@
+// std/io/stream: a byte stream over a file descriptor, with buffered line reading. It is the type behind standard input and behind the
+// pipes of a child process (`std/os/process`). A descriptor is `i32`; on Windows it is the low 32 bits of a kernel handle (`std/sys`).
+//
+// Not thread-safe: one stream is read by one thread at a time. `stdin()` is one shared stream, so reads of it must not interleave
+// between threads either.
+from "../sys" import sysRead, sysWrite, sysClose
+from "../str/str" import fromParts
+from "../str/string" import String
+from "../collections/option" import Option
+
+define CHUNK = 4096
+
+export class Stream {
+    fd: i32            // -1 once closed
+    owned: bool        // closed by `drop`; false for the standard descriptors
+    pending: String    // read from the descriptor, not yet handed out
+
+    fn init(self, fd: i32, owned: bool) {
+        self.fd = fd
+        self.owned = owned
+    }
+
+    fn drop(self) {
+        self.close()
+    }
+
+    fn isOpen(self) -> bool {
+        return self.fd >= 0
+    }
+
+    /// Closes the descriptor when this stream owns it; later reads report end-of-file and writes fail.
+    fn close(self) {
+        if self.fd >= 0 && self.owned { sysClose(self.fd) }
+        self.fd = -1
+    }
+
+    /// Reads once from the descriptor and appends what arrived to the pending bytes. Returns the count, 0 at end-of-file, negative on error.
+    fn fill(self) -> isize {
+        if self.fd < 0 { return 0 }
+        local chunk: [u8; CHUNK]
+        local n: isize = sysRead(self.fd, &chunk[0], CHUNK)
+        if n > 0 { self.pending.append(fromParts(&chunk[0], n as usize)) }
+        return n
+    }
+
+    /// Appends the next available bytes to `out` (the pending ones first, otherwise one read). Returns the count, 0 at end-of-file,
+    /// negative on error. Blocks until something arrives.
+    fn readSome(self, out: *String) -> isize {
+        if self.pending.length() == 0 && self.fill() <= 0 { return 0 }
+        local n: usize = self.pending.length()
+        out.append(&self.pending)
+        self.pending.clear()
+        return n as isize
+    }
+
+    /// The next line without its `\n` (and without a `\r` before it); the last line may lack the `\n`. None at end-of-file.
+    fn readLine(self) -> Option<String> {
+        while true {
+            local cut: i64 = self.pending.find("\n")
+            if cut >= 0 {
+                local line: String = self.pending.slice(0, cut as usize)
+                self.pending = self.pending.slice(cut as usize + 1, self.pending.length() - cut as usize - 1)
+                if line.endsWith("\r") { line = line.slice(0, line.length() - 1) }
+                return Option.Some(line)
+            }
+            if self.fill() <= 0 { break }
+        }
+        if self.pending.length() == 0 { return Option.None }
+        local rest: String = self.pending.clone()
+        self.pending.clear()
+        return Option.Some(rest)
+    }
+
+    /// Everything up to end-of-file. An error ends the read like end-of-file does.
+    fn readAll(self) -> String {
+        local all: String = String()
+        while self.readSome(&all) > 0 {}
+        return all
+    }
+
+    /// Writes all of `data`; false when the descriptor is closed or a write fails (a closed pipe, a full disk).
+    fn write(self, data: *String) -> bool {
+        if self.fd < 0 { return false }
+        local done: usize = 0
+        while done < data.length() {
+            local n: isize = sysWrite(self.fd, &data.ptr[done], data.length() - done)
+            if n <= 0 { return false }
+            done += n as usize
+        }
+        return true
+    }
+}
+
+// The shared stream of standard input lives in static storage (no heap), written once with `__builtin_write` the way `Vec` fills a slot.
+global stdinSlot: [u64; 8]
+global stdinReady: bool
+staticAssert(sizeOf(Stream) <= 64)
+
+/// Standard input, shared by every caller.
+export fn stdin() -> *Stream {
+    local shared: *Stream = &stdinSlot[0] as *Stream
+    if !stdinReady {
+        __builtin_write(shared, Stream(0, false))
+        stdinReady = true
+    }
+    return shared
+}

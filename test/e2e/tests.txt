@@ -9,6 +9,7 @@ run|generic_enums|0|generic_enums ok
 run|tuple_return|0|tuple return ok
 run|tuple_destructure|0|tuple destructuring ok
 run|proc_list|0|pid
+run|process|0|process ok
 run|router|0|router ok
 run|stdlib|0|499500
 run|fsjson|0|

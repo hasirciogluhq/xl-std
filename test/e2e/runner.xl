@@ -1,110 +1,77 @@
-// Native end-to-end runner, written in xlang. It reads the table `tests.txt` (see its header), builds every program with
-// the compiler, starts it as a child process and compares the exit code and the output.
+// Native end-to-end runner, written in xlang with the stdlib's own `std/os/process`. It reads the table `tests.txt` (see its header),
+// builds every program with `xlc` against this repository's stdlib, starts it as a child process and compares the exit code and the
+// output. Exit status: 0 when every entry passed, 1 otherwise. Runs on Linux and macOS (an entry point with arguments is not available
+// on Windows); the Docker and CrossOver legs and the TLS server/client pairs are in `run.sh`.
 //
-//   xlang build test/e2e/runner.xl -o e2e-runner && ./e2e-runner <path/to/xlang> <test/e2e directory> [name-filter]
-//
-// The child's stdout and stderr go to a file (`processSpawnOut`), which the runner reads back. A child gets an empty
-// environment. Exit status: 0 when every entry passed, 1 otherwise. Runs on Linux and macOS; Windows, the Docker and
-// CrossOver legs, the TLS server/client pairs and the package tests are listed in xlang-docs/known-limitations.md.
-from "std" import println, fsReadAll, fsRemove, copyTruncated, contains, findByte, view, fromC, fromParts
-from "std/os" import processSpawnOut, processWait
+//   xlc test/e2e/runner.xl -M std=. --import std -DfeatureDefaultAllocator=true -o e2e-runner
+//   ./e2e-runner <path/to/xlc> <stdlib root> <test/e2e directory> [name-filter]
+from "std" import println, String, Vec, Option, split, fromC, toI64, fsReadAllString, fsRemove, optionIsSome
+from "std/os/process" import Command
 
-define SLOT = 512            // bytes per argument slot
-define MAX_ARGS = 8
-define OUT_CAP = 262144
+define BINARY = "xlang_e2e.bin"
 
-global table: [ui8; 16384]
-global outBuf: [ui8; 262144]
-global argBuf: [ui8; 4096]   // MAX_ARGS slots of SLOT bytes
-global argv: [*ui8; 9]       // one extra entry: the NULL terminator
-
-/// Stores the concatenation of `a`, `b`, `c` and `d` as NUL-terminated argument `slot`.
-fn setArg(slot: usize, a: str, b: str, c: str, d: str) {
-    local base: *ui8 = &argBuf[slot * SLOT]
-    local n: usize = copyTruncated(a, base, SLOT - 1)
-    n = n + copyTruncated(b, &base[n], SLOT - 1 - n)
-    n = n + copyTruncated(c, &base[n], SLOT - 1 - n)
-    n = n + copyTruncated(d, &base[n], SLOT - 1 - n)
-    base[n] = 0
-    argv[slot] = base
-    argv[slot + 1] = nil
+/// The compiler call for `source`: `xlc <source> -M std=<root> --import std -DfeatureDefaultAllocator=true [flag] -o <out>`.
+fn compiler(xlc: *String, root: *String, source: *String, flag: *String, out: str) -> Command {
+    local cmd: Command = Command(xlc.clone())
+    cmd.arg(source.clone())
+    cmd.arg(String("-M"))
+    local std: String = String("std=")
+    std.append(root)
+    cmd.arg(std)
+    cmd.arg(String("--import"))
+    cmd.arg(String("std"))
+    cmd.arg(String("-DfeatureDefaultAllocator=true"))
+    if flag.length() > 0 { cmd.arg(flag.clone()) }
+    cmd.arg(String("-o"))
+    cmd.arg(String(out))
+    return cmd
 }
 
-/// Field `index` of a `|` separated line, as a view into the line.
-fn field(line: str, index: usize) -> str {
-    local rest: str = line
-    local i: usize = 0
-    while i < index {
-        local cut: i64 = findByte(rest, 124)
-        if cut < 0 { return view(rest, rest.len, 0) }
-        rest = view(rest, (cut as usize) + 1, rest.len - (cut as usize) - 1)
-        i = i + 1
-    }
-    local end: i64 = findByte(rest, 124)
-    if end < 0 { return rest }
-    return view(rest, 0, end as usize)
+/// `<dir>/<name>.xl`.
+fn sourceOf(dir: *String, name: *String) -> String {
+    local path: String = dir.clone()
+    path.append("/")
+    path.append(name)
+    path.append(".xl")
+    return path
 }
 
-/// Decimal value of `s` (digits only).
-fn toInt(s: str) -> i32 {
-    local v: i32 = 0
-    local i: usize = 0
-    while i < s.len {
-        v = v * 10 + ((s[i] - 48) as i32)
-        i = i + 1
-    }
-    return v
-}
-
-/// Starts argv[0] with the current argument vector, output into `outPath`, and returns the exit code the way a shell
-/// reports it: the exit status, or 128 + the signal number. -1 when the process cannot be started.
-fn runArgs(outPath: *ui8) -> i32 {
-    local pid: i32 = processSpawnOut(argv[0], &argv[0], outPath)
-    if pid < 0 { return -1 }
-    local status: i32 = 0
-    if processWait(pid, &status) != pid { return -1 }
-    if (status & 127) == 0 { return (status >> 8) & 255 }
-    return 128 + (status & 127)
-}
-
-/// The output of the last child as a view; empty when it cannot be read.
-fn output(path: *ui8) -> str {
-    local n: isize = fsReadAll(path, &outBuf[0], OUT_CAP)
-    if n < 0 { return view("", 0, 0) }
-    return fromParts(&outBuf[0], n as usize)
-}
-
-fn fail(label: str, why: str, out: str) {
+fn fail(label: *String, why: str, text: *String) {
     println("FAIL [{}] {}", label, why)
-    local n: usize = out.len
-    if n > 600 { n = 600 }
-    if n > 0 { println("{}", view(out, 0, n)) }
+    local shown: String = text.slice(0, text.length() > 600 ? 600 : text.length())
+    if shown.length() > 0 { println("{}", &shown) }
+}
+
+/// The exit code the way a shell reports it: the status, or 128 + the signal; -1 when the command cannot be started.
+fn exitCode(cmd: *Command) -> i32 {
+    return cmd.status.signal != 0 ? 128 + cmd.status.signal : cmd.status.code
 }
 
 /// `run` entry: build the program, run it, compare exit code and text.
-fn runTest(xlang: str, dir: str, line: str) -> bool {
-    local name: str = field(line, 1)
-    setArg(0, xlang, "", "", "")
-    setArg(1, "build", "", "", "")
-    setArg(2, dir, "/", name, ".xl")
-    setArg(3, "-o", "", "", "")
-    setArg(4, "xlang_e2e.bin", "", "", "")
-    if runArgs("xlang_e2e.build") != 0 {
-        fail(name, "build", output("xlang_e2e.build"))
+fn runTest(xlc: *String, root: *String, dir: *String, fields: *Vec<String>) -> bool {
+    local name: *String = fields.get(1)
+    local none: String = String()
+    local source: String = sourceOf(dir, name)
+    local build: Command = compiler(xlc, root, &source, &none, BINARY)
+    if optionIsSome(build.output()) || !build.status.success {
+        fail(name, "build", &build.errText)
         return false
     }
-    setArg(0, "./xlang_e2e.bin", "", "", "")
-    local code: i32 = runArgs("xlang_e2e.out")
-    local out: str = output("xlang_e2e.out")
-    local want: i32 = toInt(field(line, 2))
-    local text: str = field(line, 3)
-    if code != want {
-        fail(name, "exit status differs from the table", out)
-        println("  got {}, want {}", code, want)
+    local program: Command = Command(String("./xlang_e2e.bin"))
+    if optionIsSome(program.output()) {
+        fail(name, "the program does not start", &none)
         return false
     }
-    if text.len > 0 && !contains(out, text) {
-        fail(name, "output lacks the expected text", out)
+    local want: i64 = 0
+    toI64(fields.get(2).asStr(), &want)
+    local text: *String = fields.get(3)
+    if exitCode(&program) as i64 != want {
+        fail(name, "exit status differs from the table", &program.outText)
+        println("  got {}, want {}", exitCode(&program), want)
+        return false
+    }
+    if text.length() > 0 && !program.outText.contains(text.asStr()) {
+        fail(name, "output lacks the expected text", &program.outText)
         return false
     }
     println("ok   [{}]", name)
@@ -112,79 +79,56 @@ fn runTest(xlang: str, dir: str, line: str) -> bool {
 }
 
 /// `diag` entry: the build must fail with the code (or succeed for `ok`).
-fn diagTest(xlang: str, dir: str, line: str) -> bool {
-    local name: str = field(line, 1)
-    local flag: str = field(line, 2)
-    local want: str = field(line, 3)
-    setArg(0, xlang, "", "", "")
-    setArg(1, "build", "", "", "")
-    setArg(2, dir, "/", name, ".xl")
-    local k: usize = 3
-    if flag.len > 0 {
-        setArg(k, flag, "", "", "")
-        k = k + 1
-    }
-    setArg(k, "-o", "", "", "")
-    setArg(k + 1, "xlang_e2e.diag", "", "", "")
-    local code: i32 = runArgs("xlang_e2e.build")
-    local out: str = output("xlang_e2e.build")
-    if contains(want, "ok") && want.len == 2 {
-        if code != 0 {
-            fail(name, "the build must succeed", out)
+fn diagTest(xlc: *String, root: *String, dir: *String, fields: *Vec<String>) -> bool {
+    local name: *String = fields.get(1)
+    local want: *String = fields.get(3)
+    local source: String = sourceOf(dir, name)
+    local build: Command = compiler(xlc, root, &source, fields.get(2), "xlang_e2e.diag")
+    build.output()
+    local diagnostics: String = build.errText.clone()
+    diagnostics.append(&build.outText)
+    if want.equals("ok") {
+        if !build.status.success {
+            fail(name, "the build must succeed", &diagnostics)
             return false
         }
-    } else if code == 0 || !contains(out, want) {
-        fail(name, "the build must fail with the expected code", out)
+    } else if build.status.success || !diagnostics.contains(want.asStr()) {
+        fail(name, "the build must fail with the expected code", &diagnostics)
         return false
     }
     println("ok   [diag/{}]", name)
     return true
 }
 
-@entry fn main(argc: i32, args: **ui8) -> i32 {
-    if argc < 3 {
-        println("usage: runner <path/to/xlang> <test/e2e directory> [name-filter]")
+@entry fn main(argc: i32, args: **u8) -> i32 {
+    if argc < 4 {
+        println("usage: runner <path/to/xlc> <stdlib root> <test/e2e directory> [name-filter]")
         return 2
     }
-    local xlang: str = fromC(args[1])
-    local dir: str = fromC(args[2])
-    local filter: str = view("", 0, 0)
-    if argc > 3 { filter = fromC(args[3]) }
+    local xlc: String = String(fromC(args[1]))
+    local root: String = String(fromC(args[2]))
+    local dir: String = String(fromC(args[3]))
+    local filter: String = argc > 4 ? String(fromC(args[4])) : String()
 
-    setArg(0, dir, "/tests.txt", "", "")
-    local n: isize = fsReadAll(argv[0], &table[0], 16384)
-    if n <= 0 {
-        println("cannot read the table {}", argv[0])
+    local table: String = dir.clone()
+    table.append("/tests.txt")
+    local lines: Vec<String> = split(fsReadAllString(table.cstr()).asStr(), "\n")
+    if lines.length() == 0 {
+        println("cannot read the table {}", &table)
         return 2
     }
-    local rest: str = view(fromC(&table[0]), 0, n as usize)
     local passed: i32 = 0
     local failed: i32 = 0
-    while rest.len > 0 {
-        local cut: i64 = findByte(rest, 10)
-        local line: str = rest
-        if cut >= 0 {
-            line = view(rest, 0, cut as usize)
-            rest = view(rest, (cut as usize) + 1, rest.len - (cut as usize) - 1)
-        } else {
-            rest = view(rest, rest.len, 0)
-        }
-        if line.len == 0 || line[0] == 35 { continue }
-        if filter.len > 0 && !contains(line, filter) { continue }
-        local kind: str = field(line, 0)
-        local ok: bool = false
-        if contains(kind, "diag") {
-            ok = diagTest(xlang, dir, line)
-        } else {
-            ok = runTest(xlang, dir, line)
-        }
-        if ok { passed = passed + 1 } else { failed = failed + 1 }
+    for i in 0..lines.length() {
+        local line: *String = lines.get(i)
+        if line.length() == 0 || line.at(0) == b'#' { continue }
+        if filter.length() > 0 && !line.contains(filter.asStr()) { continue }
+        local fields: Vec<String> = split(line.asStr(), "|")
+        local ok: bool = fields.get(0).equals("diag") ? diagTest(&xlc, &root, &dir, &fields) : runTest(&xlc, &root, &dir, &fields)
+        if ok { passed++ } else { failed++ }
     }
-    fsRemove("xlang_e2e.bin")
-    fsRemove("xlang_e2e.out")
-    fsRemove("xlang_e2e.build")
+    fsRemove(BINARY)
     fsRemove("xlang_e2e.diag")
     println("e2e: {} passed, {} failed", passed, failed)
-    if failed > 0 { return 1 }
-    return 0
+    return failed > 0 ? 1 : 0
 }
