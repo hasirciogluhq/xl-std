@@ -36,25 +36,29 @@ from "../encoding/utf16" import toUtf8, fromWideC
 define TH32CS_SNAPPROCESS = 2
 define INVALID_HANDLE_VALUE = 18446744073709551615
 
-// PROCESSENTRY32W (tlhelp32.h), in documented field order on x86-64 and arm64 Windows:
+// PROCESSENTRY32W (tlhelp32.h), in documented field order on x86-64 and arm64 Windows (LLP64: DWORD/LONG 4 bytes, ULONG_PTR 8
+// bytes, naturally aligned):
 //   DWORD     dwSize              0..4
 //   DWORD     cntUsage            4..8
 //   DWORD     th32ProcessID       8..12
-//   ULONG_PTR th32DefaultHeapID  12..20   (pointer sized: 8 bytes on 64-bit, so the DWORD above is followed by 4 bytes
-//                                          of padding before this field)
-//   DWORD     th32ModuleID       20..24
-//   DWORD     cntThreads         24..28
-//   DWORD     th32ParentProcessID 28..32
-//   LONG      pcPriClassBase     32..36
-//   DWORD     dwFlags            36..40
-//   WCHAR     szExeFile[260]     40..560   520 bytes
-// sizeof = 560. dwSize must be set to sizeof(PROCESSENTRY32W) before the first call; the field is read back through
-// these offsets rather than a struct, so the layout stays visible and no struct-by-value crossing is needed.
-define PE_SIZE = 560
+//                                 12..16  padding: the next field is 8 bytes and aligns to 8
+//   ULONG_PTR th32DefaultHeapID  16..24
+//   DWORD     th32ModuleID       24..28
+//   DWORD     cntThreads         28..32
+//   DWORD     th32ParentProcessID 32..36
+//   LONG      pcPriClassBase     36..40
+//   DWORD     dwFlags            40..44
+//   WCHAR     szExeFile[260]     44..564   520 bytes
+//                                 564..568  tail padding to the struct's alignment of 8
+// sizeof = 568. dwSize must be set to sizeof(PROCESSENTRY32W) before the first call, or Process32FirstW fails with
+// ERROR_BAD_LENGTH; the fields are read back through these offsets rather than a struct, so the layout stays visible and no
+// struct-by-value crossing is needed.
+// https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w
+define PE_SIZE = 568
 define PE_PROCESS_ID = 8
-define PE_THREADS = 24
-define PE_PARENT_ID = 28
-define PE_EXE_FILE = 40
+define PE_THREADS = 28
+define PE_PARENT_ID = 32
+define PE_EXE_FILE = 44
 
 @library("kernel32") declare fn CreateToolhelp32Snapshot(flags: u32, processId: u32) -> *void
 @library("kernel32") declare fn Process32FirstW(snapshot: *void, entry: *u8) -> i32
