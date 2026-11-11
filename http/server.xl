@@ -10,7 +10,7 @@ from "context" import Context
 from "../str/str" import fromParts, fromC, eq
 
 /// Reads from the plain socket or the TLS session.
-fn connRead(fd: i32, tls: *TlsConn, buf: *ui8, n: usize) -> isize {
+fn connRead(fd: i32, tls: *TlsConn, buf: *u8, n: usize) -> isize {
     if tls != nil { return tlsRead(tls, buf, n) }
     return sysRead(fd, buf, n)
 }
@@ -18,7 +18,7 @@ fn connRead(fd: i32, tls: *TlsConn, buf: *ui8, n: usize) -> isize {
 /// Index of the value of header `name` (lower case, including the colon) when a header line of the first `end` bytes starts
 /// with it (RFC 9110 section 5.1: names are case-insensitive, and only the start of a line counts, so a value that contains the
 /// name does not match); -1 when absent.
-fn headerAt(s: *ui8, end: usize, name: *ui8) -> isize {
+fn headerAt(s: *u8, end: usize, name: *u8) -> isize {
     local nlen: usize = strlen(name)
     local i: usize = 0
     // the first line is the request line; headers start after its CRLF
@@ -40,7 +40,7 @@ fn headerAt(s: *ui8, end: usize, name: *ui8) -> isize {
 
 /// Value of the `Content-Length` header in the first `end` bytes, 0 when absent or not a number. Several different values
 /// are a framing error (RFC 9112 section 6.3); the caller refuses them through `contentLengthValid`.
-fn contentLength(s: *ui8, end: usize) -> usize {
+fn contentLength(s: *u8, end: usize) -> usize {
     local p: isize = headerAt(s, end, "content-length:")
     if p < 0 { return 0 }
     local v: usize = 0
@@ -53,11 +53,11 @@ fn contentLength(s: *ui8, end: usize) -> usize {
 }
 
 /// True when the request line of the first `end` bytes ends with HTTP/1.1.
-fn isHttp11(s: *ui8, end: usize) -> bool {
+fn isHttp11(s: *u8, end: usize) -> bool {
     local i: usize = 0
     while !(s[i] == 13 && s[i + 1] == 10) { i = i + 1 }
     if i < 8 { return false }
-    local v: *ui8 = "HTTP/1.1"
+    local v: *u8 = "HTTP/1.1"
     local k: usize = 0
     while k < 8 {
         if s[i - 8 + k] != v[k] { return false }
@@ -67,13 +67,13 @@ fn isHttp11(s: *ui8, end: usize) -> bool {
 }
 
 /// Answers a request that is rejected before routing (bad framing, too large): the connection is closed afterwards.
-fn rejectEarly(fd: i32, tls: *TlsConn, status: i32, text: *ui8) {
+fn rejectEarly(fd: i32, tls: *TlsConn, status: i32, text: *u8) {
     local c: Context = Context(fd, tls)
     c.String(status, fromC(text))
 }
 
 /// True when two Content-Length header lines of the first `end` bytes carry different values (a framing error, RFC 9112 6.3).
-fn contentLengthConflict(s: *ui8, end: usize) -> bool {
+fn contentLengthConflict(s: *u8, end: usize) -> bool {
     local first: usize = 0
     local seen: bool = false
     local at: usize = 0
@@ -81,7 +81,7 @@ fn contentLengthConflict(s: *ui8, end: usize) -> bool {
     at = at + 2
     while at + 15 <= end {
         local k: usize = 0
-        local name: *ui8 = "content-length:"
+        local name: *u8 = "content-length:"
         while k < 15 && lower(s[at + k]) == name[k] { k = k + 1 }
         if k == 15 {
             local v: usize = contentLength(&s[at], end - at)
@@ -97,13 +97,13 @@ fn contentLengthConflict(s: *ui8, end: usize) -> bool {
 
 /// The request target (the text between the method and the protocol version) must be origin form ("/..."), "*", or absolute form
 /// ("http://..." or "https://..."); RFC 9112 section 3.2.
-fn targetValid(s: *ui8, end: usize) -> bool {
+fn targetValid(s: *u8, end: usize) -> bool {
     local i: usize = 0
     while i < end && s[i] != 32 { i = i + 1 }
     i = i + 1
     if i >= end { return false }
     if s[i] == 47 || s[i] == 42 { return true }
-    local h: *ui8 = "http://"
+    local h: *u8 = "http://"
     local k: usize = 0
     while k < 7 && i + k < end && lower(s[i + k]) == h[k] { k = k + 1 }
     return k == 7 || (k == 6 && i + 6 < end && lower(s[i + 6]) == 115)
@@ -111,10 +111,10 @@ fn targetValid(s: *ui8, end: usize) -> bool {
 
 /// Whether the connection stays open after this request (RFC 9112 section 9.3): HTTP/1.1 defaults to persistent, HTTP/1.0 only
 /// with "Connection: keep-alive"; "Connection: close" always closes.
-fn keepAliveWanted(s: *ui8, end: usize) -> bool {
+fn keepAliveWanted(s: *u8, end: usize) -> bool {
     local conn: isize = headerAt(s, end, "connection:")
     if conn >= 0 {
-        local close: *ui8 = "close"
+        local close: *u8 = "close"
         local k: usize = 0
         while k < 5 && lower(s[(conn as usize) + k]) == close[k] { k = k + 1 }
         if k == 5 { return false }
@@ -126,7 +126,7 @@ fn keepAliveWanted(s: *ui8, end: usize) -> bool {
 /// Routes one request: `buf[0..n)` is exactly the request (headers and body). The request line is split in place: the target is
 /// percent-decoded there, and the query string and the header block are kept as views. Returns true when the connection may stay
 /// open: the handler answered and the request allows persistence.
-fn dispatch(r: *void, serve: fn(*void, *Context), fd: i32, tls: *TlsConn, buf: *ui8, n: usize, keep: bool) -> bool {
+fn dispatch(r: *void, serve: fn(*void, *Context), fd: i32, tls: *TlsConn, buf: *u8, n: usize, keep: bool) -> bool {
     local he: usize = headerEnd(buf, n) as usize
     local lineEnd: usize = 0
     while lineEnd + 1 < he && !(buf[lineEnd] == 13 && buf[lineEnd + 1] == 10) { lineEnd = lineEnd + 1 }
@@ -158,7 +158,7 @@ fn dispatch(r: *void, serve: fn(*void, *Context), fd: i32, tls: *TlsConn, buf: *
         c.rawQuery = fromParts(&buf[queryStart], queryEnd - queryStart)
     }
     // decode the path in place: a NUL after it makes it a C string for the decoder, then its length is taken
-    local saved: ui8 = buf[pathEnd]
+    local saved: u8 = buf[pathEnd]
     buf[pathEnd] = 0
     decodePercent(&buf[p0])
     local pl: usize = strlen(&buf[p0])
@@ -178,7 +178,7 @@ define MAX_BODY_BYTES = 1048576
 /// Reads one request from the connection into `*buf` (which grows as needed; `*total` bytes are valid, and bytes after a complete
 /// request are kept for the next one). Returns 1 with `*dispEnd` (the request's end for the router) and `*rawEnd` (where the next
 /// request starts) set, 0 when the connection closed without a request, or 2 when the request was refused (the answer is sent).
-fn readRequest(r: *void, fd: i32, tls: *TlsConn, buf: **ui8, cap: *usize, total: *usize, dispEnd: *usize, rawEnd: *usize, keep: *bool) -> i32 {
+fn readRequest(r: *void, fd: i32, tls: *TlsConn, buf: **u8, cap: *usize, total: *usize, dispEnd: *usize, rawEnd: *usize, keep: *bool) -> i32 {
     local gotHeaders: bool = false
     local he: usize = 0
     local bodyStart: usize = 0
@@ -201,7 +201,7 @@ fn readRequest(r: *void, fd: i32, tls: *TlsConn, buf: **ui8, cap: *usize, total:
                 }
                 local bodyLen: usize = contentLength(*buf, he)
                 if expectsContinue(*buf, he) && bodyLen > 0 && *total < bodyStart + bodyLen {
-                    local cont: *ui8 = "HTTP/1.1 100 Continue\r\n\r\n"
+                    local cont: *u8 = "HTTP/1.1 100 Continue\r\n\r\n"
                     if tls != nil { tlsWrite(tls, cont, 25) } else { sysWrite(fd, cont, 25) }
                 }
                 local te: isize = headerAt(*buf, he, "transfer-encoding:")
@@ -251,7 +251,7 @@ fn readRequest(r: *void, fd: i32, tls: *TlsConn, buf: **ui8, cap: *usize, total:
             }
         }
         if *total + 1 >= *cap {
-            local bigger: *ui8 = mapGrow(*buf as *void, *cap, *cap * 2) as *ui8
+            local bigger: *u8 = mapGrow(*buf as *void, *cap, *cap * 2) as *u8
             if bigger == nil { return 0 }
             *buf = bigger
             *cap = *cap * 2
@@ -268,7 +268,7 @@ fn serveConnection(r: *void, serve: fn(*void, *Context), fd: i32, tls: *TlsConn)
     // One connection serves requests until one of them asks to close, the peer closes, or a request is refused. Bytes that arrive
     // after a request belong to the next one (pipelining) and are moved to the front of the buffer.
     local cap: usize = 4096
-    local buf: *ui8 = mapGrow(nil, 0, cap) as *ui8
+    local buf: *u8 = mapGrow(nil, 0, cap) as *u8
     if buf == nil { return }
     local total: usize = 0
     local open: bool = true
@@ -295,7 +295,7 @@ fn serveConnection(r: *void, serve: fn(*void, *Context), fd: i32, tls: *TlsConn)
 }
 
 /// The end of the chunked body that starts at `start` (after its last chunk and trailer section), or 0 when it is not complete yet.
-fn chunkedEnd(buf: *ui8, total: usize, start: usize) -> usize {
+fn chunkedEnd(buf: *u8, total: usize, start: usize) -> usize {
     local p: usize = start
     while true {
         local next: usize = 0
@@ -318,7 +318,7 @@ fn chunkedEnd(buf: *ui8, total: usize, start: usize) -> usize {
 
 /// Binds `ip:port` (host-order IPv4, `127.0.0.1` = 2130706433), calls `onListen` once, then serves
 /// forever. Returns -1 when the socket could not be set up.
-export fn routerServe(r: *void, serve: fn(*void, *Context), ip: ui32, port: ui16, onListen: fn()) -> i32 {
+export fn routerServe(r: *void, serve: fn(*void, *Context), ip: u32, port: u16, onListen: fn()) -> i32 {
     local fd: i32 = sysTcpSocket()
     if fd < 0 {
         eprint("routerServe: cannot create socket\n")
@@ -342,7 +342,7 @@ export fn routerServe(r: *void, serve: fn(*void, *Context), ip: ui32, port: ui16
 
 /// `routerServe` over TLS 1.3 (HTTPS): `cr` comes from `tlsLoadCredentials`. A connection whose
 /// handshake fails is dropped and the loop continues. Returns -1 when the socket could not be set up.
-export fn routerServeTls(r: *void, serve: fn(*void, *Context), ip: ui32, port: ui16, cr: *TlsCredentials, onListen: fn()) -> i32 {
+export fn routerServeTls(r: *void, serve: fn(*void, *Context), ip: u32, port: u16, cr: *TlsCredentials, onListen: fn()) -> i32 {
     local fd: i32 = tlsListen(ip, port)
     if fd < 0 {
         eprint("routerServeTls: cannot bind/listen (port already in use?)\n")
@@ -360,7 +360,7 @@ export fn routerServeTls(r: *void, serve: fn(*void, *Context), ip: ui32, port: u
 }
 
 /// Hex digit value, or -1.
-fn hexDigit(c: ui8) -> i32 {
+fn hexDigit(c: u8) -> i32 {
     if c >= 48 && c <= 57 { return (c - 48) as i32 }
     if c >= 65 && c <= 70 { return (c - 55) as i32 }
     if c >= 97 && c <= 102 { return (c - 87) as i32 }
@@ -370,12 +370,12 @@ fn hexDigit(c: ui8) -> i32 {
 /// Decodes the percent-encoded octets of a request target in place (RFC 3986 section 2.1 and 2.4): "%XX" becomes the byte
 /// XX; a '%' that is not followed by two hex digits is kept as it is. The text ends at the NUL that ends the target.
 /// The decoded text is never longer than the encoded one, so the write position never passes the read position.
-fn decodePercent(p: *ui8) {
+fn decodePercent(p: *u8) {
     local r: usize = 0
     local w: usize = 0
     while p[r] != 0 {
         if p[r] == 37 && hexDigit(p[r + 1]) >= 0 && hexDigit(p[r + 2]) >= 0 {
-            p[w] = ((hexDigit(p[r + 1]) * 16) + hexDigit(p[r + 2])) as ui8
+            p[w] = ((hexDigit(p[r + 1]) * 16) + hexDigit(p[r + 2])) as u8
             r = r + 3
         } else {
             p[w] = p[r]
@@ -387,10 +387,10 @@ fn decodePercent(p: *ui8) {
 }
 
 /// True when the header block of the first `end` bytes carries `Expect: 100-continue` (RFC 9110 section 10.1.1).
-fn expectsContinue(buf: *ui8, end: usize) -> bool {
+fn expectsContinue(buf: *u8, end: usize) -> bool {
     local p: isize = headerAt(buf, end, "expect:")
     if p < 0 { return false }
-    local v: *ui8 = "100-continue"
+    local v: *u8 = "100-continue"
     local k: usize = 0
     while k < 12 {
         if lower(buf[(p as usize) + k]) != v[k] { return false }
@@ -401,7 +401,7 @@ fn expectsContinue(buf: *ui8, end: usize) -> bool {
 
 /// Parses the chunk-size line starting at `p` (hex digits, optional ";extension", ended by CRLF). Returns the size and sets
 /// `*next` to the position after the CRLF; returns -1 when the line is not complete or not a hex size (RFC 9112 section 7.1).
-fn chunkSize(buf: *ui8, total: usize, p: usize, next: *usize) -> isize {
+fn chunkSize(buf: *u8, total: usize, p: usize, next: *usize) -> isize {
     local i: usize = p
     local v: usize = 0
     local digits: usize = 0
@@ -422,7 +422,7 @@ fn chunkSize(buf: *ui8, total: usize, p: usize, next: *usize) -> isize {
 
 /// Decodes the chunked body that starts at `start` in place (the decoded body is never longer than the encoded one). Returns
 /// its length, or -1 for a malformed body.
-fn decodeChunkedInPlace(buf: *ui8, total: usize, start: usize) -> isize {
+fn decodeChunkedInPlace(buf: *u8, total: usize, start: usize) -> isize {
     local r: usize = start
     local w: usize = start
     while true {
@@ -443,8 +443,8 @@ fn decodeChunkedInPlace(buf: *ui8, total: usize, start: usize) -> isize {
 }
 
 /// True when the Transfer-Encoding value at `p` is exactly "chunked" (case-insensitive, optional blanks at the end).
-fn transferIsChunked(buf: *ui8, p: usize) -> bool {
-    local v: *ui8 = "chunked"
+fn transferIsChunked(buf: *u8, p: usize) -> bool {
+    local v: *u8 = "chunked"
     local k: usize = 0
     while k < 7 {
         if lower(buf[p + k]) != v[k] { return false }

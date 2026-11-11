@@ -10,18 +10,18 @@ from "../str/str" import fromParts
 from "../mem/mem" import currentAllocator
 
 /// True for the RFC 3986 unreserved characters: ALPHA, DIGIT, '-', '.', '_', '~'.
-fn isUnreserved(c: ui8) -> bool {
+fn isUnreserved(c: u8) -> bool {
     return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95 || c == 126
 }
 
 /// Writes the percent-encoded form of `value[0..n)` to `out` in the uppercase hex of RFC 3986 section 2.1; returns the number of
 /// bytes written. The output needs at most 3 * n bytes.
-export fn pctEncodeInto(value: *ui8, n: usize, out: *ui8) -> usize {
-    local hex: [ui8; 16] = [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 65, 66, 67, 68, 69, 70]
+export fn pctEncodeInto(value: *u8, n: usize, out: *u8) -> usize {
+    local hex: [u8; 16] = [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 65, 66, 67, 68, 69, 70]
     local o: usize = 0
     local i: usize = 0
     while i < n {
-        local c: ui8 = value[i]
+        local c: u8 = value[i]
         if isUnreserved(c) {
             out[o] = c
             o = o + 1
@@ -38,7 +38,7 @@ export fn pctEncodeInto(value: *ui8, n: usize, out: *ui8) -> usize {
 
 /// The percent-encoded value as a String.
 export fn pctEncode(value: str) -> String {
-    local buf: *ui8 = currentAllocator.alloc(3 * value.len + 1, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(3 * value.len + 1, 1) as *u8
     if buf == nil { panic("pctEncode: out of memory") }
     local n: usize = pctEncodeInto(value.ptr, value.len, buf)
     local out: String = String()
@@ -56,9 +56,9 @@ export fn pkceChallengeS256(verifier: str) -> String {
         if !isUnreserved(verifier[i]) { return String() }
         i = i + 1
     }
-    local h: [ui8; 32]
+    local h: [u8; 32]
     if !digest(DIGEST_SHA256, verifier.ptr, verifier.len, &h[0]) { return String() }
-    local enc: [ui8; 64]
+    local enc: [u8; 64]
     local n: usize = base64UrlEncodeRaw(&h[0], 32, &enc[0])
     local out: String = String()
     out.append(fromParts(&enc[0], n))

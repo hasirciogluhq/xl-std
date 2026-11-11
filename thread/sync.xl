@@ -5,11 +5,11 @@ from "../cpu/cpu" import cpuRelax
 
 /// 0 = unlocked, 1 = locked, 2 = locked with waiters.
 export struct Mutex {
-    state: ui32
+    state: u32
 }
 
 export fn mutexLock(m: *Mutex) {
-    local c: ui32 = __builtin_atomicCas(&m.state, 0, 1, MemoryOrder.acquire)
+    local c: u32 = __builtin_atomicCas(&m.state, 0, 1, MemoryOrder.acquire)
     if c == 0 { return }
     // brief spin before sleeping
     local spins: i32 = 0
@@ -41,12 +41,12 @@ export fn mutexUnlock(m: *Mutex) {
 
 /// Condition variable: a sequence counter the waiters sleep on.
 export struct Cond {
-    seq: ui32
+    seq: u32
 }
 
 /// Atomically releases `m`, waits for a signal, and locks `m` again.
 export fn condWait(c: *Cond, m: *Mutex) {
-    local seen: ui32 = __builtin_atomicLoad(&c.seq, MemoryOrder.acquire)
+    local seen: u32 = __builtin_atomicLoad(&c.seq, MemoryOrder.acquire)
     mutexUnlock(m)
     sysWait(&c.seq, seen)
     mutexLock(m)
@@ -64,14 +64,14 @@ export fn condBroadcast(c: *Cond) {
 
 /// Read-write lock: readers count in `state`; `state == 0xFFFFFFFF` means a writer holds it.
 export struct RwLock {
-    state: ui32
+    state: u32
 }
 
 define WRITER = 4294967295
 
 export fn rwReadLock(l: *RwLock) {
     while true {
-        local s: ui32 = __builtin_atomicLoad(&l.state, MemoryOrder.relaxed)
+        local s: u32 = __builtin_atomicLoad(&l.state, MemoryOrder.relaxed)
         if s != WRITER {
             if __builtin_atomicCas(&l.state, s, s + 1, MemoryOrder.acquire) == s { return }
         } else {
@@ -88,7 +88,7 @@ export fn rwReadUnlock(l: *RwLock) {
 
 export fn rwWriteLock(l: *RwLock) {
     while true {
-        local s: ui32 = __builtin_atomicLoad(&l.state, MemoryOrder.relaxed)
+        local s: u32 = __builtin_atomicLoad(&l.state, MemoryOrder.relaxed)
         if s == 0 {
             if __builtin_atomicCas(&l.state, 0, WRITER, MemoryOrder.acquire) == 0 { return }
         } else {
@@ -104,7 +104,7 @@ export fn rwWriteUnlock(l: *RwLock) {
 
 /// Runs `body` exactly once; later callers wait until it finished.
 export struct Once {
-    state: ui32   // 0 = new, 1 = running, 2 = done
+    state: u32   // 0 = new, 1 = running, 2 = done
 }
 
 export fn onceRun(o: *Once, body: fn()) {

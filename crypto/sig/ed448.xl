@@ -23,34 +23,34 @@ define ED448_SQRT = "3fffffffffffffffffffffffffffffffffffffffffffffffffffffffc00
 
 /// A point in extended coordinates, Montgomery form.
 export struct Ed448Point {
-    x: [ui32; 14]
-    y: [ui32; 14]
-    z: [ui32; 14]
-    t: [ui32; 14]
+    x: [u32; 14]
+    y: [u32; 14]
+    z: [u32; 14]
+    t: [u32; 14]
 }
 
 global ed448F: Mont          // GF(p)
 global ed448Ready: bool
-global ed448D: [ui32; 14]    // d, Montgomery form
+global ed448D: [u32; 14]    // d, Montgomery form
 global ed448Base: Ed448Point // B, Montgomery form
-global ed448L: [ui32; 14]    // L as plain limbs (for the integer reductions)
-global ed448PM2: [ui32; 14]  // p - 2 (inversion exponent)
-global ed448Sqrt: [ui32; 14] // (p + 1) / 4 (square root exponent, p = 3 mod 4)
+global ed448L: [u32; 14]    // L as plain limbs (for the integer reductions)
+global ed448PM2: [u32; 14]  // p - 2 (inversion exponent)
+global ed448Sqrt: [u32; 14] // (p + 1) / 4 (square root exponent, p = 3 mod 4)
 
 /// Parses big-endian hex `hex` into `n` little-endian 32-bit limbs; missing digits are zero.
-fn hexToLimbs(hex: str, out: *ui32, n: usize) {
+fn hexToLimbs(hex: str, out: *u32, n: usize) {
     local i: usize = 0
     while i < n {
-        local limb: ui32 = 0
+        local limb: u32 = 0
         local k: usize = 0
         while k < 8 {
             local pos: usize = i * 8 + k
-            local v: ui32 = 0
+            local v: u32 = 0
             if pos < hex.len {
-                local c: ui8 = hex[hex.len - 1 - pos]
-                if c >= 97 { v = (c - 87) as ui32 } else { v = (c - 48) as ui32 }
+                local c: u8 = hex[hex.len - 1 - pos]
+                if c >= 97 { v = (c - 87) as u32 } else { v = (c - 48) as u32 }
             }
-            limb = limb | (v << ((k * 4) as ui32))
+            limb = limb | (v << ((k * 4) as u32))
             k = k + 1
         }
         out[i] = limb
@@ -59,14 +59,14 @@ fn hexToLimbs(hex: str, out: *ui32, n: usize) {
 }
 
 /// Little-endian bytes `le[0..nbytes)` into `n` limbs (nbytes <= 4 n).
-fn leToLimbs(le: *ui8, nbytes: usize, out: *ui32, n: usize) {
+fn leToLimbs(le: *u8, nbytes: usize, out: *u32, n: usize) {
     local i: usize = 0
     while i < n {
-        local limb: ui32 = 0
+        local limb: u32 = 0
         local k: usize = 0
         while k < 4 {
             local pos: usize = i * 4 + k
-            if pos < nbytes { limb = limb | ((le[pos] as ui32) << ((k * 8) as ui32)) }
+            if pos < nbytes { limb = limb | ((le[pos] as u32) << ((k * 8) as u32)) }
             k = k + 1
         }
         out[i] = limb
@@ -75,26 +75,26 @@ fn leToLimbs(le: *ui8, nbytes: usize, out: *ui32, n: usize) {
 }
 
 /// `n` limbs to `nbytes` little-endian bytes.
-fn limbsToLe(limbs: *ui32, n: usize, out: *ui8, nbytes: usize) {
+fn limbsToLe(limbs: *u32, n: usize, out: *u8, nbytes: usize) {
     local i: usize = 0
     while i < nbytes {
-        out[i] = ((limbs[i / 4] >> (((i % 4) * 8) as ui32)) & 0xff) as ui8
+        out[i] = ((limbs[i / 4] >> (((i % 4) * 8) as u32)) & 0xff) as u8
         i = i + 1
     }
 }
 
-fn fromSmall(v: ui32, out: *ui32) {
+fn fromSmall(v: u32, out: *u32) {
     bnZero(out, 14)
     out[0] = v
 }
 
-fn feMul(a: *ui32, b: *ui32, out: *ui32) { montMul(&ed448F, out, a, b) }
-fn feAdd(a: *ui32, b: *ui32, out: *ui32) { modAdd(&ed448F, out, a, b) }
-fn feSub(a: *ui32, b: *ui32, out: *ui32) { modSub(&ed448F, out, a, b) }
-fn feInv(a: *ui32, out: *ui32) { montPow(&ed448F, out, a, &ed448PM2[0], 14) }
+fn feMul(a: *u32, b: *u32, out: *u32) { montMul(&ed448F, out, a, b) }
+fn feAdd(a: *u32, b: *u32, out: *u32) { modAdd(&ed448F, out, a, b) }
+fn feSub(a: *u32, b: *u32, out: *u32) { modSub(&ed448F, out, a, b) }
+fn feInv(a: *u32, out: *u32) { montPow(&ed448F, out, a, &ed448PM2[0], 14) }
 
-fn feIsZero(a: *ui32) -> bool {
-    local plain: [ui32; 14]
+fn feIsZero(a: *u32) -> bool {
+    local plain: [u32; 14]
     montFrom(&ed448F, &plain[0], a)
     return bnIsZero(&plain[0], 14)
 }
@@ -102,17 +102,17 @@ fn feIsZero(a: *ui32) -> bool {
 fn edInit() {
     if ed448Ready { return }
     ed448Ready = true
-    local p: [ui32; 14]
+    local p: [u32; 14]
     hexToLimbs(ED448_P, &p[0], 14)
     montInit(&ed448F, &p[0], 14)
     hexToLimbs(ED448_L, &ed448L[0], 14)
     hexToLimbs(ED448_PM2, &ed448PM2[0], 14)
     hexToLimbs(ED448_SQRT, &ed448Sqrt[0], 14)
-    local dp: [ui32; 14]
+    local dp: [u32; 14]
     hexToLimbs(ED448_D, &dp[0], 14)
     montTo(&ed448F, &ed448D[0], &dp[0])
-    local bx: [ui32; 14]
-    local by: [ui32; 14]
+    local bx: [u32; 14]
+    local by: [u32; 14]
     hexToLimbs(ED448_BX, &bx[0], 14)
     hexToLimbs(ED448_BY, &by[0], 14)
     montTo(&ed448F, &ed448Base.x[0], &bx[0])
@@ -123,16 +123,16 @@ fn edInit() {
 
 /// The unified addition law for a = 1 (extended coordinates, RFC 8032 section 5.2.4 and the add-2008-hwcd formulas).
 fn edAdd(p: *Ed448Point, q: *Ed448Point, out: *Ed448Point) {
-    local A: [ui32; 14]
-    local B: [ui32; 14]
-    local C: [ui32; 14]
-    local D: [ui32; 14]
-    local E: [ui32; 14]
-    local F: [ui32; 14]
-    local G: [ui32; 14]
-    local H: [ui32; 14]
-    local t1: [ui32; 14]
-    local t2: [ui32; 14]
+    local A: [u32; 14]
+    local B: [u32; 14]
+    local C: [u32; 14]
+    local D: [u32; 14]
+    local E: [u32; 14]
+    local F: [u32; 14]
+    local G: [u32; 14]
+    local H: [u32; 14]
+    local t1: [u32; 14]
+    local t2: [u32; 14]
     feMul(&p.x[0], &q.x[0], &A[0])
     feMul(&p.y[0], &q.y[0], &B[0])
     feMul(&p.t[0], &q.t[0], &t1[0])
@@ -161,8 +161,8 @@ fn edIdentity(out: *Ed448Point) {
 }
 
 /// out = k * p for a little-endian scalar of `nbytes` bytes (double and add, not constant-time).
-fn edMul(p: *Ed448Point, k: *ui8, nbytes: usize, out: *Ed448Point) {
-    local kl: [ui32; 15]
+fn edMul(p: *Ed448Point, k: *u8, nbytes: usize, out: *Ed448Point) {
+    local kl: [u32; 15]
     leToLimbs(k, nbytes, &kl[0], 15)
     local acc: Ed448Point
     local tmp: Ed448Point
@@ -171,7 +171,7 @@ fn edMul(p: *Ed448Point, k: *ui8, nbytes: usize, out: *Ed448Point) {
     while i >= 0 {
         edAdd(&acc, &acc, &tmp)
         acc = tmp
-        local bit: ui32 = (kl[(i as usize) / 32] >> (((i as usize) % 32) as ui32)) & 1
+        local bit: u32 = (kl[(i as usize) / 32] >> (((i as usize) % 32) as u32)) & 1
         if bit != 0 {
             edAdd(&acc, p, &tmp)
             acc = tmp
@@ -182,56 +182,56 @@ fn edMul(p: *Ed448Point, k: *ui8, nbytes: usize, out: *Ed448Point) {
 }
 
 /// The 57-byte encoding of the point `p` (RFC 8032 section 5.2.2): affine y, then the sign of x in bit 7 of byte 56.
-fn encodePoint(p: *Ed448Point, out: *ui8) {
-    local zi: [ui32; 14]
+fn encodePoint(p: *Ed448Point, out: *u8) {
+    local zi: [u32; 14]
     feInv(&p.z[0], &zi[0])
-    local x: [ui32; 14]
-    local y: [ui32; 14]
+    local x: [u32; 14]
+    local y: [u32; 14]
     feMul(&p.x[0], &zi[0], &x[0])
     feMul(&p.y[0], &zi[0], &y[0])
-    local xp: [ui32; 14]
+    local xp: [u32; 14]
     montFrom(&ed448F, &xp[0], &x[0])
-    local yp: [ui32; 14]
+    local yp: [u32; 14]
     montFrom(&ed448F, &yp[0], &y[0])
     limbsToLe(&yp[0], 14, out, 56)
-    out[56] = ((xp[0] & 1) as ui8) << 7
+    out[56] = ((xp[0] & 1) as u8) << 7
 }
 
 /// Decodes a 57-byte point (RFC 8032 section 5.2.3). False when y is not canonical, or x cannot be recovered.
-fn decodePoint(bytes: *ui8, p: *Ed448Point) -> bool {
-    local yp: [ui32; 14]
+fn decodePoint(bytes: *u8, p: *Ed448Point) -> bool {
+    local yp: [u32; 14]
     leToLimbs(bytes, 56, &yp[0], 14)
-    local sign: ui32 = (bytes[56] >> 7) as ui32
-    local pl: [ui32; 14]
+    local sign: u32 = (bytes[56] >> 7) as u32
+    local pl: [u32; 14]
     hexToLimbs(ED448_P, &pl[0], 14)
     if bnCmp(&yp[0], &pl[0], 14) >= 0 { return false }
-    local y: [ui32; 14]
+    local y: [u32; 14]
     montTo(&ed448F, &y[0], &yp[0])
-    local y2: [ui32; 14]
-    local one: [ui32; 14]
+    local y2: [u32; 14]
+    local one: [u32; 14]
     bnCopy(&one[0], &ed448F.one[0], 14)
     feMul(&y[0], &y[0], &y2[0])
-    local u: [ui32; 14]
-    local v: [ui32; 14]
-    local dy2: [ui32; 14]
+    local u: [u32; 14]
+    local v: [u32; 14]
+    local dy2: [u32; 14]
     feSub(&y2[0], &one[0], &u[0])
     feMul(&ed448D[0], &y2[0], &dy2[0])
     feSub(&dy2[0], &one[0], &v[0])
     if feIsZero(&v[0]) { return false }
-    local vinv: [ui32; 14]
+    local vinv: [u32; 14]
     feInv(&v[0], &vinv[0])
-    local x2: [ui32; 14]
+    local x2: [u32; 14]
     feMul(&u[0], &vinv[0], &x2[0])
-    local x: [ui32; 14]
+    local x: [u32; 14]
     montPow(&ed448F, &x[0], &x2[0], &ed448Sqrt[0], 14)
-    local check: [ui32; 14]
+    local check: [u32; 14]
     feMul(&x[0], &x[0], &check[0])
     if bnCmp(&check[0], &x2[0], 14) != 0 { return false }
-    local xp: [ui32; 14]
+    local xp: [u32; 14]
     montFrom(&ed448F, &xp[0], &x[0])
     if feIsZero(&x[0]) && sign != 0 { return false }
     if (xp[0] & 1) != sign {
-        local zero: [ui32; 14]
+        local zero: [u32; 14]
         fromSmall(0, &zero[0])
         feSub(&zero[0], &x[0], &x[0])
     }
@@ -243,8 +243,8 @@ fn decodePoint(bytes: *ui8, p: *Ed448Point) -> bool {
 }
 
 /// Writes dom4(0, "") = "SigEd448" || 0x00 || 0x00 (RFC 8032 section 5.2.6) to `out` (10 bytes); returns 10.
-fn dom4(out: *ui8) -> usize {
-    local tag: [ui8; 8] = [83, 105, 103, 69, 100, 52, 52, 56]
+fn dom4(out: *u8) -> usize {
+    local tag: [u8; 8] = [83, 105, 103, 69, 100, 52, 52, 56]
     local i: usize = 0
     while i < 8 {
         out[i] = tag[i]
@@ -256,9 +256,9 @@ fn dom4(out: *ui8) -> usize {
 }
 
 /// The SHAKE256 of the concatenation `dom4 || parts` (114 output bytes), reduced modulo L into `k` (14 limbs).
-fn hashToScalar(a: *ui8, an: usize, b: *ui8, bn: usize, c: *ui8, cn: usize, k: *ui32) {
+fn hashToScalar(a: *u8, an: usize, b: *u8, bn: usize, c: *u8, cn: usize, k: *u32) {
     local total: usize = 10 + an + bn + cn
-    local buf: *ui8 = currentAllocator.alloc(total, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(total, 1) as *u8
     if buf == nil { panic("ed448: out of memory") }
     local o: usize = dom4(buf)
     local i: usize = 0
@@ -278,20 +278,20 @@ fn hashToScalar(a: *ui8, an: usize, b: *ui8, bn: usize, c: *ui8, cn: usize, k: *
         buf[o + i] = c[i]
         i = i + 1
     }
-    local digest: [ui8; 114]
+    local digest: [u8; 114]
     shake256(buf, total, &digest[0], 114)
     currentAllocator.free(buf as *void)
-    local wide: [ui32; 30]
+    local wide: [u32; 30]
     leToLimbs(&digest[0], 114, &wide[0], 30)
-    local q: [ui32; 30]
-    local r: [ui32; 14]
+    local q: [u32; 30]
+    local r: [u32; 14]
     bigintDivMod(&wide[0], 30, &ed448L[0], 14, &q[0], &r[0])
     bnCopy(k, &r[0], 14)
 }
 
 /// The clamped secret scalar of a seed (RFC 8032 section 5.2.5): the first 57 bytes of SHAKE256(seed), with the two low bits of
 /// byte 0 cleared, the high bit of byte 55 set and byte 56 cleared. `h` receives the full 114-byte hash.
-fn expandSeed(seed: *ui8, h: *ui8, a: *ui8) {
+fn expandSeed(seed: *u8, h: *u8, a: *u8) {
     shake256(seed, 57, h, 114)
     local i: usize = 0
     while i < 57 {
@@ -304,10 +304,10 @@ fn expandSeed(seed: *ui8, h: *ui8, a: *ui8) {
 }
 
 /// The 57-byte public key of `seed` (RFC 8032 section 5.2.5).
-export fn ed448PublicKey(seed: *ui8, pk: *ui8) {
+export fn ed448PublicKey(seed: *u8, pk: *u8) {
     edInit()
-    local h: [ui8; 114]
-    local a: [ui8; 57]
+    local h: [u8; 114]
+    local a: [u8; 57]
     expandSeed(seed, &h[0], &a[0])
     local A: Ed448Point
     edMul(&ed448Base, &a[0], 57, &A)
@@ -316,37 +316,37 @@ export fn ed448PublicKey(seed: *ui8, pk: *ui8) {
 
 /// Signs `msg[0..mlen)` with the 57-byte `seed` (RFC 8032 section 5.2.6, phflag 0, empty context). Writes the 114-byte
 /// signature R || S to `sig`. Deterministic: the same seed and message give the same signature.
-export fn ed448Sign(seed: *ui8, msg: *ui8, mlen: usize, sig: *ui8) {
+export fn ed448Sign(seed: *u8, msg: *u8, mlen: usize, sig: *u8) {
     edInit()
-    local h: [ui8; 114]
-    local a: [ui8; 57]
+    local h: [u8; 114]
+    local a: [u8; 57]
     expandSeed(seed, &h[0], &a[0])
-    local pk: [ui8; 57]
+    local pk: [u8; 57]
     local A: Ed448Point
     edMul(&ed448Base, &a[0], 57, &A)
     encodePoint(&A, &pk[0])
     // r = H(dom4 || prefix || M) mod L, R = r B
-    local r: [ui32; 14]
+    local r: [u32; 14]
     hashToScalar(&h[57], 57, msg, mlen, msg, 0, &r[0])
-    local rBytes: [ui8; 56]
+    local rBytes: [u8; 56]
     limbsToLe(&r[0], 14, &rBytes[0], 56)
     local R: Ed448Point
     edMul(&ed448Base, &rBytes[0], 56, &R)
     encodePoint(&R, sig)
     // k = H(dom4 || R || A || M) mod L, S = (r + k a) mod L
-    local k: [ui32; 14]
+    local k: [u32; 14]
     hashToScalar(sig, 57, &pk[0], 57, msg, mlen, &k[0])
-    local a14: [ui32; 14]
+    local a14: [u32; 14]
     leToLimbs(&a[0], 57, &a14[0], 14)
-    local prod: [ui32; 28]
+    local prod: [u32; 28]
     bigintMul(&k[0], 14, &a14[0], 14, &prod[0])
-    local rext: [ui32; 28]
+    local rext: [u32; 28]
     bnZero(&rext[0], 28)
     bnCopy(&rext[0], &r[0], 14)
-    local sum: [ui32; 28]
+    local sum: [u32; 28]
     bigintAdd(&prod[0], &rext[0], 28, &sum[0])
-    local q: [ui32; 28]
-    local S: [ui32; 14]
+    local q: [u32; 28]
+    local S: [u32; 14]
     bigintDivMod(&sum[0], 28, &ed448L[0], 14, &q[0], &S[0])
     limbsToLe(&S[0], 14, &sig[57], 56)
     sig[113] = 0
@@ -354,21 +354,21 @@ export fn ed448Sign(seed: *ui8, msg: *ui8, mlen: usize, sig: *ui8) {
 
 /// Verifies a 114-byte signature on `msg[0..mlen)` under the 57-byte public key `pk` (RFC 8032 section 5.2.7: [S]B = R + [k]A,
 /// compared on the encodings). False for a malformed key or point, S >= L, or a wrong signature.
-export fn ed448Verify(pk: *ui8, msg: *ui8, mlen: usize, sig: *ui8) -> bool {
+export fn ed448Verify(pk: *u8, msg: *u8, mlen: usize, sig: *u8) -> bool {
     edInit()
     local A: Ed448Point
     if !decodePoint(pk, &A) { return false }
     local R: Ed448Point
     if !decodePoint(sig, &R) { return false }
     if sig[113] != 0 { return false }
-    local S: [ui32; 14]
+    local S: [u32; 14]
     leToLimbs(&sig[57], 56, &S[0], 14)
     if bnCmp(&S[0], &ed448L[0], 14) >= 0 { return false }
-    local k: [ui32; 14]
+    local k: [u32; 14]
     hashToScalar(sig, 57, pk, 57, msg, mlen, &k[0])
-    local sBytes: [ui8; 56]
+    local sBytes: [u8; 56]
     limbsToLe(&S[0], 14, &sBytes[0], 56)
-    local kBytes: [ui8; 56]
+    local kBytes: [u8; 56]
     limbsToLe(&k[0], 14, &kBytes[0], 56)
     local lhs: Ed448Point
     edMul(&ed448Base, &sBytes[0], 56, &lhs)
@@ -376,8 +376,8 @@ export fn ed448Verify(pk: *ui8, msg: *ui8, mlen: usize, sig: *ui8) -> bool {
     edMul(&A, &kBytes[0], 56, &kA)
     local rhs: Ed448Point
     edAdd(&R, &kA, &rhs)
-    local e1: [ui8; 57]
-    local e2: [ui8; 57]
+    local e1: [u8; 57]
+    local e2: [u8; 57]
     encodePoint(&lhs, &e1[0])
     encodePoint(&rhs, &e2[0])
     local i: usize = 0

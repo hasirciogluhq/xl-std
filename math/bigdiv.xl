@@ -6,7 +6,7 @@
 // The limb counts are explicit; results are written in full (zeros included). Not constant-time.
 
 /// out = a * b; a has na limbs, b has nb limbs, out has na + nb limbs.
-export fn bigMul(a: *ui32, na: usize, b: *ui32, nb: usize, out: *ui32) {
+export fn bigMul(a: *u32, na: usize, b: *u32, nb: usize, out: *u32) {
     local i: usize = 0
     while i < na + nb {
         out[i] = 0
@@ -14,21 +14,21 @@ export fn bigMul(a: *ui32, na: usize, b: *ui32, nb: usize, out: *ui32) {
     }
     i = 0
     while i < na {
-        local carry: ui64 = 0
+        local carry: u64 = 0
         local j: usize = 0
         while j < nb {
-            local t: ui64 = (out[i + j] as ui64) + (a[i] as ui64) * (b[j] as ui64) + carry
-            out[i + j] = (t & 0xffffffff) as ui32
+            local t: u64 = (out[i + j] as u64) + (a[i] as u64) * (b[j] as u64) + carry
+            out[i + j] = (t & 0xffffffff) as u32
             carry = t >> 32
             j = j + 1
         }
-        out[i + nb] = carry as ui32
+        out[i + nb] = carry as u32
         i = i + 1
     }
 }
 
 /// The number of significant limbs of a (its length without the zero top limbs).
-export fn bigLen(a: *ui32, n: usize) -> usize {
+export fn bigLen(a: *u32, n: usize) -> usize {
     local len: usize = n
     while len > 0 && a[len - 1] == 0 { len = len - 1 }
     return len
@@ -36,7 +36,7 @@ export fn bigLen(a: *ui32, n: usize) -> usize {
 
 /// Quotient and remainder of u (m limbs) by v (n limbs): q gets m limbs (the high ones are zero), r gets n limbs.
 /// Returns false when v is zero.
-export fn bigDivMod(u: *ui32, m: usize, v: *ui32, n: usize, q: *ui32, r: *ui32) -> bool {
+export fn bigDivMod(u: *u32, m: usize, v: *u32, n: usize, q: *u32, r: *u32) -> bool {
     local nn: usize = bigLen(v, n)
     if nn == 0 { return false }
     local i: usize = 0
@@ -59,31 +59,31 @@ export fn bigDivMod(u: *ui32, m: usize, v: *ui32, n: usize, q: *ui32, r: *ui32) 
         return true
     }
     if nn == 1 {
-        local d: ui64 = v[0] as ui64
-        local rem: ui64 = 0
+        local d: u64 = v[0] as u64
+        local rem: u64 = 0
         local k: usize = mm
         while k > 0 {
             k = k - 1
-            local cur: ui64 = (rem << 32) | (u[k] as ui64)
-            q[k] = (cur / d) as ui32
+            local cur: u64 = (rem << 32) | (u[k] as u64)
+            q[k] = (cur / d) as u32
             rem = cur % d
         }
-        r[0] = rem as ui32
+        r[0] = rem as u32
         return true
     }
     // normalize: shift so the top limb of v has its high bit set
-    local s: ui32 = 0
-    local top: ui32 = v[nn - 1]
+    local s: u32 = 0
+    local top: u32 = v[nn - 1]
     while (top & 0x80000000) == 0 {
         top = top << 1
         s = s + 1
     }
-    local vn: [ui32; 130]
-    local un: [ui32; 131]
+    local vn: [u32; 130]
+    local un: [u32; 131]
     i = nn
     while i > 0 {
         i = i - 1
-        local hi: ui32 = v[i] << s
+        local hi: u32 = v[i] << s
         if s > 0 && i > 0 { hi = hi | (v[i - 1] >> (32 - s)) }
         vn[i] = hi
     }
@@ -92,56 +92,56 @@ export fn bigDivMod(u: *ui32, m: usize, v: *ui32, n: usize, q: *ui32, r: *ui32) 
     i = mm
     while i > 0 {
         i = i - 1
-        local lo: ui32 = u[i] << s
+        local lo: u32 = u[i] << s
         if s > 0 && i > 0 { lo = lo | (u[i - 1] >> (32 - s)) }
         un[i] = lo
     }
-    local base: ui64 = 0x100000000
+    local base: u64 = 0x100000000
     local j: usize = mm - nn + 1
     while j > 0 {
         j = j - 1
         // estimate qhat from the top two limbs of the current remainder
-        local num: ui64 = ((un[j + nn] as ui64) << 32) | (un[j + nn - 1] as ui64)
-        local qhat: ui64 = num / (vn[nn - 1] as ui64)
-        local rhat: ui64 = num % (vn[nn - 1] as ui64)
-        while qhat >= base || qhat * (vn[nn - 2] as ui64) > ((rhat << 32) | (un[j + nn - 2] as ui64)) {
+        local num: u64 = ((un[j + nn] as u64) << 32) | (un[j + nn - 1] as u64)
+        local qhat: u64 = num / (vn[nn - 1] as u64)
+        local rhat: u64 = num % (vn[nn - 1] as u64)
+        while qhat >= base || qhat * (vn[nn - 2] as u64) > ((rhat << 32) | (un[j + nn - 2] as u64)) {
             qhat = qhat - 1
-            rhat = rhat + (vn[nn - 1] as ui64)
+            rhat = rhat + (vn[nn - 1] as u64)
             if rhat >= base { break }
         }
         // multiply and subtract qhat * vn from un[j .. j + nn]
-        local borrow: ui64 = 0
-        local carry: ui64 = 0
+        local borrow: u64 = 0
+        local carry: u64 = 0
         i = 0
         while i < nn {
-            local p: ui64 = qhat * (vn[i] as ui64) + carry
+            local p: u64 = qhat * (vn[i] as u64) + carry
             carry = p >> 32
-            local sub: ui64 = (un[i + j] as ui64) - (p & 0xffffffff) - borrow
-            un[i + j] = (sub & 0xffffffff) as ui32
+            local sub: u64 = (un[i + j] as u64) - (p & 0xffffffff) - borrow
+            un[i + j] = (sub & 0xffffffff) as u32
             borrow = (sub >> 63) & 1
             i = i + 1
         }
-        local sub2: ui64 = (un[j + nn] as ui64) - carry - borrow
-        un[j + nn] = (sub2 & 0xffffffff) as ui32
+        local sub2: u64 = (un[j + nn] as u64) - carry - borrow
+        un[j + nn] = (sub2 & 0xffffffff) as u32
         if ((sub2 >> 63) & 1) != 0 {
             // the estimate was one too large: add the divisor back
             qhat = qhat - 1
-            local c: ui64 = 0
+            local c: u64 = 0
             i = 0
             while i < nn {
-                local t: ui64 = (un[i + j] as ui64) + (vn[i] as ui64) + c
-                un[i + j] = (t & 0xffffffff) as ui32
+                local t: u64 = (un[i + j] as u64) + (vn[i] as u64) + c
+                un[i + j] = (t & 0xffffffff) as u32
                 c = t >> 32
                 i = i + 1
             }
-            un[j + nn] = ((un[j + nn] as ui64) + c) as ui32
+            un[j + nn] = ((un[j + nn] as u64) + c) as u32
         }
-        q[j] = qhat as ui32
+        q[j] = qhat as u32
     }
     // remainder: un[0 .. nn) shifted right by s
     i = 0
     while i < nn {
-        local w: ui32 = un[i] >> s
+        local w: u32 = un[i] >> s
         if s > 0 { w = w | (un[i + 1] << (32 - s)) }
         r[i] = w
         i = i + 1

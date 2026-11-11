@@ -55,16 +55,16 @@ export fn x509SelfSigned(c: *Cert) -> bool {
 }
 
 /// True when the Subject Alternative Name list holds an rfc822Name equal to `email[0..len)`.
-export fn x509CheckEmail(c: *Cert, email: *ui8, len: usize) -> bool {
+export fn x509CheckEmail(c: *Cert, email: *u8, len: usize) -> bool {
     return sanHasTag(c, 0x81, email, len)
 }
 
 /// True when the Subject Alternative Name list holds an iPAddress equal to `ip[0..len)` (4 bytes for IPv4, 16 for IPv6).
-export fn x509CheckIp(c: *Cert, ip: *ui8, len: usize) -> bool {
+export fn x509CheckIp(c: *Cert, ip: *u8, len: usize) -> bool {
     return sanHasTag(c, 0x87, ip, len)
 }
 
-fn sanHasTag(c: *Cert, tag: ui8, want: *ui8, n: usize) -> bool {
+fn sanHasTag(c: *Cert, tag: u8, want: *u8, n: usize) -> bool {
     if c.san == nil { return false }
     local pos: usize = 0
     while pos < c.sanLen {
@@ -77,11 +77,11 @@ fn sanHasTag(c: *Cert, tag: ui8, want: *ui8, n: usize) -> bool {
 }
 
 /// SHA-256 of the certificate DER, written to the 32 bytes at `out`.
-export fn x509FingerprintSha256(c: *Cert, out: *ui8) {
+export fn x509FingerprintSha256(c: *Cert, out: *u8) {
     sha256(c.der, c.derLen, out)
 }
 
 /// SHA-1 of the certificate DER, written to the 20 bytes at `out` (legacy fingerprints only).
-export fn x509FingerprintSha1(c: *Cert, out: *ui8) {
+export fn x509FingerprintSha1(c: *Cert, out: *u8) {
     sha1(c.der, c.derLen, out)
 }

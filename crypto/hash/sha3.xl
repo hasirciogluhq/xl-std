@@ -10,7 +10,7 @@
 from "../../mem/mem" import currentAllocator
 
 /// Round constants of iota, one per round (FIPS 202 Table 2, the values of the Keccak reference).
-global KECCAK_RC: [ui64; 24] = [
+global KECCAK_RC: [u64; 24] = [
     0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
     0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
     0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
@@ -20,7 +20,7 @@ global KECCAK_RC: [ui64; 24] = [
 ]
 
 /// Rotation offset of each lane (index x + 5y), FIPS 202 section 3.2.2 Table 2.
-global KECCAK_RHO: [ui64; 25] = [
+global KECCAK_RHO: [u64; 25] = [
     0, 1, 62, 28, 27,
     36, 44, 6, 55, 20,
     3, 10, 43, 25, 39,
@@ -28,17 +28,17 @@ global KECCAK_RHO: [ui64; 25] = [
     18, 2, 61, 56, 14,
 ]
 
-fn rotl64(x: ui64, n: ui64) -> ui64 {
+fn rotl64(x: u64, n: u64) -> u64 {
     if n == 0 { return x }
     return (x << n) | (x >> (64 - n))
 }
 
 /// One application of Keccak-f[1600] (FIPS 202 section 3.3: theta, rho, pi, chi, iota) to the 25 lanes at `a`.
-fn keccakF(a: *ui64) {
+fn keccakF(a: *u64) {
     local round: usize = 0
     while round < 24 {
         // theta: column parities, then xor each lane with the parity of its neighbours.
-        local c: [ui64; 5]
+        local c: [u64; 5]
         local x: usize = 0
         while x < 5 {
             c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20]
@@ -46,7 +46,7 @@ fn keccakF(a: *ui64) {
         }
         x = 0
         while x < 5 {
-            local d: ui64 = c[(x + 4) % 5] ^ rotl64(c[(x + 1) % 5], 1)
+            local d: u64 = c[(x + 4) % 5] ^ rotl64(c[(x + 1) % 5], 1)
             local y: usize = 0
             while y < 25 {
                 a[x + y] = a[x + y] ^ d
@@ -55,7 +55,7 @@ fn keccakF(a: *ui64) {
             x = x + 1
         }
         // rho and pi: b[y + 5 * ((2x + 3y) mod 5)] = rot(a[x + 5y], offset).
-        local b: [ui64; 25]
+        local b: [u64; 25]
         x = 0
         while x < 5 {
             local y: usize = 0
@@ -86,8 +86,8 @@ fn keccakF(a: *ui64) {
 
 /// The sponge of FIPS 202 section 4: absorb `data[0..n]` in `rate`-byte blocks with the domain suffix `suffix`,
 /// then squeeze `outLen` bytes into `out`.
-fn sponge(rate: usize, suffix: ui8, data: *ui8, n: usize, out: *ui8, outLen: usize) {
-    local st: [ui64; 25]
+fn sponge(rate: usize, suffix: u8, data: *u8, n: usize, out: *u8, outLen: usize) {
+    local st: [u64; 25]
     local i: usize = 0
     while i < 25 {
         st[i] = 0
@@ -100,7 +100,7 @@ fn sponge(rate: usize, suffix: ui8, data: *ui8, n: usize, out: *ui8, outLen: usi
         pos = pos + rate
     }
     // The final block: the remaining bytes, the domain suffix, and the final 1 bit (padding of section 5.1).
-    local last: [ui8; 200]
+    local last: [u8; 200]
     i = 0
     while i < rate {
         last[i] = 0
@@ -123,7 +123,7 @@ fn sponge(rate: usize, suffix: ui8, data: *ui8, n: usize, out: *ui8, outLen: usi
         if outLen - o < take { take = outLen - o }
         i = 0
         while i < take {
-            out[o + i] = ((st[i / 8] >> (((i % 8) * 8) as ui64)) & 0xff) as ui8
+            out[o + i] = ((st[i / 8] >> (((i % 8) * 8) as u64)) & 0xff) as u8
             i = i + 1
         }
         o = o + take
@@ -133,41 +133,41 @@ fn sponge(rate: usize, suffix: ui8, data: *ui8, n: usize, out: *ui8, outLen: usi
 }
 
 /// XORs `rate` bytes of `block` into the state lanes, little-endian.
-fn absorbBlock(st: *ui64, block: *ui8, rate: usize) {
+fn absorbBlock(st: *u64, block: *u8, rate: usize) {
     local i: usize = 0
     while i < rate {
-        st[i / 8] = st[i / 8] ^ ((block[i] as ui64) << (((i % 8) * 8) as ui64))
+        st[i / 8] = st[i / 8] ^ ((block[i] as u64) << (((i % 8) * 8) as u64))
         i = i + 1
     }
 }
 
 /// SHA3-224 of `data[0..n]` into the 28 bytes at `out` (FIPS 202 section 6.1).
-export fn sha3224(data: *ui8, n: usize, out: *ui8) {
+export fn sha3224(data: *u8, n: usize, out: *u8) {
     sponge(144, 0x06, data, n, out, 28)
 }
 
 /// SHA3-256 of `data[0..n]` into the 32 bytes at `out`.
-export fn sha3256(data: *ui8, n: usize, out: *ui8) {
+export fn sha3256(data: *u8, n: usize, out: *u8) {
     sponge(136, 0x06, data, n, out, 32)
 }
 
 /// SHA3-384 of `data[0..n]` into the 48 bytes at `out`.
-export fn sha3384(data: *ui8, n: usize, out: *ui8) {
+export fn sha3384(data: *u8, n: usize, out: *u8) {
     sponge(104, 0x06, data, n, out, 48)
 }
 
 /// SHA3-512 of `data[0..n]` into the 64 bytes at `out`.
-export fn sha3512(data: *ui8, n: usize, out: *ui8) {
+export fn sha3512(data: *u8, n: usize, out: *u8) {
     sponge(72, 0x06, data, n, out, 64)
 }
 
 /// SHAKE128 of `data[0..n]`: `outLen` bytes of output into `out` (FIPS 202 section 6.2). Any length is allowed.
-export fn shake128(data: *ui8, n: usize, out: *ui8, outLen: usize) {
+export fn shake128(data: *u8, n: usize, out: *u8, outLen: usize) {
     sponge(168, 0x1f, data, n, out, outLen)
 }
 
 /// SHAKE256 of `data[0..n]`: `outLen` bytes of output into `out`.
-export fn shake256(data: *ui8, n: usize, out: *ui8, outLen: usize) {
+export fn shake256(data: *u8, n: usize, out: *u8, outLen: usize) {
     sponge(136, 0x1f, data, n, out, outLen)
 }
 
@@ -175,48 +175,48 @@ export fn shake256(data: *ui8, n: usize, out: *ui8, outLen: usize) {
 
 /// left_encode(x) (SP 800-185 section 2.3.1): one byte with the count of bytes of x, then x big-endian. Writes at
 /// most 9 bytes to `out` and returns the length.
-fn leftEncode(x: ui64, out: *ui8) -> usize {
+fn leftEncode(x: u64, out: *u8) -> usize {
     local nb: usize = 1
-    local v: ui64 = x >> 8
+    local v: u64 = x >> 8
     while v != 0 {
         nb = nb + 1
         v = v >> 8
     }
-    out[0] = nb as ui8
+    out[0] = nb as u8
     local i: usize = 0
     while i < nb {
-        out[1 + i] = ((x >> (((nb - 1 - i) * 8) as ui64)) & 0xff) as ui8
+        out[1 + i] = ((x >> (((nb - 1 - i) * 8) as u64)) & 0xff) as u8
         i = i + 1
     }
     return nb + 1
 }
 
 /// right_encode(x) (section 2.3.1): x big-endian, then one byte with the count of bytes of x.
-fn rightEncode(x: ui64, out: *ui8) -> usize {
+fn rightEncode(x: u64, out: *u8) -> usize {
     local nb: usize = 1
-    local v: ui64 = x >> 8
+    local v: u64 = x >> 8
     while v != 0 {
         nb = nb + 1
         v = v >> 8
     }
     local i: usize = 0
     while i < nb {
-        out[i] = ((x >> (((nb - 1 - i) * 8) as ui64)) & 0xff) as ui8
+        out[i] = ((x >> (((nb - 1 - i) * 8) as u64)) & 0xff) as u8
         i = i + 1
     }
-    out[nb] = nb as ui8
+    out[nb] = nb as u8
     return nb + 1
 }
 
 /// Length of encode_string(s) for an `n`-byte string: left_encode(8n) then the bytes (section 2.3.2).
 fn encodedStringLen(n: usize) -> usize {
-    local w: [ui8; 9]
-    return leftEncode((n as ui64) * 8, &w[0]) + n
+    local w: [u8; 9]
+    return leftEncode((n as u64) * 8, &w[0]) + n
 }
 
 /// Writes encode_string(s[0..n)) at `out`; returns the number of bytes written.
-fn writeEncodedString(out: *ui8, s: *ui8, n: usize) -> usize {
-    local k: usize = leftEncode((n as ui64) * 8, out)
+fn writeEncodedString(out: *u8, s: *u8, n: usize) -> usize {
+    local k: usize = leftEncode((n as u64) * 8, out)
     local i: usize = 0
     while i < n {
         out[k + i] = s[i]
@@ -228,22 +228,22 @@ fn writeEncodedString(out: *ui8, s: *ui8, n: usize) -> usize {
 /// cSHAKE (SP 800-185 section 3.3) with the function name `name` and the customization string `custom`. With both
 /// empty it is SHAKE of the same rate. Otherwise the input is bytepad(encode_string(N) || encode_string(S), rate)
 /// followed by the data, and the domain suffix is 00 (byte 0x04 with the padding).
-fn cshakeCore(rate: usize, name: *ui8, nlen: usize, custom: *ui8, clen: usize, data: *ui8, n: usize,
-              out: *ui8, outLen: usize) {
+fn cshakeCore(rate: usize, name: *u8, nlen: usize, custom: *u8, clen: usize, data: *u8, n: usize,
+              out: *u8, outLen: usize) {
     if nlen == 0 && clen == 0 {
         sponge(rate, 0x1f, data, n, out, outLen)
         return
     }
     // bytepad prefix: left_encode(rate), the two encoded strings, then zeros up to a multiple of rate.
     local body: usize = encodedStringLen(nlen) + encodedStringLen(clen)
-    local w: [ui8; 9]
-    local prefixLen: usize = leftEncode(rate as ui64, &w[0]) + body
+    local w: [u8; 9]
+    local prefixLen: usize = leftEncode(rate as u64, &w[0]) + body
     local padded: usize = ((prefixLen + rate - 1) / rate) * rate
-    local buf: *ui8 = currentAllocator.alloc(padded + n, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(padded + n, 1) as *u8
     if buf == nil {
         panic("cshake: out of memory")
     }
-    local k: usize = leftEncode(rate as ui64, &buf[0])
+    local k: usize = leftEncode(rate as u64, &buf[0])
     k = k + writeEncodedString(&buf[k], name, nlen)
     k = k + writeEncodedString(&buf[k], custom, clen)
     local i: usize = k
@@ -261,30 +261,30 @@ fn cshakeCore(rate: usize, name: *ui8, nlen: usize, custom: *ui8, clen: usize, d
 }
 
 /// cSHAKE128 (SP 800-185 section 3.3) of `data[0..n)` with function name N and customization S (either may be empty).
-export fn cshake128(name: *ui8, nlen: usize, custom: *ui8, clen: usize, data: *ui8, n: usize, out: *ui8, outLen: usize) {
+export fn cshake128(name: *u8, nlen: usize, custom: *u8, clen: usize, data: *u8, n: usize, out: *u8, outLen: usize) {
     cshakeCore(168, name, nlen, custom, clen, data, n, out, outLen)
 }
 
 /// cSHAKE256 (SP 800-185 section 3.3) of `data[0..n)` with function name N and customization S.
-export fn cshake256(name: *ui8, nlen: usize, custom: *ui8, clen: usize, data: *ui8, n: usize, out: *ui8, outLen: usize) {
+export fn cshake256(name: *u8, nlen: usize, custom: *u8, clen: usize, data: *u8, n: usize, out: *u8, outLen: usize) {
     cshakeCore(136, name, nlen, custom, clen, data, n, out, outLen)
 }
 
 /// KMAC over the sponge `rate` (SP 800-185 section 4): cSHAKE with name "KMAC" over
 /// bytepad(encode_string(K), rate) || X || right_encode(8 * outLen), so `outLen` may be any length.
-fn kmacCore(rate: usize, key: *ui8, klen: usize, data: *ui8, n: usize, custom: *ui8, clen: usize,
-            out: *ui8, outLen: usize) {
-    local w: [ui8; 9]
-    local keyPrefix: usize = leftEncode(rate as ui64, &w[0]) + encodedStringLen(klen)
+fn kmacCore(rate: usize, key: *u8, klen: usize, data: *u8, n: usize, custom: *u8, clen: usize,
+            out: *u8, outLen: usize) {
+    local w: [u8; 9]
+    local keyPrefix: usize = leftEncode(rate as u64, &w[0]) + encodedStringLen(klen)
     local keyPadded: usize = ((keyPrefix + rate - 1) / rate) * rate
-    local tail: [ui8; 9]
-    local tailLen: usize = rightEncode((outLen as ui64) * 8, &tail[0])
+    local tail: [u8; 9]
+    local tailLen: usize = rightEncode((outLen as u64) * 8, &tail[0])
     local total: usize = keyPadded + n + tailLen
-    local buf: *ui8 = currentAllocator.alloc(total, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(total, 1) as *u8
     if buf == nil {
         panic("kmac: out of memory")
     }
-    local k: usize = leftEncode(rate as ui64, &buf[0])
+    local k: usize = leftEncode(rate as u64, &buf[0])
     k = k + writeEncodedString(&buf[k], key, klen)
     local i: usize = k
     while i < keyPadded {
@@ -301,17 +301,17 @@ fn kmacCore(rate: usize, key: *ui8, klen: usize, data: *ui8, n: usize, custom: *
         buf[keyPadded + n + i] = tail[i]
         i = i + 1
     }
-    local fname: *ui8 = "KMAC"
+    local fname: *u8 = "KMAC"
     cshakeCore(rate, fname, 4, custom, clen, buf, total, out, outLen)
     currentAllocator.free(buf as *void)
 }
 
 /// KMAC128 (SP 800-185 section 4.3.1): MAC of `data[0..n)` under `key`, customization `custom`, output `outLen` bytes.
-export fn kmac128(key: *ui8, klen: usize, data: *ui8, n: usize, custom: *ui8, clen: usize, out: *ui8, outLen: usize) {
+export fn kmac128(key: *u8, klen: usize, data: *u8, n: usize, custom: *u8, clen: usize, out: *u8, outLen: usize) {
     kmacCore(168, key, klen, data, n, custom, clen, out, outLen)
 }
 
 /// KMAC256 (SP 800-185 section 4.3.1).
-export fn kmac256(key: *ui8, klen: usize, data: *ui8, n: usize, custom: *ui8, clen: usize, out: *ui8, outLen: usize) {
+export fn kmac256(key: *u8, klen: usize, data: *u8, n: usize, custom: *u8, clen: usize, out: *u8, outLen: usize) {
     kmacCore(136, key, klen, data, n, custom, clen, out, outLen)
 }

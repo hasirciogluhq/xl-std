@@ -9,24 +9,24 @@ from "x509" import Cert, Tlv, derRead, parseSpki, sigAlgOf, x509VerifySignature,
 
 /// A parsed certification request. `ok` is false when the DER is not a valid request.
 export struct Csr {
-    info: *ui8                // the certificationRequestInfo TLV: the signed bytes
+    info: *u8                // the certificationRequestInfo TLV: the signed bytes
     infoLen: usize
-    subject: *ui8             // the subject Name TLV
+    subject: *u8             // the subject Name TLV
     subjectLen: usize
     key: Cert                 // the public key (only the key fields are set)
     sigAlg: i32
-    sig: *ui8                 // signature bytes, without the unused-bits byte
+    sig: *u8                 // signature bytes, without the unused-bits byte
     sigLen: usize
     ok: bool
 }
 
 /// Parses a DER certification request.
-export fn csrParse(der: *ui8, len: usize) -> Csr {
+export fn csrParse(der: *u8, len: usize) -> Csr {
     local c: Csr
     c.key.keyType = KEY_NONE
     local outer: Tlv
     if !derRead(der, len, &outer) || outer.tag != 0x30 { return c }
-    local body: *ui8 = outer.body
+    local body: *u8 = outer.body
     local avail: usize = outer.len
     local info: Tlv
     if !derRead(body, avail, &info) || info.tag != 0x30 { return c }
@@ -46,7 +46,7 @@ export fn csrParse(der: *ui8, len: usize) -> Csr {
     // inside the info: version, subject, subjectPKInfo
     c.info = body
     c.infoLen = info.total
-    local iBody: *ui8 = info.body
+    local iBody: *u8 = info.body
     local iLen: usize = info.len
     local v: Tlv
     if !derRead(iBody, iLen, &v) || v.tag != 0x02 || v.len != 1 || v.body[0] != 0 { return c }

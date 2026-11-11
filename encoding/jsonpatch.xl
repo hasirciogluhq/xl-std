@@ -26,7 +26,7 @@ fn canonNumber(n: *String) -> String {
     local exp: i64 = 0
     local dot: bool = false
     for i in 0..n.length() {
-        local c: ui8 = n.at(i)
+        local c: u8 = n.at(i)
         if c == 101 || c == 69 {                                        // the exponent: e, optional sign, digits
             local neg: bool = n.at(i + 1) == 45
             for j in i + 1 + (neg || n.at(i + 1) == 43 ? 1 : 0)..n.length() { exp = exp * 10 + (n.at(j) - 48) as i64 }
@@ -62,7 +62,7 @@ fn keyIn(t: *String, ms: *Vec<JsonSpan>, p: *String, m: *JsonSpan) -> i64 {
 
 /// Whether two scalar values are equal: same decoded string, same number value (RFC 6902 section 4.6), or same literal.
 fn sameScalar(a: *String, sa: JsonSpan, b: *String, sb: JsonSpan) -> bool {
-    local c: ui8 = a.at(sa.at)
+    local c: u8 = a.at(sa.at)
     local x: String = c == 34 ? jsonText(a, sa.at, sa.end) : text(a, sa)
     local y: String = b.at(sb.at) == 34 ? jsonText(b, sb.at, sb.end) : text(b, sb)
     if c == 45 || (c >= 48 && c <= 57) {
@@ -76,7 +76,7 @@ fn sameScalar(a: *String, sa: JsonSpan, b: *String, sb: JsonSpan) -> bool {
 /// Equality of the values `sa` of `a` and `sb` of `b` as RFC 6902 section 4.6 defines it: objects have the same names with equal
 /// values (order ignored), arrays the same elements in order, strings the same code points, numbers the same value.
 fn same(a: *String, sa: JsonSpan, b: *String, sb: JsonSpan) -> bool {
-    local c: ui8 = a.at(sa.at)
+    local c: u8 = a.at(sa.at)
     if sa.end == sa.at || sb.end == sb.at { return false }
     if c == 123 || c == 91 {
         if c != b.at(sb.at) { return false }
@@ -124,7 +124,7 @@ class Slot {
         if allowEnd && self.token.equals("-") { return self.members.length() as i64 }
         local v: i64 = 0
         for i in 0..self.token.length() {
-            local d: ui8 = self.token.at(i)
+            local d: u8 = self.token.at(i)
             if d < 48 || d > 57 || v > 1099511627776 { return -1 }
             v = v * 10 + (d - 48) as i64
         }

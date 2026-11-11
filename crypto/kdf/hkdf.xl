@@ -9,10 +9,10 @@ from "../hash/mac" import hmac
 from "../../mem/mem" import currentAllocator
 
 /// PRK = HKDF-Extract(salt, ikm) for digest `alg`; `prk` receives digestLen(alg) bytes. False for an unknown digest.
-export fn hkdfExtractAlg(alg: i32, salt: *ui8, slen: usize, ikm: *ui8, ilen: usize, prk: *ui8) -> bool {
+export fn hkdfExtractAlg(alg: i32, salt: *u8, slen: usize, ikm: *u8, ilen: usize, prk: *u8) -> bool {
     local hl: usize = digestLen(alg)
     if hl == 0 { return false }
-    local zeros: [ui8; 64]
+    local zeros: [u8; 64]
     local i: usize = 0
     while i < 64 {
         zeros[i] = 0
@@ -25,15 +25,15 @@ export fn hkdfExtractAlg(alg: i32, salt: *ui8, slen: usize, ikm: *ui8, ilen: usi
 }
 
 /// OKM = HKDF-Expand(prk, info, len) for digest `alg`. False for an unknown digest or when `len` exceeds 255 * HashLen.
-export fn hkdfExpandAlg(alg: i32, prk: *ui8, info: *ui8, ilen: usize, okm: *ui8, len: usize) -> bool {
+export fn hkdfExpandAlg(alg: i32, prk: *u8, info: *u8, ilen: usize, okm: *u8, len: usize) -> bool {
     local hl: usize = digestLen(alg)
     if hl == 0 || len > 255 * hl { return false }
-    local buf: *ui8 = currentAllocator.alloc(hl + ilen + 1, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(hl + ilen + 1, 1) as *u8
     if buf == nil { panic("hkdfExpandAlg: out of memory") }
-    local t: [ui8; 64]
+    local t: [u8; 64]
     local tlen: usize = 0
     local done: usize = 0
-    local counter: ui32 = 1
+    local counter: u32 = 1
     while done < len {
         local i: usize = 0
         while i < tlen {
@@ -45,7 +45,7 @@ export fn hkdfExpandAlg(alg: i32, prk: *ui8, info: *ui8, ilen: usize, okm: *ui8,
             buf[tlen + i] = info[i]
             i = i + 1
         }
-        buf[tlen + ilen] = (counter & 0xff) as ui8
+        buf[tlen + ilen] = (counter & 0xff) as u8
         hmac(alg, prk, hl, buf, tlen + ilen + 1, &t[0])
         tlen = hl
         local take: usize = len - done

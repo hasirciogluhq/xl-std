@@ -7,7 +7,7 @@
 from "../sys" import sysRandom
 
 /// Fills `out[0..n]` with OS entropy. Panics when the OS source fails; the bytes are never partial.
-export fn randomBytes(out: *ui8, n: usize) {
+export fn randomBytes(out: *u8, n: usize) {
     if !sysRandom(out, n) {
         panic("random: OS entropy source failed")
     }
@@ -15,10 +15,10 @@ export fn randomBytes(out: *ui8, n: usize) {
 
 /// One 64-bit value of OS entropy (little-endian byte order when read as bytes).
 /// A uniformly random 32-bit value from OS entropy.
-export fn randomU32() -> ui32 {
-    local b: [ui8; 4]
+export fn randomU32() -> u32 {
+    local b: [u8; 4]
     randomBytes(&b[0], 4)
-    return ((b[0] as ui32) << 24) | ((b[1] as ui32) << 16) | ((b[2] as ui32) << 8) | (b[3] as ui32)
+    return ((b[0] as u32) << 24) | ((b[1] as u32) << 16) | ((b[2] as u32) << 8) | (b[3] as u32)
 }
 
 /// A uniformly random signed 64-bit value (every bit pattern is equally likely).
@@ -34,13 +34,13 @@ export fn randomF64() -> f64 {
 /// A uniformly random integer in [0, bound), without modulo bias: values below 2^64 mod bound are rejected
 /// (classic rejection sampling; Lemire's multiply-shift needs a 128-bit product, which the language lacks).
 /// Panics when `bound` is zero.
-export fn randomBelowU64(bound: ui64) -> ui64 {
+export fn randomBelowU64(bound: u64) -> u64 {
     if bound == 0 {
         panic("randomBelowU64: the bound must be positive")
     }
-    local threshold: ui64 = (0 - bound) % bound
+    local threshold: u64 = (0 - bound) % bound
     while true {
-        local x: ui64 = randomU64()
+        local x: u64 = randomU64()
         if x >= threshold {
             return x % bound
         }
@@ -48,13 +48,13 @@ export fn randomBelowU64(bound: ui64) -> ui64 {
     return 0
 }
 
-export fn randomU64() -> ui64 {
-    local b: [ui8; 8]
+export fn randomU64() -> u64 {
+    local b: [u8; 8]
     randomBytes(&b[0], 8)
-    local v: ui64 = 0
+    local v: u64 = 0
     local i: usize = 0
     while i < 8 {
-        v = v | ((b[i] as ui64) << ((i * 8) as ui64))
+        v = v | ((b[i] as u64) << ((i * 8) as u64))
         i = i + 1
     }
     return v

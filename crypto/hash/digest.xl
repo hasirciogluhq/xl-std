@@ -60,7 +60,7 @@ export fn digestBlockLen(alg: i32) -> usize {
 }
 
 /// Hashes `data[0..n]` with `alg` into `out` (`digestLen(alg)` bytes). False for an unknown id.
-export fn digest(alg: i32, data: *ui8, n: usize, out: *ui8) -> bool {
+export fn digest(alg: i32, data: *u8, n: usize, out: *u8) -> bool {
     if alg == DIGEST_SHA256 {
         sha256(data, n, out)
     } else if alg == DIGEST_SHA384 {

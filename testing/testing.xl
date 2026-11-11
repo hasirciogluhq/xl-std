@@ -27,13 +27,13 @@ define COLOR = 1
 
 /// The context of the running test; every `expect*` takes it.
 export struct T {
-    name: *ui8
+    name: *u8
     failed: i32
     announced: bool
 }
 
 struct Case {
-    name: *ui8
+    name: *u8
     body: fn(*T)
 }
 
@@ -54,7 +54,7 @@ export fn suiteInit(s: *Suite) {
 }
 
 /// Registers a test; tests run in registration order.
-export fn test(s: *Suite, name: *ui8, body: fn(*T)) {
+export fn test(s: *Suite, name: *u8, body: fn(*T)) {
     if s.count == s.cap {
         local newCap: usize = s.cap * 2
         if newCap == 0 { newCap = 16 }
@@ -69,7 +69,7 @@ export fn test(s: *Suite, name: *ui8, body: fn(*T)) {
 
 // ---- colored output ------------------------------------------------------------------------------
 
-fn style(code: *ui8) {
+fn style(code: *u8) {
     if COLOR != 0 { print(code) }
 }
 
@@ -109,7 +109,7 @@ fn failEnd() {
 // ---- expectations ---------------------------------------------------------------------------------
 
 /// Fails the test with `msg` when `cond` is false.
-export fn expect(t: *T, cond: bool, msg: *ui8) {
+export fn expect(t: *T, cond: bool, msg: *u8) {
     if cond { return }
     failLine(t)
     print(msg)
@@ -117,7 +117,7 @@ export fn expect(t: *T, cond: bool, msg: *ui8) {
 }
 
 /// Unconditional failure.
-export fn testFail(t: *T, msg: *ui8) {
+export fn testFail(t: *T, msg: *u8) {
     expect(t, false, msg)
 }
 
@@ -148,7 +148,7 @@ export fn expectNe(t: *T, actual: i64, other: i64) {
 }
 
 /// Unsigned comparison (values above i64 max).
-export fn expectEqUInt(t: *T, actual: ui64, expected: ui64) {
+export fn expectEqUInt(t: *T, actual: u64, expected: u64) {
     if actual == expected { return }
     failLine(t)
     print("expected ")

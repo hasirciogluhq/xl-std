@@ -5,32 +5,32 @@
 // Layout: the message is big-endian. Padding appends 0x80, zero bytes up to 56 mod 64, then the 64-bit big-endian
 // bit length (RFC 3174 section 4). Round constants K and the round functions are in RFC 3174 section 5.
 
-fn rotl(x: ui32, n: ui32) -> ui32 {
+fn rotl(x: u32, n: u32) -> u32 {
     return (x << n) | (x >> (32 - n))
 }
 
 /// Compresses one 64-byte block into `h[0..5]`.
-fn block(h: *ui32, p: *ui8) {
-    local w: [ui32; 80]
+fn block(h: *u32, p: *u8) {
+    local w: [u32; 80]
     local i: usize = 0
     while i < 16 {
-        w[i] = ((p[i * 4] as ui32) << 24) | ((p[i * 4 + 1] as ui32) << 16) |
-               ((p[i * 4 + 2] as ui32) << 8) | (p[i * 4 + 3] as ui32)
+        w[i] = ((p[i * 4] as u32) << 24) | ((p[i * 4 + 1] as u32) << 16) |
+               ((p[i * 4 + 2] as u32) << 8) | (p[i * 4 + 3] as u32)
         i = i + 1
     }
     while i < 80 {
         w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)
         i = i + 1
     }
-    local a: ui32 = h[0]
-    local b: ui32 = h[1]
-    local c: ui32 = h[2]
-    local d: ui32 = h[3]
-    local e: ui32 = h[4]
+    local a: u32 = h[0]
+    local b: u32 = h[1]
+    local c: u32 = h[2]
+    local d: u32 = h[3]
+    local e: u32 = h[4]
     i = 0
     while i < 80 {
-        local f: ui32 = 0
-        local k: ui32 = 0
+        local f: u32 = 0
+        local k: u32 = 0
         if i < 20 {
             f = (b & c) | (~b & d)
             k = 0x5a827999
@@ -44,7 +44,7 @@ fn block(h: *ui32, p: *ui8) {
             f = b ^ c ^ d
             k = 0xca62c1d6
         }
-        local temp: ui32 = rotl(a, 5) + f + e + k + w[i]
+        local temp: u32 = rotl(a, 5) + f + e + k + w[i]
         e = d
         d = c
         c = rotl(b, 30)
@@ -61,10 +61,10 @@ fn block(h: *ui32, p: *ui8) {
 
 /// Streaming SHA-1 state. A plain struct copy (`*a = *b`) snapshots a running hash.
 export struct Sha1 {
-    h: [ui32; 5]
-    buf: [ui8; 64]
+    h: [u32; 5]
+    buf: [u8; 64]
     used: usize
-    total: ui64
+    total: u64
 }
 
 export fn sha1Init(s: *Sha1) {
@@ -77,8 +77,8 @@ export fn sha1Init(s: *Sha1) {
     s.total = 0
 }
 
-export fn sha1Update(s: *Sha1, data: *ui8, n: usize) {
-    s.total = s.total + (n as ui64)
+export fn sha1Update(s: *Sha1, data: *u8, n: usize) {
+    s.total = s.total + (n as u64)
     local i: usize = 0
     while i < n {
         s.buf[s.used] = data[i]
@@ -92,9 +92,9 @@ export fn sha1Update(s: *Sha1, data: *ui8, n: usize) {
 }
 
 /// Finishes a copy of the state: `s` itself keeps absorbing afterwards. Writes the 20 digest bytes to `out`.
-export fn sha1Final(s: *Sha1, out: *ui8) {
+export fn sha1Final(s: *Sha1, out: *u8) {
     local c: Sha1 = *s
-    local bits: ui64 = c.total << 3
+    local bits: u64 = c.total << 3
     c.buf[c.used] = 0x80
     c.used = c.used + 1
     if c.used > 56 {
@@ -111,22 +111,22 @@ export fn sha1Final(s: *Sha1, out: *ui8) {
     }
     local i: usize = 0
     while i < 8 {
-        c.buf[63 - i] = ((bits >> ((i as ui64) * 8)) & 0xff) as ui8
+        c.buf[63 - i] = ((bits >> ((i as u64) * 8)) & 0xff) as u8
         i = i + 1
     }
     block(&c.h[0], &c.buf[0])
     i = 0
     while i < 5 {
-        out[i * 4] = (c.h[i] >> 24) as ui8
-        out[i * 4 + 1] = ((c.h[i] >> 16) & 0xff) as ui8
-        out[i * 4 + 2] = ((c.h[i] >> 8) & 0xff) as ui8
-        out[i * 4 + 3] = (c.h[i] & 0xff) as ui8
+        out[i * 4] = (c.h[i] >> 24) as u8
+        out[i * 4 + 1] = ((c.h[i] >> 16) & 0xff) as u8
+        out[i * 4 + 2] = ((c.h[i] >> 8) & 0xff) as u8
+        out[i * 4 + 3] = (c.h[i] & 0xff) as u8
         i = i + 1
     }
 }
 
 /// SHA-1 of `data[0..n]` into the 20 bytes at `out`.
-export fn sha1(data: *ui8, n: usize, out: *ui8) {
+export fn sha1(data: *u8, n: usize, out: *u8) {
     local s: Sha1
     sha1Init(&s)
     sha1Update(&s, data, n)

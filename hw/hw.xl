@@ -12,7 +12,7 @@
 from "../sys/linux" import sysOpenRead, sysRead, sysClose
 
 /// Reads the whole file at `path` into `buf` (capacity `cap`); returns the byte count (0 when the file cannot be read).
-fn readFile(path: *ui8, buf: *ui8, cap: usize) -> usize {
+fn readFile(path: *u8, buf: *u8, cap: usize) -> usize {
     local fd: i32 = sysOpenRead(path)
     if fd < 0 { return 0 }
     local n: usize = 0
@@ -27,7 +27,7 @@ fn readFile(path: *ui8, buf: *ui8, cap: usize) -> usize {
 }
 
 /// The value of the first `key<TAB or space>...: value` line of `text[0..n)`, trimmed, copied into `out`; its length, or 0.
-fn lineValue(text: *ui8, n: usize, key: *ui8, out: *ui8, cap: usize) -> usize {
+fn lineValue(text: *u8, n: usize, key: *u8, out: *u8, cap: usize) -> usize {
     local klen: usize = 0
     while key[klen] != 0 { klen = klen + 1 }
     local at: usize = 0
@@ -67,7 +67,7 @@ fn lineValue(text: *ui8, n: usize, key: *ui8, out: *ui8, cap: usize) -> usize {
 }
 
 /// Copies `src[0..n)` into `out` without trailing newlines, NUL terminated; returns the length.
-fn trimmedCopy(src: *ui8, n: usize, out: *ui8, cap: usize) -> usize {
+fn trimmedCopy(src: *u8, n: usize, out: *u8, cap: usize) -> usize {
     local e: usize = n
     while e > 0 && (src[e - 1] == 10 || src[e - 1] == 13 || src[e - 1] == 32) { e = e - 1 }
     local len: usize = 0
@@ -80,8 +80,8 @@ fn trimmedCopy(src: *ui8, n: usize, out: *ui8, cap: usize) -> usize {
 }
 
 /// The CPU model name into `out`; its length, or 0 when the kernel does not report one.
-export fn hwCpuModel(out: *ui8, cap: usize) -> usize {
-    local text: [ui8; 16384]
+export fn hwCpuModel(out: *u8, cap: usize) -> usize {
+    local text: [u8; 16384]
     local n: usize = readFile("/proc/cpuinfo", &text[0], 16384)
     local len: usize = lineValue(&text[0], n, "model name", out, cap)
     if len > 0 { return len }
@@ -90,9 +90,9 @@ export fn hwCpuModel(out: *ui8, cap: usize) -> usize {
 
 /// The installed memory in bytes (MemTotal of /proc/meminfo, given in kibibytes), or -1.
 export fn hwMemoryBytes() -> i64 {
-    local text: [ui8; 4096]
+    local text: [u8; 4096]
     local n: usize = readFile("/proc/meminfo", &text[0], 4096)
-    local digits: [ui8; 32]
+    local digits: [u8; 32]
     if lineValue(&text[0], n, "MemTotal:", &digits[0], 32) == 0 { return -1 }
     local kb: i64 = 0
     local i: usize = 0
@@ -104,8 +104,8 @@ export fn hwMemoryBytes() -> i64 {
 }
 
 /// The product name from DMI (for example "ThinkPad X1 Carbon"), or 0 when /sys/class/dmi is not readable.
-export fn hwProductName(out: *ui8, cap: usize) -> usize {
-    local buf: [ui8; 256]
+export fn hwProductName(out: *u8, cap: usize) -> usize {
+    local buf: [u8; 256]
     local n: usize = readFile("/sys/class/dmi/id/product_name", &buf[0], 256)
     if n == 0 { return 0 }
     return trimmedCopy(&buf[0], n, out, cap)
@@ -116,7 +116,7 @@ export fn hwProductName(out: *ui8, cap: usize) -> usize {
 from "../sys/macos" import sysSysctl
 
 /// A string sysctl into `out`; its length (without the NUL), or 0.
-fn stringSysctl(name: *ui8, out: *ui8, cap: usize) -> usize {
+fn stringSysctl(name: *u8, out: *u8, cap: usize) -> usize {
     local len: usize = cap
     if !sysSysctl(name, out as *void, &len) || len == 0 { return 0 }
     local n: usize = len
@@ -125,7 +125,7 @@ fn stringSysctl(name: *ui8, out: *ui8, cap: usize) -> usize {
 }
 
 /// The CPU brand string (for example "Apple M3") into `out`; its length, or 0.
-export fn hwCpuModel(out: *ui8, cap: usize) -> usize {
+export fn hwCpuModel(out: *u8, cap: usize) -> usize {
     return stringSysctl("machdep.cpu.brand_string", out, cap)
 }
 
@@ -138,7 +138,7 @@ export fn hwMemoryBytes() -> i64 {
 }
 
 /// The Mac model identifier (for example "Mac15,3") into `out`; its length, or 0.
-export fn hwProductName(out: *ui8, cap: usize) -> usize {
+export fn hwProductName(out: *u8, cap: usize) -> usize {
     return stringSysctl("hw.model", out, cap)
 }
 
@@ -152,26 +152,26 @@ from "../sys/windows" import sysMemoryTotal, sysGetEnvW
 /// https://learn.microsoft.com/en-us/windows/win32/procthread/processor-identification. It does not carry the marketing
 /// name ("Core i7-12700"), which lives only in the registry value
 /// HARDWARE\DESCRIPTION\System\CentralProcessor\0 : ProcessorNameString.
-export fn hwCpuModel(out: *ui8, cap: usize) -> usize {
-    local wname: [ui16; 21]             // "PROCESSOR_IDENTIFIER" is 20 units plus the NUL
-    local key: *ui8 = "PROCESSOR_IDENTIFIER"
+export fn hwCpuModel(out: *u8, cap: usize) -> usize {
+    local wname: [u16; 21]             // "PROCESSOR_IDENTIFIER" is 20 units plus the NUL
+    local key: *u8 = "PROCESSOR_IDENTIFIER"
     local k: usize = 0
     while key[k] != 0 {
-        wname[k] = key[k] as ui16
+        wname[k] = key[k] as u16
         k = k + 1
     }
     wname[k] = 0
-    local wbuf: [ui16; 256]
-    local need: ui32 = sysGetEnvW(&wname[0], &wbuf[0], 256)
+    local wbuf: [u16; 256]
+    local need: u32 = sysGetEnvW(&wname[0], &wbuf[0], 256)
     if need == 0 || need >= 256 { return 0 }
     // The value is ASCII in practice; each UTF-16 unit is narrowed to its low byte as in std/sys/env, and a unit above 0x7F
     // becomes '?' so the buffer stays valid UTF-8 without a second conversion helper.
     local len: usize = 0
     local i: usize = 0
     while i < (need as usize) && len + 1 < cap {
-        local u: ui16 = wbuf[i]
-        local b: ui8 = 63
-        if u < 0x80 { b = u as ui8 }
+        local u: u16 = wbuf[i]
+        local b: u8 = 63
+        if u < 0x80 { b = u as u8 }
         out[len] = b
         len = len + 1
         i = i + 1
@@ -188,14 +188,14 @@ export fn hwMemoryBytes() -> i64 {
 /// There is no registry-free Windows source for the machine model (DMI/SMBIOS is not exposed by kernel32), so this
 /// reports nothing; see xlang-docs/known-limitations.md. A caller that needs it reads the registry values
 /// HARDWARE\DESCRIPTION\System\BIOS : SystemManufacturer / SystemProductName through RegGetValueW.
-export fn hwProductName(out: *ui8, cap: usize) -> usize {
+export fn hwProductName(out: *u8, cap: usize) -> usize {
     out[0] = 0
     return 0
 }
 
 #else
 
-export fn hwCpuModel(out: *ui8, cap: usize) -> usize {
+export fn hwCpuModel(out: *u8, cap: usize) -> usize {
     return 0
 }
 
@@ -203,7 +203,7 @@ export fn hwMemoryBytes() -> i64 {
     return -1
 }
 
-export fn hwProductName(out: *ui8, cap: usize) -> usize {
+export fn hwProductName(out: *u8, cap: usize) -> usize {
     return 0
 }
 
@@ -213,7 +213,7 @@ export fn hwProductName(out: *ui8, cap: usize) -> usize {
 
 /// The data cache line size in bytes (the coherency line size of cpu0's first cache, sysfs), or 64 when the file is absent.
 export fn hwCacheLineSize() -> usize {
-    local buf: [ui8; 32]
+    local buf: [u8; 32]
     local n: usize = readFile("/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size", &buf[0], 32)
     local v: usize = 0
     local i: usize = 0

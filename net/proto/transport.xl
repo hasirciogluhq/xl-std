@@ -11,8 +11,8 @@ from "../../mem/mem" import currentAllocator
 
 /// The Internet checksum of a pseudo-header followed by a segment. `pseudo` holds the pseudo-header bytes (`pn` of them), and
 /// `seg` the segment (`sn` bytes, its checksum field already zero).
-fn checksumWith(pseudo: *ui8, pn: usize, seg: *ui8, sn: usize) -> ui16 {
-    local buf: *ui8 = currentAllocator.alloc(pn + sn, 1) as *ui8
+fn checksumWith(pseudo: *u8, pn: usize, seg: *u8, sn: usize) -> u16 {
+    local buf: *u8 = currentAllocator.alloc(pn + sn, 1) as *u8
     if buf == nil { panic("transport: out of memory") }
     local i: usize = 0
     while i < pn {
@@ -24,18 +24,18 @@ fn checksumWith(pseudo: *ui8, pn: usize, seg: *ui8, sn: usize) -> ui16 {
         buf[pn + i] = seg[i]
         i = i + 1
     }
-    local c: ui16 = inetChecksum(buf, pn + sn)
+    local c: u16 = inetChecksum(buf, pn + sn)
     currentAllocator.free(buf as *void)
     return c
 }
 
-fn putBe16(out: *ui8, at: usize, v: ui16) {
-    out[at] = (v >> 8) as ui8
-    out[at + 1] = (v & 0xff) as ui8
+fn putBe16(out: *u8, at: usize, v: u16) {
+    out[at] = (v >> 8) as u8
+    out[at + 1] = (v & 0xff) as u8
 }
 
 /// The IPv4 pseudo-header of RFC 768 and RFC 9293 (12 bytes).
-fn pseudo4(src: *ui8, dst: *ui8, proto: ui8, len: usize, out: *ui8) {
+fn pseudo4(src: *u8, dst: *u8, proto: u8, len: usize, out: *u8) {
     local i: usize = 0
     while i < 4 {
         out[i] = src[i]
@@ -44,11 +44,11 @@ fn pseudo4(src: *ui8, dst: *ui8, proto: ui8, len: usize, out: *ui8) {
     }
     out[8] = 0
     out[9] = proto
-    putBe16(out, 10, len as ui16)
+    putBe16(out, 10, len as u16)
 }
 
 /// A 40-byte IPv6 header (RFC 8200 section 3) with the given next header, payload length and hop limit. Returns 40.
-export fn ipv6Header(src: *ui8, dst: *ui8, nextHeader: ui8, payloadLen: ui16, hopLimit: ui8, out: *ui8) -> usize {
+export fn ipv6Header(src: *u8, dst: *u8, nextHeader: u8, payloadLen: u16, hopLimit: u8, out: *u8) -> usize {
     // version 6, traffic class 0, flow label 0
     out[0] = 0x60
     out[1] = 0
@@ -67,20 +67,20 @@ export fn ipv6Header(src: *ui8, dst: *ui8, nextHeader: ui8, payloadLen: ui16, ho
 }
 
 /// A UDP datagram (RFC 768) over IPv4 addresses `src4` and `dst4`: the 8-byte header then `n` payload bytes. Returns the length.
-export fn udpBuild4(src4: *ui8, dst4: *ui8, sport: ui16, dport: ui16, payload: *ui8, n: usize, out: *ui8) -> usize {
+export fn udpBuild4(src4: *u8, dst4: *u8, sport: u16, dport: u16, payload: *u8, n: usize, out: *u8) -> usize {
     local len: usize = 8 + n
     putBe16(out, 0, sport)
     putBe16(out, 2, dport)
-    putBe16(out, 4, len as ui16)
+    putBe16(out, 4, len as u16)
     putBe16(out, 6, 0)
     local i: usize = 0
     while i < n {
         out[8 + i] = payload[i]
         i = i + 1
     }
-    local ph: [ui8; 12]
+    local ph: [u8; 12]
     pseudo4(src4, dst4, 17, len, &ph[0])
-    local c: ui16 = checksumWith(&ph[0], 12, out, len)
+    local c: u16 = checksumWith(&ph[0], 12, out, len)
     if c == 0 { c = 0xffff }
     putBe16(out, 6, c)
     return len
@@ -88,18 +88,18 @@ export fn udpBuild4(src4: *ui8, dst4: *ui8, sport: ui16, dport: ui16, payload: *
 
 /// A TCP segment header without options (RFC 9293 section 3.1, 20 bytes) over IPv4, with the flags of section 3.1 (FIN 0x01,
 /// SYN 0x02, RST 0x04, PSH 0x08, ACK 0x10) and then `n` payload bytes. Returns the length.
-export fn tcpBuild4(src4: *ui8, dst4: *ui8, sport: ui16, dport: ui16, seq: ui32, ack: ui32, flags: ui8, window: ui16, payload: *ui8, n: usize, out: *ui8) -> usize {
+export fn tcpBuild4(src4: *u8, dst4: *u8, sport: u16, dport: u16, seq: u32, ack: u32, flags: u8, window: u16, payload: *u8, n: usize, out: *u8) -> usize {
     local len: usize = 20 + n
     putBe16(out, 0, sport)
     putBe16(out, 2, dport)
-    out[4] = (seq >> 24) as ui8
-    out[5] = ((seq >> 16) & 0xff) as ui8
-    out[6] = ((seq >> 8) & 0xff) as ui8
-    out[7] = (seq & 0xff) as ui8
-    out[8] = (ack >> 24) as ui8
-    out[9] = ((ack >> 16) & 0xff) as ui8
-    out[10] = ((ack >> 8) & 0xff) as ui8
-    out[11] = (ack & 0xff) as ui8
+    out[4] = (seq >> 24) as u8
+    out[5] = ((seq >> 16) & 0xff) as u8
+    out[6] = ((seq >> 8) & 0xff) as u8
+    out[7] = (seq & 0xff) as u8
+    out[8] = (ack >> 24) as u8
+    out[9] = ((ack >> 16) & 0xff) as u8
+    out[10] = ((ack >> 8) & 0xff) as u8
+    out[11] = (ack & 0xff) as u8
     // data offset 5 (no options) in the high nibble of byte 12
     out[12] = 0x50
     out[13] = flags
@@ -111,7 +111,7 @@ export fn tcpBuild4(src4: *ui8, dst4: *ui8, sport: ui16, dport: ui16, seq: ui32,
         out[20 + i] = payload[i]
         i = i + 1
     }
-    local ph: [ui8; 12]
+    local ph: [u8; 12]
     pseudo4(src4, dst4, 6, len, &ph[0])
     putBe16(out, 16, checksumWith(&ph[0], 12, out, len))
     return len
@@ -119,7 +119,7 @@ export fn tcpBuild4(src4: *ui8, dst4: *ui8, sport: ui16, dport: ui16, seq: ui32,
 
 /// An ICMPv6 echo request (type 128) or reply (type 129) with identifier, sequence and `n` data bytes (RFC 4443 section 4.1). The
 /// checksum covers the IPv6 pseudo-header (RFC 8200 section 8.1) with next header 58. Returns the length, 8 + n.
-export fn icmpv6Echo(src: *ui8, dst: *ui8, reply: bool, id: ui16, seq: ui16, payload: *ui8, n: usize, out: *ui8) -> usize {
+export fn icmpv6Echo(src: *u8, dst: *u8, reply: bool, id: u16, seq: u16, payload: *u8, n: usize, out: *u8) -> usize {
     local len: usize = 8 + n
     if reply { out[0] = 129 } else { out[0] = 128 }
     out[1] = 0
@@ -132,7 +132,7 @@ export fn icmpv6Echo(src: *ui8, dst: *ui8, reply: bool, id: ui16, seq: ui16, pay
         i = i + 1
     }
     // pseudo-header: source (16), destination (16), length (32), zeros (3), next header (1)
-    local ph: [ui8; 40]
+    local ph: [u8; 40]
     i = 0
     while i < 16 {
         ph[i] = src[i]
@@ -141,8 +141,8 @@ export fn icmpv6Echo(src: *ui8, dst: *ui8, reply: bool, id: ui16, seq: ui16, pay
     }
     ph[32] = 0
     ph[33] = 0
-    ph[34] = ((len >> 8) & 0xff) as ui8
-    ph[35] = (len & 0xff) as ui8
+    ph[34] = ((len >> 8) & 0xff) as u8
+    ph[35] = (len & 0xff) as u8
     ph[36] = 0
     ph[37] = 0
     ph[38] = 0
@@ -153,7 +153,7 @@ export fn icmpv6Echo(src: *ui8, dst: *ui8, reply: bool, id: ui16, seq: ui16, pay
 
 /// An ARP request for `targetIp` from `senderMac` and `senderIp` (RFC 826, section 3, Ethernet and IPv4): 28 bytes, with the
 /// target hardware address zero. Returns 28.
-export fn arpRequest(senderMac: *ui8, senderIp: *ui8, targetIp: *ui8, out: *ui8) -> usize {
+export fn arpRequest(senderMac: *u8, senderIp: *u8, targetIp: *u8, out: *u8) -> usize {
     putBe16(out, 0, 1)
     putBe16(out, 2, 0x0800)
     out[4] = 6

@@ -17,16 +17,16 @@ define O_WRONLY_CREAT_APPEND = 521     // O_WRONLY | O_CREAT | O_APPEND
 define PROT_READ_WRITE = 3
 define MAP_PRIVATE_ANON = 4098      // MAP_PRIVATE | MAP_ANON
 
-export fn sysWrite(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn sysWrite(fd: i32, buf: *u8, n: usize) -> isize {
     return syscall(SYS_WRITE, fd, buf, n) as isize
 }
 
 /// Writes to a file descriptor; on macOS the same call as `sysWrite` (Windows separates the two).
-export fn sysWriteFile(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn sysWriteFile(fd: i32, buf: *u8, n: usize) -> isize {
     return sysWrite(fd, buf, n)
 }
 
-export fn sysRead(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn sysRead(fd: i32, buf: *u8, n: usize) -> isize {
     return syscall(SYS_READ, fd, buf, n) as isize
 }
 
@@ -54,14 +54,14 @@ export fn sysThreadId() -> i64 {
 }
 
 /// macOS has no futex: waiting spins on the scheduler yield (psynch needs mutex/cond structures).
-export fn sysWait(addr: *ui32, expected: ui32) {
+export fn sysWait(addr: *u32, expected: u32) {
     local spins: i32 = 0
     while __builtin_atomicLoad(addr, MemoryOrder.acquire) == expected && spins < 64 {
         spins = spins + 1
     }
 }
 
-export fn sysWake(addr: *ui32, count: i32) {
+export fn sysWake(addr: *u32, count: i32) {
 }
 
 // ---- threads: libSystem pthreads (decision D1, option A in xlang-docs/known-limitations.md) ------------
@@ -71,31 +71,31 @@ export fn sysWake(addr: *ui32, count: i32) {
 // The thread module keeps its own stack (sysMap) and its own exit word (`ctid`, cleared when the entry returns), so the pthread
 // attribute only points at that stack; the thread is detached at creation.
 
-@library("System") declare fn pthread_create(th: *ui64, attr: *void, start: fn(*void) -> *void, arg: *void) -> i32
+@library("System") declare fn pthread_create(th: *u64, attr: *void, start: fn(*void) -> *void, arg: *void) -> i32
 @library("System") declare fn pthread_attr_init(attr: *void) -> i32
 @library("System") declare fn pthread_attr_setstacksize(attr: *void, size: usize) -> i32
 @library("System") declare fn pthread_attr_destroy(attr: *void) -> i32
-@library("System") declare fn pthread_detach(th: ui64) -> i32
+@library("System") declare fn pthread_detach(th: u64) -> i32
 
 /// Runs on the new pthread: the user entry, then the exit word is cleared (the join protocol of std/thread).
 fn threadTrampoline(p: *void) -> *void {
     local words: *usize = p as *usize
     local entry: fn(*void) = words[0] as fn(*void)
     local arg: *void = words[1] as *void
-    local ctid: *ui32 = words[2] as *ui32
+    local ctid: *u32 = words[2] as *u32
     entry(arg)
     __builtin_atomicStore(ctid, 0, MemoryOrder.release)
     return nil
 }
 
-export fn sysThreadCreate(entry: fn(*void), arg: *void, stack: *void, size: usize, ctid: *ui32) -> i64 {
+export fn sysThreadCreate(entry: fn(*void), arg: *void, stack: *void, size: usize, ctid: *u32) -> i64 {
     // The argument block sits at the bottom of the region: Darwin keeps its own thread structure at the top of a custom stack.
     local block: *usize = stack as *usize
     block[0] = entry as usize
     block[1] = arg as usize
     block[2] = ctid as usize
-    // pthread_attr_t is 64 bytes on arm64 and x86-64 macOS; 128 bytes of ui64 leave room for the opaque layout
-    local attr: [ui64; 16]
+    // pthread_attr_t is 64 bytes on arm64 and x86-64 macOS; 128 bytes of u64 leave room for the opaque layout
+    local attr: [u64; 16]
     if pthread_attr_init(&attr[0] as *void) != 0 { return -1 }
     // Darwin takes the TOP (highest address) of a caller-provided stack: stacks grow down from it
     // pthread allocates the thread stack itself; the caller region only carries the argument block until the join
@@ -103,7 +103,7 @@ export fn sysThreadCreate(entry: fn(*void), arg: *void, stack: *void, size: usiz
         pthread_attr_destroy(&attr[0] as *void)
         return -1
     }
-    local tid: ui64 = 0
+    local tid: u64 = 0
     local r: i32 = pthread_create(&tid, &attr[0] as *void, threadTrampoline, block as *void)
     pthread_attr_destroy(&attr[0] as *void)
     if r != 0 { return -1 }
@@ -129,7 +129,7 @@ export fn sysPollCreate() -> i32 {
 }
 
 export fn sysPollWatch(pfd: i32, fd: i32, write: bool, token: usize) -> i32 {
-    // struct kevent: ident ui64, filter i16, flags ui16, fflags ui32, data i64, udata ui64 (32 bytes)
+    // struct kevent: ident u64, filter i16, flags u16, fflags u32, data i64, udata u64 (32 bytes)
     local ev: [usize; 4]
     ev[0] = fd as usize
     ev[1] = 0
@@ -139,7 +139,7 @@ export fn sysPollWatch(pfd: i32, fd: i32, write: bool, token: usize) -> i32 {
     if write { filter = EVFILT_WRITE }
     local head: *i16 = &ev[1] as *i16
     head[0] = filter
-    local flags: *ui16 = (&ev[1] as usize + 2) as *ui16
+    local flags: *u16 = (&ev[1] as usize + 2) as *u16
     flags[0] = EV_ADD_ONESHOT
     return syscall(SYS_KEVENT, pfd, &ev[0], 1, 0, 0, 0) as i32
 }
@@ -182,17 +182,17 @@ export fn sysPipe(fds: *i32, nonblocking: bool) -> i32 {
 
 // ---- files -----------------------------------------------------------------------------------
 
-fn openPath(path: *ui8, flags: i32) -> i32 {
+fn openPath(path: *u8, flags: i32) -> i32 {
     return syscall(SYS_OPEN, path, flags, 420) as i32
 }
 
 /// Opens for reading; negative errno on failure.
-export fn sysOpenRead(path: *ui8) -> i32 {
+export fn sysOpenRead(path: *u8) -> i32 {
     return openPath(path, O_RDONLY)
 }
 
 /// Opens for writing, creating the file; truncates unless `append`.
-export fn sysOpenWrite(path: *ui8, append: bool) -> i32 {
+export fn sysOpenWrite(path: *u8, append: bool) -> i32 {
     if append { return openPath(path, O_WRONLY_CREAT_APPEND) }
     return openPath(path, O_WRONLY_CREAT_TRUNC)
 }
@@ -201,7 +201,7 @@ export fn sysClose(fd: i32) -> i32 {
     return syscall(SYS_CLOSE, fd) as i32
 }
 
-export fn sysUnlink(path: *ui8) -> i32 {
+export fn sysUnlink(path: *u8) -> i32 {
     return syscall(SYS_UNLINK, path) as i32
 }
 
@@ -218,7 +218,7 @@ define SYS_GETENTROPY = 500
 define SYS_GETTIMEOFDAY = 116
 
 /// Fills `buf[0..n]` with kernel random bytes (getentropy, at most 256 bytes per call).
-export fn sysRandom(buf: *ui8, n: usize) -> bool {
+export fn sysRandom(buf: *u8, n: usize) -> bool {
     local done: usize = 0
     while done < n {
         local take: usize = n - done
@@ -245,9 +245,9 @@ export fn sysClockNanos() -> i64 {
 }
 
 /// sysctlbyname(3) from libSystem: reads or writes the Apple sysctl `name`. 0 on success, -1 on failure (errno is not kept).
-@library("System") declare fn sysctlbyname(name: *ui8, oldp: *void, oldlenp: *usize, newp: *void, newlen: usize) -> i32
+@library("System") declare fn sysctlbyname(name: *u8, oldp: *void, oldlenp: *usize, newp: *void, newlen: usize) -> i32
 
-export fn sysSysctl(name: *ui8, oldp: *void, oldlen: *usize) -> bool {
+export fn sysSysctl(name: *u8, oldp: *void, oldlen: *usize) -> bool {
     return sysctlbyname(name, oldp, oldlen, nil, 0) == 0
 }
 

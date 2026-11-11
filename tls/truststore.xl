@@ -24,25 +24,25 @@ export define TRUST_EMPTY_CHAIN = 7
 
 define DER_CAP = 4096
 
-global bundle: *ui8
+global bundle: *u8
 global bundleCap: usize
 global bundleLen: usize
 global bundleTried: bool
-global bundleOverride: *ui8
+global bundleOverride: *u8
 /// The bundle is a PEM text (false) or a list of `[u32 length, DER bytes]` records (true, Windows).
 global bundleDer: bool
 
 #if os == "windows"
-@library("crypt32") declare fn CertOpenSystemStoreW(prov: *void, name: *ui16) -> *void
+@library("crypt32") declare fn CertOpenSystemStoreW(prov: *void, name: *u16) -> *void
 @library("crypt32") declare fn CertEnumCertificatesInStore(store: *void, prev: *void) -> *void
-@library("crypt32") declare fn CertCloseStore(store: *void, flags: ui32) -> i32
+@library("crypt32") declare fn CertCloseStore(store: *void, flags: u32) -> i32
 
 define WIN_STORE_CAP = 4194304
 
 /// Copies every certificate of the system ROOT store into one DER record list. false if none.
 fn loadWindowsRoots() -> bool {
     // L"ROOT"
-    local name: [ui16; 5]
+    local name: [u16; 5]
     name[0] = 82
     name[1] = 79
     name[2] = 79
@@ -50,7 +50,7 @@ fn loadWindowsRoots() -> bool {
     name[4] = 0
     local store: *void = CertOpenSystemStoreW(nil, &name[0])
     if store == nil { return false }
-    local mem: *ui8 = sysMap(WIN_STORE_CAP) as *ui8
+    local mem: *u8 = sysMap(WIN_STORE_CAP) as *u8
     if mem == nil {
         CertCloseStore(store, 0)
         return false
@@ -58,15 +58,15 @@ fn loadWindowsRoots() -> bool {
     local used: usize = 0
     local ctx: *void = CertEnumCertificatesInStore(store, nil)
     while ctx != nil {
-        // CERT_CONTEXT: dwCertEncodingType (u32), pbCertEncoded (*ui8) at 8, cbCertEncoded (u32) at 16.
-        local words: *ui64 = ctx as *ui64
-        local der: *ui8 = words[1] as *ui8
-        local len: usize = ((ctx as *ui32)[4]) as usize
+        // CERT_CONTEXT: dwCertEncodingType (u32), pbCertEncoded (*u8) at 8, cbCertEncoded (u32) at 16.
+        local words: *u64 = ctx as *u64
+        local der: *u8 = words[1] as *u8
+        local len: usize = ((ctx as *u32)[4]) as usize
         if der != nil && len > 0 && used + 4 + len <= WIN_STORE_CAP {
-            mem[used] = (len % 256) as ui8
-            mem[used + 1] = ((len / 256) % 256) as ui8
-            mem[used + 2] = ((len / 65536) % 256) as ui8
-            mem[used + 3] = ((len / 16777216) % 256) as ui8
+            mem[used] = (len % 256) as u8
+            mem[used + 1] = ((len / 256) % 256) as u8
+            mem[used + 2] = ((len / 65536) % 256) as u8
+            mem[used + 3] = ((len / 16777216) % 256) as u8
             local i: usize = 0
             while i < len {
                 mem[used + 4 + i] = der[i]
@@ -88,7 +88,7 @@ fn loadWindowsRoots() -> bool {
 
 /// Uses `path` (a PEM file with CERTIFICATE blocks) instead of the OS location. Call before any
 /// verification; the NUL-terminated string must stay valid.
-export fn trustSetBundle(path: *ui8) {
+export fn trustSetBundle(path: *u8) {
     bundleOverride = path
     bundleTried = false
     bundleDer = false
@@ -98,7 +98,7 @@ export fn trustSetBundle(path: *ui8) {
 
 /// Like `trustSetBundle`, but the PEM text is already in memory (`pem[0..len]`, which must stay
 /// valid and unchanged). Useful for embedded roots and tests; nothing is copied.
-export fn trustSetBundlePem(pem: *ui8, len: usize) {
+export fn trustSetBundlePem(pem: *u8, len: usize) {
     bundleOverride = nil
     bundle = pem
     bundleCap = len
@@ -107,11 +107,11 @@ export fn trustSetBundlePem(pem: *ui8, len: usize) {
     bundleTried = true
 }
 
-fn loadFile(path: *ui8) -> bool {
+fn loadFile(path: *u8) -> bool {
     local size: i64 = fsSize(path)
     if size <= 0 { return false }
     local cap: usize = (size as usize) + 4096
-    local mem: *ui8 = sysMap(cap) as *ui8
+    local mem: *u8 = sysMap(cap) as *u8
     if mem == nil { return false }
     local n: isize = fsReadAll(path, mem, cap)
     if n <= 0 { return false }
@@ -144,7 +144,7 @@ fn load() {
 
 // ---- PEM ---------------------------------------------------------------------------------------
 
-fn b64(c: ui8) -> i32 {
+fn b64(c: u8) -> i32 {
     if c >= 65 && c <= 90 { return (c - 65) as i32 }
     if c >= 97 && c <= 122 { return (c - 97 + 26) as i32 }
     if c >= 48 && c <= 57 { return (c - 48 + 52) as i32 }
@@ -153,7 +153,7 @@ fn b64(c: ui8) -> i32 {
     return -1
 }
 
-fn startsWith(p: *ui8, end: usize, at: usize, s: *ui8) -> bool {
+fn startsWith(p: *u8, end: usize, at: usize, s: *u8) -> bool {
     local i: usize = 0
     while s[i] != 0 {
         if at + i >= end || p[at + i] != s[i] { return false }
@@ -165,7 +165,7 @@ fn startsWith(p: *ui8, end: usize, at: usize, s: *ui8) -> bool {
 /// Decodes the next `-----BEGIN CERTIFICATE-----` block at or after `*pos` into `der` (capacity
 /// `cap`). Returns the DER length, 0 at the end of the bundle; a block that does not decode or fit
 /// is skipped.
-fn nextCert(pos: *usize, der: *ui8, cap: usize) -> usize {
+fn nextCert(pos: *usize, der: *u8, cap: usize) -> usize {
     if bundleDer {
         // `[u32 length, DER]` records; an oversized record is skipped.
         while *pos + 4 <= bundleLen {
@@ -196,20 +196,20 @@ fn nextCert(pos: *usize, der: *ui8, cap: usize) -> usize {
         }
         p = p + 27
         local n: usize = 0
-        local acc: ui32 = 0
+        local acc: u32 = 0
         local bits: i32 = 0
         local ok: bool = true
         while p < bundleLen && bundle[p] != 45 {            // until '-' of the END line
             local v: i32 = b64(bundle[p])
             if v >= 0 {
-                acc = (acc << 6) | (v as ui32)
+                acc = (acc << 6) | (v as u32)
                 bits = bits + 6
                 if bits >= 8 {
                     bits = bits - 8
                     if n >= cap {
                         ok = false
                     } else {
-                        der[n] = ((acc >> (bits as ui32)) & 0xff) as ui8
+                        der[n] = ((acc >> (bits as u32)) & 0xff) as u8
                         n = n + 1
                     }
                 }
@@ -226,7 +226,7 @@ fn nextCert(pos: *usize, der: *ui8, cap: usize) -> usize {
 export fn trustCount() -> usize {
     load()
     if bundle == nil { return 0 }
-    local der: [ui8; 4096]
+    local der: [u8; 4096]
     local pos: usize = 0
     local count: usize = 0
     local n: usize = nextCert(&pos, &der[0], DER_CAP)
@@ -240,7 +240,7 @@ export fn trustCount() -> usize {
 /// Is there a trusted root, valid at `now`, that issued `c` (names match and its key verifies the
 /// signature)?
 fn anchoredAt(c: *Cert, now: i64) -> bool {
-    local der: [ui8; 4096]
+    local der: [u8; 4096]
     local root: Cert
     local pos: usize = 0
     local n: usize = nextCert(&pos, &der[0], DER_CAP)
@@ -258,7 +258,7 @@ fn anchoredAt(c: *Cert, now: i64) -> bool {
 /// Validates `chain[0..count]` (leaf first, as the server sent it) for `host` at time `now`:
 /// the leaf covers `host`, every certificate is within its validity period, each is signed by the
 /// next (which must be a CA), and the chain reaches a trusted root. Returns a TRUST_* code.
-export fn trustVerifyChain(chain: *Cert, count: usize, host: *ui8, now: i64) -> i32 {
+export fn trustVerifyChain(chain: *Cert, count: usize, host: *u8, now: i64) -> i32 {
     if count == 0 { return TRUST_EMPTY_CHAIN }
     load()
     if bundle == nil { return TRUST_NO_ROOTS }
@@ -279,7 +279,7 @@ export fn trustVerifyChain(chain: *Cert, count: usize, host: *ui8, now: i64) -> 
     return TRUST_UNKNOWN_ISSUER
 }
 
-export fn trustErrorText(code: i32) -> *ui8 {
+export fn trustErrorText(code: i32) -> *u8 {
     if code == TRUST_OK { return "ok" }
     if code == TRUST_NO_ROOTS { return "no trusted root certificates could be loaded from this OS" }
     if code == TRUST_BAD_HOST { return "certificate does not match the host name" }

@@ -14,7 +14,7 @@ from "../str/str" import fromParts
 
 /// A parsed TZif file: byte offsets into `data` (length `n`), so the struct holds no pointers.
 export struct TzFile {
-    data: *ui8
+    data: *u8
     n: usize
     timeSize: usize           // 4 (version 1 block) or 8 (version 2+ block)
     timeCount: usize
@@ -38,11 +38,11 @@ export struct TzLocal {
 }
 
 /// Big-endian unsigned integer of `width` bytes at `p`.
-fn beUnsigned(p: *ui8, width: usize) -> ui64 {
-    local v: ui64 = 0
+fn beUnsigned(p: *u8, width: usize) -> u64 {
+    local v: u64 = 0
     local i: usize = 0
     while i < width {
-        v = (v << 8) | (p[i] as ui64)
+        v = (v << 8) | (p[i] as u64)
         i = i + 1
     }
     return v
@@ -54,13 +54,13 @@ fn blockLen(timeSize: usize, timecnt: usize, typecnt: usize, charcnt: usize, lea
 }
 
 /// Parses a TZif file held in `data[0..n)`. `ok` is false when the magic, the counts or the sizes are inconsistent.
-export fn tzifParse(data: *ui8, n: usize) -> TzFile {
+export fn tzifParse(data: *u8, n: usize) -> TzFile {
     local f: TzFile
     f.data = data
     f.n = n
     if n < 44 { return f }
     if data[0] != 84 || data[1] != 90 || data[2] != 105 || data[3] != 102 { return f }
-    local version: ui8 = data[4]
+    local version: u8 = data[4]
     // version-1 block
     local isut: usize = beUnsigned(&data[20], 4) as usize
     local isstd: usize = beUnsigned(&data[24], 4) as usize
@@ -112,7 +112,7 @@ export fn tzifParse(data: *ui8, n: usize) -> TzFile {
 
 /// The transition time `i` (signed seconds since 1970-01-01 UTC).
 fn transitionAt(f: *TzFile, i: usize) -> i64 {
-    local p: *ui8 = &f.data[f.timesOff + i * f.timeSize]
+    local p: *u8 = &f.data[f.timesOff + i * f.timeSize]
     return beUnsigned(p, f.timeSize) as i64
 }
 
@@ -154,8 +154,8 @@ export fn tzLocalAt(f: *TzFile, t: i64) -> TzLocal {
             return r
         }
     }
-    local tt: *ui8 = &f.data[f.typesOff + ti * 6]
-    r.utoff = ((beUnsigned(tt, 4) as ui32) as i32) as i64
+    local tt: *u8 = &f.data[f.typesOff + ti * 6]
+    r.utoff = ((beUnsigned(tt, 4) as u32) as i32) as i64
     r.isdst = tt[4] != 0
     local ai: usize = tt[5] as usize
     local end: usize = ai
@@ -167,7 +167,7 @@ export fn tzLocalAt(f: *TzFile, t: i64) -> TzLocal {
 
 /// Reads the footer TZ string `data[off..off+len)` (POSIX.1 section 8.3). ok is true only when it names a standard time and no
 /// daylight saving name follows the offset.
-export fn posixFixed(data: *ui8, off: usize, len: usize) -> PosixFixed {
+export fn posixFixed(data: *u8, off: usize, len: usize) -> PosixFixed {
     local r: PosixFixed
     if len == 0 { return r }
     local p: usize = 0

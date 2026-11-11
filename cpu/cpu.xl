@@ -30,7 +30,7 @@ export fn stackPointer() -> usize {
 /// Number of logical CPUs available to the process (>= 1).
 export fn cpuCount() -> i32 {
 #if os == "linux"
-    local mask: [ui64; 16]
+    local mask: [u64; 16]
     local i: i32 = 0
     while i < 16 {
         mask[i as usize] = 0
@@ -41,7 +41,7 @@ export fn cpuCount() -> i32 {
     local n: i32 = 0
     local w: i32 = 0
     while w < 16 {
-        local v: ui64 = mask[w as usize]
+        local v: u64 = mask[w as usize]
         while v != 0 {
             n = n + (v % 2) as i32
             v = v / 2

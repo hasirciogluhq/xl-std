@@ -21,19 +21,19 @@ fn curveSize(curve: i32) -> usize {
 
 /// Jacobian point in Montgomery form; infinity has z == 0.
 struct Pt {
-    x: [ui32; 18]
-    y: [ui32; 18]
-    z: [ui32; 18]
+    x: [u32; 18]
+    y: [u32; 18]
+    z: [u32; 18]
 }
 
-fn hexVal(c: ui8) -> ui8 {
+fn hexVal(c: u8) -> u8 {
     if c >= 97 { return c - 87 }
     return c - 48
 }
 
 /// Parses a hex string of 2*`bytes` digits into `n` limbs.
-fn hexLimbs(out: *ui32, n: usize, hex: *ui8, bytes: usize) {
-    local buf: [ui8; 66]
+fn hexLimbs(out: *u32, n: usize, hex: *u8, bytes: usize) {
+    local buf: [u8; 66]
     local i: usize = 0
     while i < bytes {
         buf[i] = (hexVal(hex[i * 2]) * 16) + hexVal(hex[i * 2 + 1])
@@ -64,15 +64,15 @@ fn pointDouble(c: *Mont, r: *Pt, p: *Pt) {
         setInf(r)
         return
     }
-    local delta: [ui32; 18]
-    local gamma: [ui32; 18]
-    local beta: [ui32; 18]
-    local alpha: [ui32; 18]
-    local t: [ui32; 18]
-    local t2: [ui32; 18]
-    local nx: [ui32; 18]
-    local ny: [ui32; 18]
-    local nz: [ui32; 18]
+    local delta: [u32; 18]
+    local gamma: [u32; 18]
+    local beta: [u32; 18]
+    local alpha: [u32; 18]
+    local t: [u32; 18]
+    local t2: [u32; 18]
+    local nx: [u32; 18]
+    local ny: [u32; 18]
+    local nz: [u32; 18]
     montMul(c, &delta[0], &p.z[0], &p.z[0])
     montMul(c, &gamma[0], &p.y[0], &p.y[0])
     montMul(c, &beta[0], &p.x[0], &gamma[0])
@@ -119,21 +119,21 @@ fn pointAdd(c: *Mont, r: *Pt, p: *Pt, q: *Pt) {
         copyPt(r, p, n)
         return
     }
-    local z1z1: [ui32; 18]
-    local z2z2: [ui32; 18]
-    local u1: [ui32; 18]
-    local u2: [ui32; 18]
-    local s1: [ui32; 18]
-    local s2: [ui32; 18]
-    local h: [ui32; 18]
-    local i: [ui32; 18]
-    local j: [ui32; 18]
-    local rr: [ui32; 18]
-    local v: [ui32; 18]
-    local t: [ui32; 18]
-    local nx: [ui32; 18]
-    local ny: [ui32; 18]
-    local nz: [ui32; 18]
+    local z1z1: [u32; 18]
+    local z2z2: [u32; 18]
+    local u1: [u32; 18]
+    local u2: [u32; 18]
+    local s1: [u32; 18]
+    local s2: [u32; 18]
+    local h: [u32; 18]
+    local i: [u32; 18]
+    local j: [u32; 18]
+    local rr: [u32; 18]
+    local v: [u32; 18]
+    local t: [u32; 18]
+    local nx: [u32; 18]
+    local ny: [u32; 18]
+    local nz: [u32; 18]
     montMul(c, &z1z1[0], &p.z[0], &p.z[0])
     montMul(c, &z2z2[0], &q.z[0], &q.z[0])
     montMul(c, &u1[0], &p.x[0], &z2z2[0])
@@ -177,14 +177,14 @@ fn pointAdd(c: *Mont, r: *Pt, p: *Pt, q: *Pt) {
 }
 
 /// r = k * p (plain scalar of `n` limbs, MSB-first double-and-add).
-fn pointMul(c: *Mont, r: *Pt, k: *ui32, p: *Pt) {
+fn pointMul(c: *Mont, r: *Pt, k: *u32, p: *Pt) {
     local acc: Pt
     setInf(&acc)
     local bits: usize = c.n * 32
     while bits > 0 {
         bits = bits - 1
         pointDouble(c, &acc, &acc)
-        if ((k[bits / 32] >> ((bits % 32) as ui32)) & 1) != 0 {
+        if ((k[bits / 32] >> ((bits % 32) as u32)) & 1) != 0 {
             pointAdd(c, &acc, &acc, p)
         }
     }
@@ -192,7 +192,7 @@ fn pointMul(c: *Mont, r: *Pt, k: *ui32, p: *Pt) {
 }
 
 /// Field prime, group order, `b` and the base point of `curve` into limb arrays of `(size + 3) / 4` limbs.
-fn curveParams(curve: i32, n: usize, p: *ui32, ord: *ui32, b: *ui32, gx: *ui32, gy: *ui32) {
+fn curveParams(curve: i32, n: usize, p: *u32, ord: *u32, b: *u32, gx: *u32, gy: *u32) {
     if curve == ECDSA_P521 {
         hexLimbs(p, n, "01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 66)
         hexLimbs(ord, n, "01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409", 66)
@@ -224,24 +224,24 @@ fn curveParams(curve: i32, n: usize, p: *ui32, ord: *ui32, b: *ui32, gx: *ui32, 
 /// per-signature secret `k` (`size` bytes, 1 <= k < order, from a CSPRNG and never reused). Writes
 /// `r` and `s` (`size` bytes each). False when an input is out of range or this `k` gives r == 0 or
 /// s == 0 (the caller then draws another `k`). Not constant-time (double-and-add on the secret `k`).
-export fn ecdsaSign(curve: i32, d: *ui8, hash: *ui8, hlen: usize, k: *ui8, r: *ui8, s: *ui8) -> bool {
+export fn ecdsaSign(curve: i32, d: *u8, hash: *u8, hlen: usize, k: *u8, r: *u8, s: *u8) -> bool {
     local size: usize = curveSize(curve)
     if size == 0 { return false }
     local n: usize = (size + 3) / 4
-    local p: [ui32; 18]
-    local ord: [ui32; 18]
-    local b: [ui32; 18]
-    local gx: [ui32; 18]
-    local gy: [ui32; 18]
+    local p: [u32; 18]
+    local ord: [u32; 18]
+    local b: [u32; 18]
+    local gx: [u32; 18]
+    local gy: [u32; 18]
     curveParams(curve, n, &p[0], &ord[0], &b[0], &gx[0], &gy[0])
 
-    local dl: [ui32; 18]
-    local kl: [ui32; 18]
+    local dl: [u32; 18]
+    local kl: [u32; 18]
     if !bnFromBytes(&dl[0], n, d, size) || !bnFromBytes(&kl[0], n, k, size) { return false }
     if bnIsZero(&dl[0], n) || bnIsZero(&kl[0], n) { return false }
     if bnCmp(&dl[0], &ord[0], n) >= 0 || bnCmp(&kl[0], &ord[0], n) >= 0 { return false }
 
-    local el: [ui32; 18]
+    local el: [u32; 18]
     local ehl: usize = hlen
     if ehl > size { ehl = size }
     bnFromBytes(&el[0], n, hash, ehl)
@@ -262,13 +262,13 @@ export fn ecdsaSign(curve: i32, d: *ui8, hash: *ui8, hlen: usize, k: *ui8, r: *u
     local pt: Pt
     pointMul(&fc, &pt, &kl[0], &g)
     if isInf(&pt) { return false }
-    local two: [ui32; 18]
-    local exp: [ui32; 18]
+    local two: [u32; 18]
+    local exp: [u32; 18]
     bnZero(&two[0], 18)
     two[0] = 2
     bnSub(&exp[0], &p[0], &two[0], n)
-    local zi: [ui32; 18]
-    local t: [ui32; 18]
+    local zi: [u32; 18]
+    local t: [u32; 18]
     montPow(&fc, &zi[0], &pt.z[0], &exp[0], n)
     montMul(&fc, &zi[0], &zi[0], &zi[0])
     montMul(&fc, &t[0], &pt.x[0], &zi[0])
@@ -277,13 +277,13 @@ export fn ecdsaSign(curve: i32, d: *ui8, hash: *ui8, hlen: usize, k: *ui8, r: *u
     if bnIsZero(&t[0], n) { return false }
 
     // s = k^-1 (e + r d) mod order
-    local km: [ui32; 18]
-    local kinv: [ui32; 18]
-    local rm: [ui32; 18]
-    local dm: [ui32; 18]
-    local em: [ui32; 18]
-    local sm: [ui32; 18]
-    local sl: [ui32; 18]
+    local km: [u32; 18]
+    local kinv: [u32; 18]
+    local rm: [u32; 18]
+    local dm: [u32; 18]
+    local em: [u32; 18]
+    local sm: [u32; 18]
+    local sl: [u32; 18]
     bnSub(&exp[0], &ord[0], &two[0], n)
     montTo(&oc, &km[0], &kl[0])
     montPow(&oc, &kinv[0], &km[0], &exp[0], n)
@@ -302,22 +302,22 @@ export fn ecdsaSign(curve: i32, d: *ui8, hash: *ui8, hlen: usize, k: *ui8, r: *u
 
 /// Verifies the signature (`r`, `s`, each `size` bytes big-endian) over `hash[0..hlen]` against the
 /// public key (`qx`, `qy`) on `curve` (`ECDSA_P256` or `ECDSA_P384`).
-export fn ecdsaVerify(curve: i32, qx: *ui8, qy: *ui8, hash: *ui8, hlen: usize, r: *ui8, s: *ui8) -> bool {
+export fn ecdsaVerify(curve: i32, qx: *u8, qy: *u8, hash: *u8, hlen: usize, r: *u8, s: *u8) -> bool {
     local size: usize = curveSize(curve)
     if size == 0 { return false }
     local n: usize = (size + 3) / 4
 
-    local p: [ui32; 18]
-    local ord: [ui32; 18]
-    local b: [ui32; 18]
-    local gx: [ui32; 18]
-    local gy: [ui32; 18]
+    local p: [u32; 18]
+    local ord: [u32; 18]
+    local b: [u32; 18]
+    local gx: [u32; 18]
+    local gy: [u32; 18]
     curveParams(curve, n, &p[0], &ord[0], &b[0], &gx[0], &gy[0])
 
-    local rl: [ui32; 18]
-    local sl: [ui32; 18]
-    local qxl: [ui32; 18]
-    local qyl: [ui32; 18]
+    local rl: [u32; 18]
+    local sl: [u32; 18]
+    local qxl: [u32; 18]
+    local qyl: [u32; 18]
     if !bnFromBytes(&rl[0], n, r, size) || !bnFromBytes(&sl[0], n, s, size) { return false }
     if !bnFromBytes(&qxl[0], n, qx, size) || !bnFromBytes(&qyl[0], n, qy, size) { return false }
     if bnIsZero(&rl[0], n) || bnIsZero(&sl[0], n) { return false }
@@ -325,7 +325,7 @@ export fn ecdsaVerify(curve: i32, qx: *ui8, qy: *ui8, hash: *ui8, hlen: usize, r
     if bnCmp(&qxl[0], &p[0], n) >= 0 || bnCmp(&qyl[0], &p[0], n) >= 0 { return false }
 
     // e = leftmost `size` bytes of the hash, reduced mod the order
-    local el: [ui32; 18]
+    local el: [u32; 18]
     local ehl: usize = hlen
     if ehl > size { ehl = size }
     bnFromBytes(&el[0], n, hash, ehl)
@@ -343,10 +343,10 @@ export fn ecdsaVerify(curve: i32, qx: *ui8, qy: *ui8, hash: *ui8, hlen: usize, r
     montTo(&fc, &gQ.y[0], &qyl[0])
     bnZero(&gQ.z[0], 18)
     bnCopy(&gQ.z[0], &fc.one[0], n)
-    local lhs: [ui32; 18]
-    local rhs: [ui32; 18]
-    local t: [ui32; 18]
-    local bm: [ui32; 18]
+    local lhs: [u32; 18]
+    local rhs: [u32; 18]
+    local t: [u32; 18]
+    local bm: [u32; 18]
     montMul(&fc, &lhs[0], &gQ.y[0], &gQ.y[0])
     montMul(&fc, &rhs[0], &gQ.x[0], &gQ.x[0])
     montMul(&fc, &rhs[0], &rhs[0], &gQ.x[0])
@@ -358,19 +358,19 @@ export fn ecdsaVerify(curve: i32, qx: *ui8, qy: *ui8, hash: *ui8, hlen: usize, r
     if bnCmp(&lhs[0], &rhs[0], n) != 0 { return false }
 
     // w = s^-1 mod order; u1 = e w, u2 = r w
-    local two: [ui32; 18]
-    local exp: [ui32; 18]
+    local two: [u32; 18]
+    local exp: [u32; 18]
     bnZero(&two[0], 18)
     two[0] = 2
     bnSub(&exp[0], &ord[0], &two[0], n)
-    local sm: [ui32; 18]
-    local wm: [ui32; 18]
+    local sm: [u32; 18]
+    local wm: [u32; 18]
     montTo(&oc, &sm[0], &sl[0])
     montPow(&oc, &wm[0], &sm[0], &exp[0], n)
-    local em: [ui32; 18]
-    local rm: [ui32; 18]
-    local u1: [ui32; 18]
-    local u2: [ui32; 18]
+    local em: [u32; 18]
+    local rm: [u32; 18]
+    local u1: [u32; 18]
+    local u2: [u32; 18]
     montTo(&oc, &em[0], &el[0])
     montTo(&oc, &rm[0], &rl[0])
     montMul(&oc, &u1[0], &em[0], &wm[0])
@@ -393,7 +393,7 @@ export fn ecdsaVerify(curve: i32, qx: *ui8, qy: *ui8, hash: *ui8, hlen: usize, r
 
     // x = X / Z^2 (affine), compared with r mod order
     bnSub(&exp[0], &p[0], &two[0], n)
-    local zi: [ui32; 18]
+    local zi: [u32; 18]
     montPow(&fc, &zi[0], &sum.z[0], &exp[0], n)
     montMul(&fc, &zi[0], &zi[0], &zi[0])
     montMul(&fc, &t[0], &sum.x[0], &zi[0])
@@ -406,9 +406,9 @@ export fn ecdsaVerify(curve: i32, qx: *ui8, qy: *ui8, hash: *ui8, hlen: usize, r
 
 /// Loads the affine point (px, py) into projective Montgomery form `q` and checks that it is on the curve
 /// y^2 = x^3 - 3x + b with both coordinates below the prime (public key validation, SP 800-56A section 5.6.2.3.3).
-fn loadAffine(c: *Mont, n: usize, b: *ui32, px: *ui8, py: *ui8, size: usize, q: *Pt) -> bool {
-    local xl: [ui32; 18]
-    local yl: [ui32; 18]
+fn loadAffine(c: *Mont, n: usize, b: *u32, px: *u8, py: *u8, size: usize, q: *Pt) -> bool {
+    local xl: [u32; 18]
+    local yl: [u32; 18]
     bnFromBytes(&xl[0], n, px, size)
     bnFromBytes(&yl[0], n, py, size)
     if bnCmp(&xl[0], &c.m[0], n) >= 0 || bnCmp(&yl[0], &c.m[0], n) >= 0 { return false }
@@ -416,11 +416,11 @@ fn loadAffine(c: *Mont, n: usize, b: *ui32, px: *ui8, py: *ui8, size: usize, q: 
     montTo(c, &q.y[0], &yl[0])
     bnZero(&q.z[0], 18)
     bnCopy(&q.z[0], &c.one[0], n)
-    local lhs: [ui32; 18]
-    local x2: [ui32; 18]
-    local x3: [ui32; 18]
-    local t: [ui32; 18]
-    local bm: [ui32; 18]
+    local lhs: [u32; 18]
+    local x2: [u32; 18]
+    local x3: [u32; 18]
+    local t: [u32; 18]
+    local bm: [u32; 18]
     montMul(c, &lhs[0], &q.y[0], &q.y[0])
     montMul(c, &x2[0], &q.x[0], &q.x[0])
     montMul(c, &x3[0], &x2[0], &q.x[0])
@@ -434,20 +434,20 @@ fn loadAffine(c: *Mont, n: usize, b: *ui32, px: *ui8, py: *ui8, size: usize, q: 
 
 /// Affine coordinates of the projective point `p` (Montgomery form) into `x` and `y` (plain limbs). Requires p not at
 /// infinity.
-fn affineOf(c: *Mont, n: usize, p: *Pt, x: *ui32, y: *ui32) {
-    local two: [ui32; 18]
-    local exp: [ui32; 18]
+fn affineOf(c: *Mont, n: usize, p: *Pt, x: *u32, y: *u32) {
+    local two: [u32; 18]
+    local exp: [u32; 18]
     bnZero(&two[0], 18)
     two[0] = 2
     bnSub(&exp[0], &c.m[0], &two[0], n)
-    local zi: [ui32; 18]
+    local zi: [u32; 18]
     montPow(c, &zi[0], &p.z[0], &exp[0], n)
-    local zi2: [ui32; 18]
-    local zi3: [ui32; 18]
+    local zi2: [u32; 18]
+    local zi3: [u32; 18]
     montMul(c, &zi2[0], &zi[0], &zi[0])
     montMul(c, &zi3[0], &zi2[0], &zi[0])
-    local xm: [ui32; 18]
-    local ym: [ui32; 18]
+    local xm: [u32; 18]
+    local ym: [u32; 18]
     montMul(c, &xm[0], &p.x[0], &zi2[0])
     montMul(c, &ym[0], &p.y[0], &zi3[0])
     montFrom(c, x, &xm[0])
@@ -455,7 +455,7 @@ fn affineOf(c: *Mont, n: usize, p: *Pt, x: *ui32, y: *ui32) {
 }
 
 /// Writes the curve parameters of `curve` and returns its size in bytes (32 for P-256, 48 for P-384), 0 otherwise.
-fn ecdhSetup(curve: i32, p: *ui32, ord: *ui32, b: *ui32, gx: *ui32, gy: *ui32) -> usize {
+fn ecdhSetup(curve: i32, p: *u32, ord: *u32, b: *u32, gx: *u32, gy: *u32) -> usize {
     local size: usize = curveSize(curve)
     if size == 0 { return 0 }
     curveParams(curve, (size + 3) / 4, p, ord, b, gx, gy)
@@ -464,16 +464,16 @@ fn ecdhSetup(curve: i32, p: *ui32, ord: *ui32, b: *ui32, gx: *ui32, gy: *ui32) -
 
 /// The public key of the private scalar `d` (`size` big-endian bytes, 1 <= d < order): writes Q = d G to `qx` and `qy`.
 /// False when d is out of range or the curve is not P-256 or P-384.
-export fn ecdhPublicKey(curve: i32, d: *ui8, qx: *ui8, qy: *ui8) -> bool {
-    local p: [ui32; 18]
-    local ord: [ui32; 18]
-    local b: [ui32; 18]
-    local gx: [ui32; 18]
-    local gy: [ui32; 18]
+export fn ecdhPublicKey(curve: i32, d: *u8, qx: *u8, qy: *u8) -> bool {
+    local p: [u32; 18]
+    local ord: [u32; 18]
+    local b: [u32; 18]
+    local gx: [u32; 18]
+    local gy: [u32; 18]
     local size: usize = ecdhSetup(curve, &p[0], &ord[0], &b[0], &gx[0], &gy[0])
     if size == 0 { return false }
     local n: usize = (size + 3) / 4
-    local dl: [ui32; 18]
+    local dl: [u32; 18]
     if !bnFromBytes(&dl[0], n, d, size) { return false }
     if bnIsZero(&dl[0], n) || bnCmp(&dl[0], &ord[0], n) >= 0 { return false }
     local fc: Mont
@@ -487,8 +487,8 @@ export fn ecdhPublicKey(curve: i32, d: *ui8, qx: *ui8, qy: *ui8) -> bool {
     local r: Pt
     pointMul(&fc, &r, &dl[0], &g)
     if isInf(&r) { return false }
-    local x: [ui32; 18]
-    local y: [ui32; 18]
+    local x: [u32; 18]
+    local y: [u32; 18]
     affineOf(&fc, n, &r, &x[0], &y[0])
     bnToBytes(&x[0], n, qx, size)
     bnToBytes(&y[0], n, qy, size)
@@ -498,16 +498,16 @@ export fn ecdhPublicKey(curve: i32, d: *ui8, qx: *ui8, qy: *ui8) -> bool {
 /// The ECDH shared secret: the x coordinate of d * Q for the peer point Q = (px, py), written to `out` (`size` bytes).
 /// False when the peer point is not a valid point of the curve, when d is out of range, or when the product is the
 /// point at infinity. The caller hashes the output (SP 800-56A section 5.7.1.2 uses it unhashed; a KDF follows).
-export fn ecdhShared(curve: i32, d: *ui8, px: *ui8, py: *ui8, out: *ui8) -> bool {
-    local p: [ui32; 18]
-    local ord: [ui32; 18]
-    local b: [ui32; 18]
-    local gx: [ui32; 18]
-    local gy: [ui32; 18]
+export fn ecdhShared(curve: i32, d: *u8, px: *u8, py: *u8, out: *u8) -> bool {
+    local p: [u32; 18]
+    local ord: [u32; 18]
+    local b: [u32; 18]
+    local gx: [u32; 18]
+    local gy: [u32; 18]
     local size: usize = ecdhSetup(curve, &p[0], &ord[0], &b[0], &gx[0], &gy[0])
     if size == 0 { return false }
     local n: usize = (size + 3) / 4
-    local dl: [ui32; 18]
+    local dl: [u32; 18]
     if !bnFromBytes(&dl[0], n, d, size) { return false }
     if bnIsZero(&dl[0], n) || bnCmp(&dl[0], &ord[0], n) >= 0 { return false }
     local fc: Mont
@@ -518,8 +518,8 @@ export fn ecdhShared(curve: i32, d: *ui8, px: *ui8, py: *ui8, out: *ui8) -> bool
     local r: Pt
     pointMul(&fc, &r, &dl[0], &q)
     if isInf(&r) { return false }
-    local x: [ui32; 18]
-    local y: [ui32; 18]
+    local x: [u32; 18]
+    local y: [u32; 18]
     affineOf(&fc, n, &r, &x[0], &y[0])
     bnToBytes(&x[0], n, out, size)
     return true
@@ -527,7 +527,7 @@ export fn ecdhShared(curve: i32, d: *ui8, px: *ui8, py: *ui8, out: *ui8) -> bool
 
 /// A new ECDSA or ECDH key pair on P-256 or P-384 (FIPS 186-4 section A.2.1, "extra random bits" omitted): draws
 /// `size` random bytes until the scalar is in [1, order) and writes d and Q = d G. False for an unsupported curve.
-export fn ecdsaKeypair(curve: i32, d: *ui8, qx: *ui8, qy: *ui8) -> bool {
+export fn ecdsaKeypair(curve: i32, d: *u8, qx: *u8, qy: *u8) -> bool {
     local size: usize = curveSize(curve)
     if size == 0 { return false }
     local tries: usize = 0

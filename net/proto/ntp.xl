@@ -12,24 +12,24 @@ define NTP_UNIX_OFFSET = 2208988800
 
 /// A parsed 48-byte NTP packet. Timestamps are kept as the raw 32.32 values.
 export struct NtpPacket {
-    leap: ui8
-    version: ui8
-    mode: ui8
-    stratum: ui8
+    leap: u8
+    version: u8
+    mode: u8
+    stratum: u8
     poll: i8
     precision: i8
-    rootDelay: ui32
-    rootDispersion: ui32
-    refId: ui32
-    reference: ui64
-    origin: ui64
-    receive: ui64
-    transmit: ui64
+    rootDelay: u32
+    rootDispersion: u32
+    refId: u32
+    reference: u64
+    origin: u64
+    receive: u64
+    transmit: u64
     ok: bool
 }
 
 /// A client request (LI 0, VN 4, Mode 3) with the transmit timestamp `xmit`: 48 bytes.
-export fn ntpClientRequest(xmit: ui64) -> String {
+export fn ntpClientRequest(xmit: u64) -> String {
     local out: String = String()
     out.push(0x23)
     putZeros(&out, 39)
@@ -48,9 +48,9 @@ export fn ntpParse(buf: *String) -> NtpPacket {
     p.stratum = buf.at(1)
     p.poll = buf.at(2) as i8
     p.precision = buf.at(3) as i8
-    p.rootDelay = getBe(buf, 4, 4) as ui32
-    p.rootDispersion = getBe(buf, 8, 4) as ui32
-    p.refId = getBe(buf, 12, 4) as ui32
+    p.rootDelay = getBe(buf, 4, 4) as u32
+    p.rootDispersion = getBe(buf, 8, 4) as u32
+    p.refId = getBe(buf, 12, 4) as u32
     p.reference = getBe(buf, 16, 8)
     p.origin = getBe(buf, 24, 8)
     p.receive = getBe(buf, 32, 8)
@@ -60,18 +60,18 @@ export fn ntpParse(buf: *String) -> NtpPacket {
 }
 
 /// Unix seconds of an NTP 32.32 timestamp (the fraction is dropped).
-export fn ntpToUnixSeconds(ts: ui64) -> i64 {
+export fn ntpToUnixSeconds(ts: u64) -> i64 {
     return ((ts >> 32) as i64) - NTP_UNIX_OFFSET
 }
 
 /// The NTP 32.32 timestamp of `nanos` nanoseconds since the Unix epoch: whole seconds plus 2208988800 in the high word, the
 /// fraction `ns / 10^9` in the low word (RFC 5905 section 6).
-export fn ntpFromUnixNanos(nanos: i64) -> ui64 {
-    return (((nanos / 1000000000 + NTP_UNIX_OFFSET) as ui64) << 32) | ((((nanos % 1000000000) as ui64) << 32) / 1000000000)
+export fn ntpFromUnixNanos(nanos: i64) -> u64 {
+    return (((nanos / 1000000000 + NTP_UNIX_OFFSET) as u64) << 32) | ((((nanos % 1000000000) as u64) << 32) / 1000000000)
 }
 
 /// The nanoseconds since the Unix epoch of an NTP 32.32 timestamp (inverse of `ntpFromUnixNanos`, to the nanosecond).
-export fn ntpToUnixNanos(ts: ui64) -> i64 {
+export fn ntpToUnixNanos(ts: u64) -> i64 {
     return ntpToUnixSeconds(ts) * 1000000000 + (((ts & 0xffffffff) * 1000000000 + 0x80000000) >> 32) as i64
 }
 
@@ -82,7 +82,7 @@ export struct NtpOffsetDelay {
     delay: i64
 }
 
-export fn ntpOffsetDelay(t1: ui64, t2: ui64, t3: ui64, t4: ui64) -> NtpOffsetDelay {
+export fn ntpOffsetDelay(t1: u64, t2: u64, t3: u64, t4: u64) -> NtpOffsetDelay {
     local a: i64 = (t2 as i64) - (t1 as i64)
     local b: i64 = (t3 as i64) - (t4 as i64)
     local r: NtpOffsetDelay

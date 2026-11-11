@@ -11,12 +11,12 @@ define DNS_MAX_POINTERS = 16
 
 /// The 12-byte header fields.
 export struct DnsHeader {
-    id: ui16
-    flags: ui16
-    questions: ui16
-    answers: ui16
-    authority: ui16
-    additional: ui16
+    id: u16
+    flags: u16
+    questions: u16
+    answers: u16
+    authority: u16
+    additional: u16
     ok: bool
 }
 
@@ -30,7 +30,7 @@ export struct DnsName {
 
 /// Writes the wire form of the dotted name `name[0..n)` (for example "example.com") into `out` (capacity `cap`); returns its
 /// length, or -1 when a label is empty or longer than 63, the name is longer than 255 bytes, or `cap` is too small.
-export fn dnsWriteName(name: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
+export fn dnsWriteName(name: *u8, n: usize, out: *u8, cap: usize) -> isize {
     local o: usize = 0
     local start: usize = 0
     local i: usize = 0
@@ -42,7 +42,7 @@ export fn dnsWriteName(name: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
             local len: usize = i - start
             if len == 0 || len > 63 { return -1 }
             if o + 1 + len > cap { return -1 }
-            out[o] = len as ui8
+            out[o] = len as u8
             o = o + 1
             local k: usize = 0
             while k < len {
@@ -65,10 +65,10 @@ export fn dnsWriteName(name: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
 }
 
 /// Writes a standard query with one question (QTYPE `qtype`, QCLASS IN) and RD set. Returns the message length, or -1 on error.
-export fn dnsBuildQuery(id: ui16, name: *ui8, n: usize, qtype: ui16, out: *ui8, cap: usize) -> isize {
+export fn dnsBuildQuery(id: u16, name: *u8, n: usize, qtype: u16, out: *u8, cap: usize) -> isize {
     if cap < 12 { return -1 }
-    out[0] = (id >> 8) as ui8
-    out[1] = (id & 0xff) as ui8
+    out[0] = (id >> 8) as u8
+    out[1] = (id & 0xff) as u8
     out[2] = 0x01
     out[3] = 0x00
     out[4] = 0
@@ -83,23 +83,23 @@ export fn dnsBuildQuery(id: ui16, name: *ui8, n: usize, qtype: ui16, out: *ui8, 
     if w < 0 { return -1 }
     local at: usize = 12 + (w as usize)
     if at + 4 > cap { return -1 }
-    out[at] = (qtype >> 8) as ui8
-    out[at + 1] = (qtype & 0xff) as ui8
+    out[at] = (qtype >> 8) as u8
+    out[at + 1] = (qtype & 0xff) as u8
     out[at + 2] = 0
     out[at + 3] = 1
     return (at + 4) as isize
 }
 
 /// Reads the 12-byte header at the start of `msg`.
-export fn dnsParseHeader(msg: *ui8, n: usize) -> DnsHeader {
+export fn dnsParseHeader(msg: *u8, n: usize) -> DnsHeader {
     local h: DnsHeader
     if n < 12 { return h }
-    h.id = ((msg[0] as ui16) << 8) | (msg[1] as ui16)
-    h.flags = ((msg[2] as ui16) << 8) | (msg[3] as ui16)
-    h.questions = ((msg[4] as ui16) << 8) | (msg[5] as ui16)
-    h.answers = ((msg[6] as ui16) << 8) | (msg[7] as ui16)
-    h.authority = ((msg[8] as ui16) << 8) | (msg[9] as ui16)
-    h.additional = ((msg[10] as ui16) << 8) | (msg[11] as ui16)
+    h.id = ((msg[0] as u16) << 8) | (msg[1] as u16)
+    h.flags = ((msg[2] as u16) << 8) | (msg[3] as u16)
+    h.questions = ((msg[4] as u16) << 8) | (msg[5] as u16)
+    h.answers = ((msg[6] as u16) << 8) | (msg[7] as u16)
+    h.authority = ((msg[8] as u16) << 8) | (msg[9] as u16)
+    h.additional = ((msg[10] as u16) << 8) | (msg[11] as u16)
     h.ok = true
     return h
 }
@@ -107,7 +107,7 @@ export fn dnsParseHeader(msg: *ui8, n: usize) -> DnsHeader {
 /// Reads the name at `pos` of `msg[0..n)`, following compression pointers. The dotted text is written to `out` (capacity
 /// `cap`, at least 255 bytes is always enough). `ok` is false for a malformed name, a forward or looping pointer, or a name
 /// that does not fit.
-export fn dnsReadName(msg: *ui8, n: usize, pos: usize, out: *ui8, cap: usize) -> DnsName {
+export fn dnsReadName(msg: *u8, n: usize, pos: usize, out: *u8, cap: usize) -> DnsName {
     local r: DnsName
     local p: usize = pos
     local next: usize = 0
@@ -116,7 +116,7 @@ export fn dnsReadName(msg: *ui8, n: usize, pos: usize, out: *ui8, cap: usize) ->
     local o: usize = 0
     while true {
         if p >= n { return r }
-        local len: ui8 = msg[p]
+        local len: u8 = msg[p]
         if len == 0 {
             if !jumped { next = p + 1 }
             break

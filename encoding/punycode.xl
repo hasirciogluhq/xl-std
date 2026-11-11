@@ -38,13 +38,13 @@ fn punyThreshold(k: i64, bias: i64) -> i64 {
 }
 
 /// Digit value 0 to 35 as a character: 0-25 are a-z, 26-35 are 0-9.
-fn punyDigit(d: i64) -> ui8 {
-    if d < 26 { return (97 + d) as ui8 }
-    return (22 + d) as ui8
+fn punyDigit(d: i64) -> u8 {
+    if d < 26 { return (97 + d) as u8 }
+    return (22 + d) as u8
 }
 
 /// The value of a digit character (a-z and A-Z are 0-25, 0-9 are 26-35), or -1.
-fn punyDigitValue(c: ui8) -> i64 {
+fn punyDigitValue(c: u8) -> i64 {
     if c >= 48 && c <= 57 { return (c as i64) - 22 }
     if c >= 65 && c <= 90 { return (c as i64) - 65 }
     if c >= 97 && c <= 122 { return (c as i64) - 97 }
@@ -52,14 +52,14 @@ fn punyDigitValue(c: ui8) -> i64 {
 }
 
 /// Encodes the code points `cps[0..n)` (no label prefix) into `out`; returns the byte count, or -1 when `cap` is too small.
-export fn punyEncode(cps: *i32, n: usize, out: *ui8, cap: usize) -> isize {
+export fn punyEncode(cps: *i32, n: usize, out: *u8, cap: usize) -> isize {
     local o: usize = 0
     local b: usize = 0
     local i: usize = 0
     while i < n {
         if cps[i] < 128 {
             if o >= cap { return -1 }
-            out[o] = cps[i] as ui8
+            out[o] = cps[i] as u8
             o = o + 1
             b = b + 1
         }
@@ -118,7 +118,7 @@ export fn punyEncode(cps: *i32, n: usize, out: *ui8, cap: usize) -> isize {
 
 /// Decodes the Punycode text `s[0..n)` (no "xn--" prefix) into code points in `out` (capacity `cap`); returns the number of
 /// code points, or -1 for malformed input or overflow.
-export fn punyDecode(s: *ui8, n: usize, out: *i32, cap: usize) -> isize {
+export fn punyDecode(s: *u8, n: usize, out: *i32, cap: usize) -> isize {
     local len: usize = 0
     local dash: usize = n
     local i: usize = 0

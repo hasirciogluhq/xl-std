@@ -10,32 +10,32 @@ from "../../mem/mem" import currentAllocator
 /// Derives `outLen` bytes into `out` from the password `pass` and the salt `salt` with `iterations` rounds (at least 1)
 /// using the HMAC of digest `alg`. False for an unknown digest, zero iterations, or a key longer than the digest output
 /// count allows (outLen must be below 2^32 blocks of the digest size).
-export fn pbkdf2(alg: i32, pass: *ui8, plen: usize, salt: *ui8, slen: usize, iterations: ui32, out: *ui8, outLen: usize) -> bool {
+export fn pbkdf2(alg: i32, pass: *u8, plen: usize, salt: *u8, slen: usize, iterations: u32, out: *u8, outLen: usize) -> bool {
     local hl: usize = digestLen(alg)
     if hl == 0 || iterations == 0 { return false }
-    local buf: *ui8 = currentAllocator.alloc(slen + 4, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(slen + 4, 1) as *u8
     if buf == nil { panic("pbkdf2: out of memory") }
     local i: usize = 0
     while i < slen {
         buf[i] = salt[i]
         i = i + 1
     }
-    local u: [ui8; 64]
-    local t: [ui8; 64]
+    local u: [u8; 64]
+    local t: [u8; 64]
     local done: usize = 0
-    local block: ui32 = 1
+    local block: u32 = 1
     while done < outLen {
-        buf[slen] = ((block >> 24) & 0xff) as ui8
-        buf[slen + 1] = ((block >> 16) & 0xff) as ui8
-        buf[slen + 2] = ((block >> 8) & 0xff) as ui8
-        buf[slen + 3] = (block & 0xff) as ui8
+        buf[slen] = ((block >> 24) & 0xff) as u8
+        buf[slen + 1] = ((block >> 16) & 0xff) as u8
+        buf[slen + 2] = ((block >> 8) & 0xff) as u8
+        buf[slen + 3] = (block & 0xff) as u8
         hmac(alg, pass, plen, buf, slen + 4, &u[0])
         i = 0
         while i < hl {
             t[i] = u[i]
             i = i + 1
         }
-        local j: ui32 = 1
+        local j: u32 = 1
         while j < iterations {
             hmac(alg, pass, plen, &u[0], hl, &u[0])
             i = 0

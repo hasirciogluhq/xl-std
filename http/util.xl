@@ -2,26 +2,26 @@
 // Everything here works on NUL-terminated byte strings and caller-provided buffers.
 from "../mem/memory" import strlen
 
-export fn cstrEq(a: *ui8, b: *ui8) -> bool {
+export fn cstrEq(a: *u8, b: *u8) -> bool {
     local i: usize = 0
     while a[i] != 0 && a[i] == b[i] { i = i + 1 }
     return a[i] == b[i]
 }
 
-export fn lower(c: ui8) -> ui8 {
+export fn lower(c: u8) -> u8 {
     if c >= 65 && c <= 90 { return c + 32 }
     return c
 }
 
 /// Case-insensitive equality of two NUL-terminated strings.
-export fn eqCI(a: *ui8, b: *ui8) -> bool {
+export fn eqCI(a: *u8, b: *u8) -> bool {
     local i: usize = 0
     while a[i] != 0 && lower(a[i]) == lower(b[i]) { i = i + 1 }
     return lower(a[i]) == lower(b[i])
 }
 
 /// Does `s` start with `prefix` (case-insensitive)?
-export fn startsCI(s: *ui8, prefix: *ui8) -> bool {
+export fn startsCI(s: *u8, prefix: *u8) -> bool {
     local i: usize = 0
     while prefix[i] != 0 {
         if lower(s[i]) != lower(prefix[i]) { return false }
@@ -30,7 +30,7 @@ export fn startsCI(s: *ui8, prefix: *ui8) -> bool {
     return true
 }
 
-export fn memMove(dst: *ui8, src: *ui8, n: usize) {
+export fn memMove(dst: *u8, src: *u8, n: usize) {
     local i: usize = 0
     while i < n {
         dst[i] = src[i]
@@ -39,8 +39,8 @@ export fn memMove(dst: *ui8, src: *ui8, n: usize) {
 }
 
 /// Writes the decimal digits of `v` at `buf` and returns how many.
-export fn formatUInt(v: usize, buf: *ui8) -> usize {
-    local tmp: [ui8; 24]
+export fn formatUInt(v: usize, buf: *u8) -> usize {
+    local tmp: [u8; 24]
     local n: usize = 0
     local x: usize = v
     if x == 0 {
@@ -48,7 +48,7 @@ export fn formatUInt(v: usize, buf: *ui8) -> usize {
         return 1
     }
     while x > 0 {
-        tmp[n] = ((x % 10) as ui8) + 48
+        tmp[n] = ((x % 10) as u8) + 48
         x = x / 10
         n = n + 1
     }
@@ -61,8 +61,8 @@ export fn formatUInt(v: usize, buf: *ui8) -> usize {
 }
 
 /// Writes the lowercase hexadecimal digits of `v` at `buf` and returns how many.
-export fn formatHex(v: usize, buf: *ui8) -> usize {
-    local tmp: [ui8; 24]
+export fn formatHex(v: usize, buf: *u8) -> usize {
+    local tmp: [u8; 24]
     local n: usize = 0
     local x: usize = v
     if x == 0 {
@@ -70,7 +70,7 @@ export fn formatHex(v: usize, buf: *ui8) -> usize {
         return 1
     }
     while x > 0 {
-        local d: ui8 = (x % 16) as ui8
+        local d: u8 = (x % 16) as u8
         if d < 10 { tmp[n] = d + 48 } else { tmp[n] = d + 87 }
         x = x / 16
         n = n + 1
@@ -84,7 +84,7 @@ export fn formatHex(v: usize, buf: *ui8) -> usize {
 }
 
 /// Appends `s` at `at` in `buf` (capacity `cap`, truncating); returns the new length.
-export fn append(buf: *ui8, at: usize, cap: usize, s: *ui8) -> usize {
+export fn append(buf: *u8, at: usize, cap: usize, s: *u8) -> usize {
     local n: usize = at
     local i: usize = 0
     while s[i] != 0 && n < cap {
@@ -95,7 +95,7 @@ export fn append(buf: *ui8, at: usize, cap: usize, s: *ui8) -> usize {
     return n
 }
 
-export fn hexDigit(c: ui8) -> i32 {
+export fn hexDigit(c: u8) -> i32 {
     if c >= 48 && c <= 57 { return (c - 48) as i32 }
     if c >= 97 && c <= 102 { return (c - 87) as i32 }
     if c >= 65 && c <= 70 { return (c - 55) as i32 }
@@ -103,7 +103,7 @@ export fn hexDigit(c: ui8) -> i32 {
 }
 
 /// Index of the `\r\n\r\n` that ends the headers, or -1.
-export fn headerEnd(s: *ui8, n: usize) -> isize {
+export fn headerEnd(s: *u8, n: usize) -> isize {
     local i: usize = 0
     while i + 3 < n {
         if s[i] == 13 && s[i + 1] == 10 && s[i + 2] == 13 && s[i + 3] == 10 { return i as isize }
@@ -114,7 +114,7 @@ export fn headerEnd(s: *ui8, n: usize) -> isize {
 
 /// Turns every `\r` of the header block `s[0..he + 3)` into NUL, so each line reads
 /// `Name: value\0\n` and the block ends at a line that starts with NUL.
-export fn terminateLines(s: *ui8, he: usize) {
+export fn terminateLines(s: *u8, he: usize) {
     local i: usize = 0
     while i < he + 3 {
         if s[i] == 13 { s[i] = 0 }
@@ -124,7 +124,7 @@ export fn terminateLines(s: *ui8, he: usize) {
 
 /// Value of header `name` in a block prepared by `terminateLines` (the first line, the request or
 /// status line, is skipped); nil when absent. Names compare case-insensitively.
-export fn headerLookup(block: *ui8, name: *ui8) -> *ui8 {
+export fn headerLookup(block: *u8, name: *u8) -> *u8 {
     local nl: usize = strlen(name)
     local p: usize = 0
     while block[p] != 10 { p = p + 1 }
@@ -144,7 +144,7 @@ export fn headerLookup(block: *ui8, name: *ui8) -> *ui8 {
 }
 
 /// Does the raw `Name: value\r\n` list `headers` contain `name`?
-export fn hasHeader(headers: *ui8, name: *ui8) -> bool {
+export fn hasHeader(headers: *u8, name: *u8) -> bool {
     if headers == nil { return false }
     local nl: usize = strlen(name)
     local p: usize = 0
@@ -157,17 +157,17 @@ export fn hasHeader(headers: *ui8, name: *ui8) -> bool {
 }
 
 /// Decodes `%XX` and `+` in place; returns the new length. Invalid escapes are kept as written.
-export fn urlDecode(s: *ui8) -> usize {
+export fn urlDecode(s: *u8) -> usize {
     local rd: usize = 0
     local wr: usize = 0
     while s[rd] != 0 {
-        local c: ui8 = s[rd]
+        local c: u8 = s[rd]
         if c == 43 {
             s[wr] = 32
             rd = rd + 1
         } else {
             if c == 37 && hexDigit(s[rd + 1]) >= 0 && s[rd + 1] != 0 && hexDigit(s[rd + 2]) >= 0 {
-                s[wr] = ((hexDigit(s[rd + 1]) * 16 + hexDigit(s[rd + 2])) as ui8)
+                s[wr] = ((hexDigit(s[rd + 1]) * 16 + hexDigit(s[rd + 2])) as u8)
                 rd = rd + 3
             } else {
                 s[wr] = c

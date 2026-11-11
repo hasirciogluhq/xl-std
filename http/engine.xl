@@ -111,12 +111,12 @@ export class Engine {
     }
 
     /// Serves on `port` on all interfaces, until the process ends. Returns -1 when the socket cannot be set up.
-    fn Run(self, port: ui16) -> i32 {
+    fn Run(self, port: u16) -> i32 {
         return routerServe(self as *void, engineServe, 0, port, noListen)
     }
 
     /// Serves HTTPS on `port` with the credentials of `cr`.
-    fn RunTLS(self, port: ui16, cr: *TlsCredentials) -> i32 {
+    fn RunTLS(self, port: u16, cr: *TlsCredentials) -> i32 {
         return routerServeTls(self as *void, engineServe, 0, port, cr, noListen)
     }
 

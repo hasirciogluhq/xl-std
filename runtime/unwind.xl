@@ -29,7 +29,7 @@ fn frameWord(fp: usize, i: usize) -> usize {
     return p[i]
 }
 
-fn tryEnter(snap: *usize, msg: *ui8) {
+fn tryEnter(snap: *usize, msg: *u8) {
     msg[0] = 0
     snap[WORD_MESSAGE] = msg as usize
     mutexLock(&tryLock)
@@ -154,7 +154,7 @@ fn unwindTo(fp: usize, target: usize) {
 
 /// Called by `panic`: when a `try` encloses the caller, copies the message into its buffer and
 /// unwinds to it (does not return). Returns when there is none.
-export fn unwindPanic(msg: *ui8) {
+export fn unwindPanic(msg: *u8) {
     local fp: usize = 0        // this function's own frame (read inline: a helper would be its own frame)
 #if arch == "x86_64"
     __builtin_asm("mov {0}, rbp", out(reg) fp)
@@ -165,7 +165,7 @@ export fn unwindPanic(msg: *ui8) {
     if target == 0 {
         return
     }
-    local dst: *ui8 = (target as *usize)[WORD_MESSAGE] as *ui8
+    local dst: *u8 = (target as *usize)[WORD_MESSAGE] as *u8
     local i: usize = 0
     while i < MESSAGE_MAX - 1 && msg[i] != 0 {
         dst[i] = msg[i]
@@ -177,7 +177,7 @@ export fn unwindPanic(msg: *ui8) {
 
 /// The `unwind` role. 0 = a `try` body was left normally, 1 = a `try` was entered, 2 = a landing
 /// pad finished its cleanups and the unwinding goes on.
-register(unwind) fn unwindHook(op: i32, snapshot: *usize, message: *ui8) {
+register(unwind) fn unwindHook(op: i32, snapshot: *usize, message: *u8) {
     if op == 1 {
         tryEnter(snapshot, message)
         return

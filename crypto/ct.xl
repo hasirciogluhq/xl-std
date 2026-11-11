@@ -10,8 +10,8 @@
 //   that tags are compared in constant time.
 
 /// True when `a[0..n)` and `b[0..n)` hold the same bytes. Visits every byte, with no early exit.
-export fn constantTimeEq(a: *ui8, b: *ui8, n: usize) -> bool {
-    local diff: ui8 = 0
+export fn constantTimeEq(a: *u8, b: *u8, n: usize) -> bool {
+    local diff: u8 = 0
     local i: usize = 0
     while i < n {
         diff = diff | (a[i] ^ b[i])
@@ -21,7 +21,7 @@ export fn constantTimeEq(a: *ui8, b: *ui8, n: usize) -> bool {
 }
 
 /// Writes `n` zero bytes at `p` with sequentially consistent atomic stores (see the file header).
-export fn secureZero(p: *ui8, n: usize) {
+export fn secureZero(p: *u8, n: usize) {
     local i: usize = 0
     while i < n {
         __builtin_atomicStore(&p[i], 0, MemoryOrder.seqCst)

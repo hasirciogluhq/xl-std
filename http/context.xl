@@ -167,7 +167,7 @@ export class Context {
 
     fn WriteChunk(self, data: str) {
         if !self.streaming || self.isHead || data.len == 0 { return }
-        local hex: [ui8; 16]
+        local hex: [u8; 16]
         local n: usize = hexLength(data.len, &hex[0])
         self.writeBytes(&hex[0], n)
         self.writeRaw("\r\n")
@@ -246,7 +246,7 @@ export class Context {
     fn respond(self, code: i32, contentType: str, body: str) {
         if self.responded { return }
         self.writeHead(code, contentType)
-        local num: [ui8; 24]
+        local num: [u8; 24]
         local len: usize = formatUInt(body.len, &num[0])
         self.writeRaw("Content-Length: ")
         self.writeBytes(&num[0], len)
@@ -258,7 +258,7 @@ export class Context {
     }
 
     fn writeHead(self, code: i32, contentType: str) {
-        local num: [ui8; 24]
+        local num: [u8; 24]
         local len: usize = formatUInt(code as usize, &num[0])
         self.writeRaw("HTTP/1.1 ")
         self.writeBytes(&num[0], len)
@@ -267,7 +267,7 @@ export class Context {
         self.writeRaw("\r\nContent-Type: ")
         self.writeBytes(contentType.ptr, contentType.len)
         self.writeRaw("\r\nDate: ")
-        local dateBuf: [ui8; 40]
+        local dateBuf: [u8; 40]
         local dl: usize = httpDate(&dateBuf[0])
         self.writeBytes(&dateBuf[0], dl)
         self.writeRaw("\r\n")
@@ -288,7 +288,7 @@ export class Context {
         self.writeBytes(s.ptr, s.len)
     }
 
-    fn writeBytes(self, data: *ui8, n: usize) {
+    fn writeBytes(self, data: *u8, n: usize) {
         if self.tls != nil {
             tlsWrite(self.tls, data, n)
             return
@@ -303,13 +303,13 @@ export class Context {
 }
 
 /// Hex digits of `v` followed by nothing (chunk size line, RFC 9112 section 7.1); returns the length written.
-fn hexLength(v: usize, out: *ui8) -> usize {
-    local digits: [ui8; 16]
+fn hexLength(v: usize, out: *u8) -> usize {
+    local digits: [u8; 16]
     local n: usize = 0
     local x: usize = v
     while true {
         local d: usize = x % 16
-        if d < 10 { digits[n] = (48 + d) as ui8 } else { digits[n] = (87 + d) as ui8 }
+        if d < 10 { digits[n] = (48 + d) as u8 } else { digits[n] = (87 + d) as u8 }
         n = n + 1
         x = x / 16
         if x == 0 { break }
@@ -365,8 +365,8 @@ fn decodeField(v: str) -> String {
             out.append(" ")
             i = i + 1
         } else if v[i] == 37 && i + 2 < v.len && hexValue(v[i + 1]) >= 0 && hexValue(v[i + 2]) >= 0 {
-            local b: ui8 = ((hexValue(v[i + 1]) * 16) + hexValue(v[i + 2])) as ui8
-            out.append(fromParts(&b as *ui8, 1))
+            local b: u8 = ((hexValue(v[i + 1]) * 16) + hexValue(v[i + 2])) as u8
+            out.append(fromParts(&b as *u8, 1))
             i = i + 3
         } else {
             out.append(fromParts(&v.ptr[i], 1))
@@ -377,7 +377,7 @@ fn decodeField(v: str) -> String {
 }
 
 /// The value of a hex digit, or -1.
-fn hexValue(c: ui8) -> i32 {
+fn hexValue(c: u8) -> i32 {
     if c >= 48 && c <= 57 { return (c - 48) as i32 }
     if c >= 65 && c <= 70 { return (c - 55) as i32 }
     if c >= 97 && c <= 102 { return (c - 87) as i32 }
@@ -415,7 +415,7 @@ fn eqCI(a: str, b: str) -> bool {
     return true
 }
 
-export fn statusText(status: i32) -> *ui8 {
+export fn statusText(status: i32) -> *u8 {
     if status == 200 { return "OK" }
     if status == 201 { return "Created" }
     if status == 202 { return "Accepted" }
@@ -453,7 +453,7 @@ export fn statusText(status: i32) -> *ui8 {
 /// Status line, `Content-Type` and the headers added with `ctxSetHeader`.
 /// The current time in the IMF-fixdate form of RFC 9110 section 5.6.7, "Sun, 06 Nov 1994 08:49:37 GMT", into `out` (at least
 /// 29 bytes); returns the length. A clock that is not set reads as the epoch.
-export fn httpDate(out: *ui8) -> usize {
+export fn httpDate(out: *u8) -> usize {
     local t: i64 = sysClockSeconds()
     if t < 0 { t = 0 }
     local days: i64 = t / 86400
@@ -502,12 +502,12 @@ export fn httpDate(out: *ui8) -> usize {
 }
 
 /// Writes `v` in decimal, zero padded to `width` digits, at `out[at..]`.
-fn putPadded(out: *ui8, at: usize, v: i64, width: usize) {
+fn putPadded(out: *u8, at: usize, v: i64, width: usize) {
     local x: i64 = v
     local i: usize = width
     while i > 0 {
         i = i - 1
-        out[at + i] = (48 + (x % 10)) as ui8
+        out[at + i] = (48 + (x % 10)) as u8
         x = x / 10
     }
 }

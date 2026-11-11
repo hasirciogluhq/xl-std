@@ -12,23 +12,23 @@ define STATUS_PENDING = 0x103
 define STATUS_END_OF_FILE = 0xC0000011
 define STATUS_PIPE_BROKEN = 0xC000014B
 
-@library("ntdll") declare fn NtWriteFile(h: i64, event: i64, apc: *void, apcCtx: *void, iosb: *i64, buf: *ui8, len: ui32, offset: *i64, key: *ui32) -> i32
-@library("ntdll") declare fn NtReadFile(h: i64, event: i64, apc: *void, apcCtx: *void, iosb: *i64, buf: *ui8, len: ui32, offset: *i64, key: *ui32) -> i32
-@library("ntdll") declare fn NtCreateFile(h: *i64, access: ui32, attrs: *ui64, iosb: *i64, alloc: *i64, fileAttrs: ui32, share: ui32, disposition: ui32, options: ui32, ea: *void, eaLen: ui32) -> i32
-@library("ntdll") declare fn NtDeleteFile(attrs: *ui64) -> i32
+@library("ntdll") declare fn NtWriteFile(h: i64, event: i64, apc: *void, apcCtx: *void, iosb: *i64, buf: *u8, len: u32, offset: *i64, key: *u32) -> i32
+@library("ntdll") declare fn NtReadFile(h: i64, event: i64, apc: *void, apcCtx: *void, iosb: *i64, buf: *u8, len: u32, offset: *i64, key: *u32) -> i32
+@library("ntdll") declare fn NtCreateFile(h: *i64, access: u32, attrs: *u64, iosb: *i64, alloc: *i64, fileAttrs: u32, share: u32, disposition: u32, options: u32, ea: *void, eaLen: u32) -> i32
+@library("ntdll") declare fn NtDeleteFile(attrs: *u64) -> i32
 @library("ntdll") declare fn NtClose(h: i64) -> i32
-@library("ntdll") declare fn NtQueryInformationFile(h: i64, iosb: *i64, info: *void, len: ui32, infoClass: ui32) -> i32
-@library("ntdll") declare fn NtWaitForSingleObject(h: i64, alertable: ui8, timeout: *i64) -> i32
+@library("ntdll") declare fn NtQueryInformationFile(h: i64, iosb: *i64, info: *void, len: u32, infoClass: u32) -> i32
+@library("ntdll") declare fn NtWaitForSingleObject(h: i64, alertable: u8, timeout: *i64) -> i32
 @library("ntdll") declare fn NtTerminateProcess(process: i64, status: i32) -> i32
-@library("ntdll") declare fn NtAllocateVirtualMemory(process: i64, base: **void, zeroBits: usize, size: *usize, allocType: ui32, protect: ui32) -> i32
-@library("ntdll") declare fn NtFreeVirtualMemory(process: i64, base: **void, size: *usize, freeType: ui32) -> i32
+@library("ntdll") declare fn NtAllocateVirtualMemory(process: i64, base: **void, zeroBits: usize, size: *usize, allocType: u32, protect: u32) -> i32
+@library("ntdll") declare fn NtFreeVirtualMemory(process: i64, base: **void, size: *usize, freeType: u32) -> i32
 @library("ntdll") declare fn NtYieldExecution() -> i32
-@library("ntdll") declare fn RtlDosPathNameToNtPathName_U(dos: *ui16, nt: *ui64, part: *void, relative: *void) -> ui8
-@library("ntdll") declare fn RtlFreeUnicodeString(s: *ui64)
+@library("ntdll") declare fn RtlDosPathNameToNtPathName_U(dos: *u16, nt: *u64, part: *void, relative: *void) -> u8
+@library("ntdll") declare fn RtlFreeUnicodeString(s: *u64)
 
 @library("kernel32") declare fn GetStdHandle(which: i32) -> i64
 
-@library("bcrypt") declare fn BCryptGenRandom(alg: *void, buf: *ui8, len: ui32, flags: ui32) -> i32
+@library("bcrypt") declare fn BCryptGenRandom(alg: *void, buf: *u8, len: u32, flags: u32) -> i32
 
 global ioStatus: [i64; 2]
 
@@ -51,27 +51,27 @@ fn finish(h: i64, status: i32, iosb: *i64) -> i32 {
 // Writes to a socket or a file handle. Code that writes only to files (the panic message) calls
 // `sysWriteFile` instead, so the socket branch and ws2_32 are not linked into programs that never use sockets
 // (plan 24, reachability pruning).
-export fn sysWrite(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn sysWrite(fd: i32, buf: *u8, n: usize) -> isize {
     if isSocket(fd) { return sockSend(fd, buf, n) }
     return sysWriteFile(fd, buf, n)
 }
 
 /// Writes to a file handle through NtWriteFile. A socket fd is not valid here.
-export fn sysWriteFile(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn sysWriteFile(fd: i32, buf: *u8, n: usize) -> isize {
     local h: i64 = stdHandle(fd)
     local io: [i64; 2]
-    local len: ui32 = n as ui32
+    local len: u32 = n as u32
     if n > 1073741824 { len = 1073741824 }
     local st: i32 = finish(h, NtWriteFile(h, 0, nil, nil, &io[0], buf, len, nil, nil), &io[0])
     if st < 0 { return -1 }
     return io[1] as isize
 }
 
-export fn sysRead(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn sysRead(fd: i32, buf: *u8, n: usize) -> isize {
     if isSocket(fd) { return sockRecv(fd, buf, n) }
     local h: i64 = stdHandle(fd)
     local io: [i64; 2]
-    local len: ui32 = n as ui32
+    local len: u32 = n as u32
     if n > 1073741824 { len = 1073741824 }
     local st: i32 = finish(h, NtReadFile(h, 0, nil, nil, &io[0], buf, len, nil, nil), &io[0])
     if st == (STATUS_END_OF_FILE as i32) || st == (STATUS_PIPE_BROKEN as i32) { return 0 }
@@ -115,9 +115,9 @@ define PAGE_NOACCESS_PROT = 1           // PAGE_NOACCESS
 // single region and the single `VirtualFree(MEM_RELEASE)` below releases all of it. (The alternative — reserve
 // `size + page`, then commit only `size` — needs two calls and leaves the guard page merely reserved.) See the
 // VirtualAlloc remarks on page protection.
-@library("kernel32") declare fn VirtualAlloc(base: *void, size: usize, allocType: ui32, protect: ui32) -> *void
-@library("kernel32") declare fn VirtualProtect(base: *void, size: usize, newProtect: ui32, oldProtect: *ui32) -> i32
-@library("kernel32") declare fn VirtualFree(base: *void, size: usize, freeType: ui32) -> i32
+@library("kernel32") declare fn VirtualAlloc(base: *void, size: usize, allocType: u32, protect: u32) -> *void
+@library("kernel32") declare fn VirtualProtect(base: *void, size: usize, newProtect: u32, oldProtect: *u32) -> i32
+@library("kernel32") declare fn VirtualFree(base: *void, size: usize, freeType: u32) -> i32
 
 // SYSTEM_INFO (sysinfoapi.h), in documented field order:
 //   union { DWORD dwOemId; struct { WORD wProcessorArchitecture; WORD wReserved; } }  offset 0..4
@@ -134,14 +134,14 @@ define PAGE_NOACCESS_PROT = 1           // PAGE_NOACCESS
 define SYSTEM_INFO_SIZE = 48
 define SYSTEM_INFO_PAGE_SIZE = 4
 // https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsysteminfo
-@library("kernel32") declare fn GetSystemInfo(info: *ui8)
+@library("kernel32") declare fn GetSystemInfo(info: *u8)
 
 /// The page size the OS rounds every protection change to (dwPageSize of SYSTEM_INFO; 4096 on x86-64 and arm64 Windows, but
 /// read instead of assumed).
 fn pageSize() -> usize {
-    local buf: [ui8; SYSTEM_INFO_SIZE]
+    local buf: [u8; SYSTEM_INFO_SIZE]
     GetSystemInfo(&buf[0])
-    local v: *ui32 = (&buf[0] as usize + SYSTEM_INFO_PAGE_SIZE) as *ui32
+    local v: *u32 = (&buf[0] as usize + SYSTEM_INFO_PAGE_SIZE) as *u32
     if v[0] == 0 { return 4096 }
     return v[0] as usize
 }
@@ -154,7 +154,7 @@ export fn sysMapGuarded(size: usize) -> *void {
     if base == nil { return nil }
     // The guard page is the lowest page of the region: the usable base is the page after it.
     local guard: *void = base
-    local old: ui32 = 0
+    local old: u32 = 0
     if VirtualProtect(guard, page, PAGE_NOACCESS_PROT, &old) == 0 {
         VirtualFree(base, 0, MEM_RELEASE_FLAG)
         return nil
@@ -177,19 +177,19 @@ export fn sysThreadId() -> i64 {
     return 0
 }
 
-export fn sysWait(addr: *ui32, expected: ui32) {
+export fn sysWait(addr: *u32, expected: u32) {
     local spins: i32 = 0
     while __builtin_atomicLoad(addr, MemoryOrder.acquire) == expected && spins < 64 {
         spins = spins + 1
     }
 }
 
-export fn sysWake(addr: *ui32, count: i32) {
+export fn sysWake(addr: *u32, count: i32) {
 }
 
 // Threads need `NtCreateThreadEx` plus a futex-like wait (WaitOnAddress); not done yet, the scheduler
 // stays on one thread like macOS (see xlang-docs/known-limitations.md).
-export fn sysThreadCreate(entry: fn(*void), arg: *void, stack: *void, size: usize, ctid: *ui32) -> i64 {
+export fn sysThreadCreate(entry: fn(*void), arg: *void, stack: *void, size: usize, ctid: *u32) -> i64 {
     return -1
 }
 
@@ -209,12 +209,12 @@ define WSA_POLL_OUT = 16          // 0x0010
 define WSA_POLLFD_SIZE = 16
 define WATCH_CAP = 256            // watches held by the process, shared by every poll set
 
-@library("ws2_32") declare fn WSAPoll(fds: *ui8, n: ui32, timeout: i32) -> i32
+@library("ws2_32") declare fn WSAPoll(fds: *u8, n: u32, timeout: i32) -> i32
 
 /// One interest: a socket watched by poll set `owner`. `used` false means the slot is free.
 struct PollWatch {
     owner: i32
-    sock: ui64
+    sock: u64
     events: i16
     token: usize
     used: bool
@@ -234,7 +234,7 @@ export fn sysPollCreate() -> i32 {
 /// or when the process-wide table is full.
 export fn sysPollWatch(pfd: i32, fd: i32, write: bool, token: usize) -> i32 {
     if !isSocket(fd) { return -1 }
-    local sock: ui64 = socketOf(fd)
+    local sock: u64 = socketOf(fd)
     local ev: i16 = WSA_POLL_IN as i16
     if write { ev = WSA_POLL_OUT as i16 }
     local free: i32 = -1
@@ -261,14 +261,14 @@ export fn sysPollWatch(pfd: i32, fd: i32, write: bool, token: usize) -> i32 {
 /// ones (at most `max`); returns how many. Fired watches are removed. An empty set returns 0 at once
 /// (WSAPoll rejects an empty array), so it does not sleep for `timeoutMs`.
 export fn sysPollWait(pfd: i32, tokens: *usize, max: i32, timeoutMs: i32) -> i32 {
-    local buf: [ui8; 4096]          // WATCH_CAP WSAPOLLFD entries of 16 bytes
+    local buf: [u8; 4096]          // WATCH_CAP WSAPOLLFD entries of 16 bytes
     local slotOf: [usize; 256]      // the pollWatches index behind each WSAPOLLFD entry
     local n: usize = 0
     local i: usize = 0
     while i < WATCH_CAP {
         if pollWatches[i].used && pollWatches[i].owner == pfd {
             local base: usize = &buf[0] as usize + n * WSA_POLLFD_SIZE
-            local fdp: *ui64 = base as *ui64
+            local fdp: *u64 = base as *u64
             fdp[0] = pollWatches[i].sock
             local evp: *i16 = (base + 8) as *i16
             evp[0] = pollWatches[i].events
@@ -279,7 +279,7 @@ export fn sysPollWait(pfd: i32, tokens: *usize, max: i32, timeoutMs: i32) -> i32
         i = i + 1
     }
     if n == 0 { return 0 }
-    local r: i32 = WSAPoll(&buf[0], n as ui32, timeoutMs)
+    local r: i32 = WSAPoll(&buf[0], n as u32, timeoutMs)
     if r <= 0 { return 0 }
     local out: i32 = 0
     local k: usize = 0
@@ -303,11 +303,11 @@ export fn sysPipe(fds: *i32, nonblocking: bool) -> i32 {
 // ---- files ---------------------------------------------------------------------------------------
 
 /// UTF-8 (ASCII-oriented: bytes >= 0x80 are widened as Latin-1) -> UTF-16, `/` becomes `\`. false if too long.
-fn widen(path: *ui8, out: *ui16, cap: usize) -> bool {
+fn widen(path: *u8, out: *u16, cap: usize) -> bool {
     local i: usize = 0
     while path[i] != 0 {
         if i + 1 >= cap { return false }
-        local c: ui16 = path[i] as ui16
+        local c: u16 = path[i] as u16
         if c == 47 { c = 92 }
         out[i] = c
         i = i + 1
@@ -317,15 +317,15 @@ fn widen(path: *ui8, out: *ui16, cap: usize) -> bool {
 }
 
 /// NtCreateFile on a DOS path. `access`/`disposition`/`options` as in the NT API; -1 on failure.
-fn createFile(path: *ui8, access: ui32, disposition: ui32, options: ui32) -> i32 {
-    local wide: [ui16; 520]
+fn createFile(path: *u8, access: u32, disposition: u32, options: u32) -> i32 {
+    local wide: [u16; 520]
     if !widen(path, &wide[0], 520) { return -1 }
-    local name: [ui64; 2]
+    local name: [u64; 2]
     if RtlDosPathNameToNtPathName_U(&wide[0], &name[0], nil, nil) == 0 { return -1 }
-    local oa: [ui64; 6]
+    local oa: [u64; 6]
     oa[0] = 48
     oa[1] = 0
-    oa[2] = &name[0] as ui64
+    oa[2] = &name[0] as u64
     oa[3] = 64                  // OBJ_CASE_INSENSITIVE
     oa[4] = 0
     oa[5] = 0
@@ -341,12 +341,12 @@ fn createFile(path: *ui8, access: ui32, disposition: ui32, options: ui32) -> i32
 // FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE
 define FILE_IO_OPTIONS = 96
 
-export fn sysOpenRead(path: *ui8) -> i32 {
+export fn sysOpenRead(path: *u8) -> i32 {
     // GENERIC_READ | SYNCHRONIZE, FILE_OPEN
     return createFile(path, 0x80100000, 1, FILE_IO_OPTIONS)
 }
 
-export fn sysOpenWrite(path: *ui8, append: bool) -> i32 {
+export fn sysOpenWrite(path: *u8, append: bool) -> i32 {
     if append {
         // FILE_APPEND_DATA | SYNCHRONIZE, FILE_OPEN_IF: writes go to the end of the file
         return createFile(path, 0x100004, 3, FILE_IO_OPTIONS)
@@ -361,15 +361,15 @@ export fn sysClose(fd: i32) -> i32 {
     return 0
 }
 
-export fn sysUnlink(path: *ui8) -> i32 {
-    local wide: [ui16; 520]
+export fn sysUnlink(path: *u8) -> i32 {
+    local wide: [u16; 520]
     if !widen(path, &wide[0], 520) { return -1 }
-    local name: [ui64; 2]
+    local name: [u64; 2]
     if RtlDosPathNameToNtPathName_U(&wide[0], &name[0], nil, nil) == 0 { return -1 }
-    local oa: [ui64; 6]
+    local oa: [u64; 6]
     oa[0] = 48
     oa[1] = 0
-    oa[2] = &name[0] as ui64
+    oa[2] = &name[0] as u64
     oa[3] = 64
     oa[4] = 0
     oa[5] = 0
@@ -381,7 +381,7 @@ export fn sysUnlink(path: *ui8) -> i32 {
 
 /// Metadata of `path` (a file or a directory) into `out[0..3]`: FileAttributes, EndOfFile in bytes, LastWriteTime in 100 ns ticks
 /// since 1601 (MS-FSCC 2.4.7 `FileBasicInformation` class 4 and 2.4.41 `FileStandardInformation` class 5). False when it cannot be opened.
-export fn sysFileInfo(path: *ui8, out: *i64) -> bool {
+export fn sysFileInfo(path: *u8, out: *i64) -> bool {
     // FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT (directories allowed)
     local fd: i32 = createFile(path, 0x100080, 1, 32)
     if fd < 0 { return false }
@@ -407,12 +407,12 @@ export fn sysFileSize(fd: i32) -> i64 {
 // ---- entropy and wall clock --------------------------------------------------------------------
 
 /// Fills `buf[0..n]` from the system-preferred CNG RNG (BCRYPT_USE_SYSTEM_PREFERRED_RNG).
-export fn sysRandom(buf: *ui8, n: usize) -> bool {
+export fn sysRandom(buf: *u8, n: usize) -> bool {
     local done: usize = 0
     while done < n {
         local chunk: usize = n - done
         if chunk > 65536 { chunk = 65536 }
-        if BCryptGenRandom(nil, &buf[done], chunk as ui32, 2) < 0 { return false }
+        if BCryptGenRandom(nil, &buf[done], chunk as u32, 2) < 0 { return false }
         done = done + chunk
     }
     return true
@@ -421,8 +421,8 @@ export fn sysRandom(buf: *ui8, n: usize) -> bool {
 /// Seconds since 1970-01-01 UTC, read from KUSER_SHARED_DATA.SystemTime (the read-only page the
 /// kernel maps at 0x7FFE0000 in every process; no call needed). 100 ns units since 1601.
 export fn sysClockSeconds() -> i64 {
-    local t: *ui32 = 2147352596 as *ui32            // 0x7FFE0014
-    local lo: ui32 = 0
+    local t: *u32 = 2147352596 as *u32            // 0x7FFE0014
+    local lo: u32 = 0
     local hi1: i32 = 0
     local hi2: i32 = 0
     local tries: i32 = 0
@@ -442,7 +442,7 @@ export fn sysClockSeconds() -> i64 {
 /// Nanoseconds since 1970-01-01 UTC with 100 ns resolution (the same KUSER_SHARED_DATA.SystemTime read; 100 ns units since 1601,
 /// 11644473600 seconds before the Unix epoch); negative on failure.
 export fn sysClockNanos() -> i64 {
-    local t: *ui32 = 2147352596 as *ui32            // 0x7FFE0014
+    local t: *u32 = 2147352596 as *u32            // 0x7FFE0014
     for _ in 0..8 {
         local hi: i64 = t[1] as i32 as i64
         local lo: i64 = t[0] as i64
@@ -453,18 +453,18 @@ export fn sysClockNanos() -> i64 {
 
 // ---- memory and environment (kernel32; Microsoft Learn: GlobalMemoryStatusEx, GetEnvironmentVariableW) ---------------------
 
-/// MEMORYSTATUSEX (memoryapi.h): dwLength ui32 at 0 (set to 64), dwMemoryLoad ui32 at 4, ullTotalPhys ui64 at 8.
+/// MEMORYSTATUSEX (memoryapi.h): dwLength u32 at 0 (set to 64), dwMemoryLoad u32 at 4, ullTotalPhys u64 at 8.
 @library("kernel32") declare fn GlobalMemoryStatusEx(buf: *void) -> i32
 
 /// The installed physical memory in bytes, or -1.
 export fn sysMemoryTotal() -> i64 {
-    local buf: [ui8; 64]
+    local buf: [u8; 64]
     buf[0] = 64
     if GlobalMemoryStatusEx(&buf[0] as *void) == 0 { return -1 }
-    local total: ui64 = 0
+    local total: u64 = 0
     local k: usize = 0
     while k < 8 {
-        total = total | ((buf[8 + k] as ui64) << ((k * 8) as ui64))
+        total = total | ((buf[8 + k] as u64) << ((k * 8) as u64))
         k = k + 1
     }
     return total as i64
@@ -472,8 +472,8 @@ export fn sysMemoryTotal() -> i64 {
 
 /// GetEnvironmentVariableW: the length of the value (without the terminating NUL) when it fits `size` UTF-16 units, the length
 /// needed when it does not, or 0 when the variable is not set.
-@library("kernel32") declare fn GetEnvironmentVariableW(name: *ui16, buf: *ui16, size: ui32) -> ui32
+@library("kernel32") declare fn GetEnvironmentVariableW(name: *u16, buf: *u16, size: u32) -> u32
 
-export fn sysGetEnvW(name: *ui16, buf: *ui16, size: ui32) -> ui32 {
+export fn sysGetEnvW(name: *u16, buf: *u16, size: u32) -> u32 {
     return GetEnvironmentVariableW(name, buf, size)
 }

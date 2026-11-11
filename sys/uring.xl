@@ -25,42 +25,42 @@ define URING_MUNMAP = 215
 
 /// Offsets of the submission ring fields (io_sqring_offsets, 40 bytes).
 @repr(c) struct UringSqOff {
-    head: ui32
-    tail: ui32
-    ringMask: ui32
-    ringEntries: ui32
-    flags: ui32
-    dropped: ui32
-    array: ui32
-    resv1: ui32
-    userAddr: ui64
+    head: u32
+    tail: u32
+    ringMask: u32
+    ringEntries: u32
+    flags: u32
+    dropped: u32
+    array: u32
+    resv1: u32
+    userAddr: u64
 }
 
 /// Offsets of the completion ring fields (io_cqring_offsets, 40 bytes).
 @repr(c) struct UringCqOff {
-    head: ui32
-    tail: ui32
-    ringMask: ui32
-    ringEntries: ui32
-    overflow: ui32
-    cqes: ui32
-    flags: ui32
-    resv1: ui32
-    userAddr: ui64
+    head: u32
+    tail: u32
+    ringMask: u32
+    ringEntries: u32
+    overflow: u32
+    cqes: u32
+    flags: u32
+    resv1: u32
+    userAddr: u64
 }
 
 /// io_uring_params (120 bytes): input flags and ring sizes, and the offsets the kernel returns.
 @repr(c) struct UringParams {
-    sqEntries: ui32
-    cqEntries: ui32
-    flags: ui32
-    sqThreadCpu: ui32
-    sqThreadIdle: ui32
-    features: ui32
-    wqFd: ui32
-    resv0: ui32
-    resv1: ui32
-    resv2: ui32
+    sqEntries: u32
+    cqEntries: u32
+    flags: u32
+    sqThreadCpu: u32
+    sqThreadIdle: u32
+    features: u32
+    wqFd: u32
+    resv0: u32
+    resv1: u32
+    resv2: u32
     sqOff: UringSqOff
     cqOff: UringCqOff
 }
@@ -76,13 +76,13 @@ export struct Uring {
     sqesSize: usize
     sqHead: usize
     sqTail: usize
-    sqMask: ui32
+    sqMask: u32
     sqArray: usize
     cqHead: usize
     cqTail: usize
-    cqMask: ui32
+    cqMask: u32
     cqes: usize
-    entries: ui32
+    entries: u32
 }
 
 /// Maps `size` bytes of the ring file `fd` at `offset`; 0 on failure.
@@ -93,7 +93,7 @@ fn uringMap(fd: i32, size: usize, offset: usize) -> usize {
 }
 
 /// Sets up a ring with `entries` submission slots. False when the kernel refuses (the error is not kept).
-export fn uringSetup(entries: ui32, u: *Uring) -> bool {
+export fn uringSetup(entries: u32, u: *Uring) -> bool {
     local p: UringParams
     local fd: i64 = syscall(URING_SETUP, entries, &p as *void)
     if fd < 0 { return false }
@@ -111,16 +111,16 @@ export fn uringSetup(entries: ui32, u: *Uring) -> bool {
     }
     u.sqHead = u.sqRing + (p.sqOff.head as usize)
     u.sqTail = u.sqRing + (p.sqOff.tail as usize)
-    u.sqMask = *((u.sqRing + (p.sqOff.ringMask as usize)) as *ui32)
+    u.sqMask = *((u.sqRing + (p.sqOff.ringMask as usize)) as *u32)
     u.sqArray = u.sqRing + (p.sqOff.array as usize)
     u.cqHead = u.cqRing + (p.cqOff.head as usize)
     u.cqTail = u.cqRing + (p.cqOff.tail as usize)
-    u.cqMask = *((u.cqRing + (p.cqOff.ringMask as usize)) as *ui32)
+    u.cqMask = *((u.cqRing + (p.cqOff.ringMask as usize)) as *u32)
     u.cqes = u.cqRing + (p.cqOff.cqes as usize)
     // the submission array maps slot i to entry i
-    local i: ui32 = 0
+    local i: u32 = 0
     while i < p.sqEntries {
-        *((u.sqArray + (i as usize) * 4) as *ui32) = i
+        *((u.sqArray + (i as usize) * 4) as *u32) = i
         i = i + 1
     }
     return true
@@ -128,26 +128,26 @@ export fn uringSetup(entries: ui32, u: *Uring) -> bool {
 
 /// Submits one NOP with `userData`, waits for its completion and returns the completion result (0 for a NOP), or -1 when no
 /// completion arrived.
-export fn uringNop(u: *Uring, userData: ui64) -> i32 {
-    local tail: ui32 = __builtin_atomicLoad(u.sqTail as *ui32, MemoryOrder.acquire)
-    local idx: ui32 = tail & u.sqMask
+export fn uringNop(u: *Uring, userData: u64) -> i32 {
+    local tail: u32 = __builtin_atomicLoad(u.sqTail as *u32, MemoryOrder.acquire)
+    local idx: u32 = tail & u.sqMask
     local sqe: usize = u.sqes + (idx as usize) * 64
     local k: usize = 0
     while k < 64 {
-        *((sqe + k) as *ui8) = 0
+        *((sqe + k) as *u8) = 0
         k = k + 1
     }
-    *(sqe as *ui8) = URING_OP_NOP
-    *((sqe + 32) as *ui64) = userData
-    __builtin_atomicStore(u.sqTail as *ui32, tail + 1, MemoryOrder.release)
+    *(sqe as *u8) = URING_OP_NOP
+    *((sqe + 32) as *u64) = userData
+    __builtin_atomicStore(u.sqTail as *u32, tail + 1, MemoryOrder.release)
     local r: i64 = syscall(URING_ENTER, u.fd, 1, 1, URING_ENTER_GETEVENTS, 0, 0)
     if r < 0 { return -1 }
-    local head: ui32 = __builtin_atomicLoad(u.cqHead as *ui32, MemoryOrder.acquire)
-    local ctail: ui32 = __builtin_atomicLoad(u.cqTail as *ui32, MemoryOrder.acquire)
+    local head: u32 = __builtin_atomicLoad(u.cqHead as *u32, MemoryOrder.acquire)
+    local ctail: u32 = __builtin_atomicLoad(u.cqTail as *u32, MemoryOrder.acquire)
     if head == ctail { return -1 }
     local cqe: usize = u.cqes + ((head & u.cqMask) as usize) * 16
     local res: i32 = *((cqe + 8) as *i32)
-    __builtin_atomicStore(u.cqHead as *ui32, head + 1, MemoryOrder.release)
+    __builtin_atomicStore(u.cqHead as *u32, head + 1, MemoryOrder.release)
     return res
 }
 

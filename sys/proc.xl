@@ -18,9 +18,9 @@ export struct ProcInfo {
     pid: i32
     ppid: i32
     threads: i32
-    rss: ui64          // resident set size in bytes
-    startTime: ui64    // seconds since the Unix epoch, 0 when unknown
-    name: [ui8; 256]
+    rss: u64          // resident set size in bytes
+    startTime: u64    // seconds since the Unix epoch, 0 when unknown
+    name: [u8; 256]
 }
 
 #if os == "windows"
@@ -56,9 +56,9 @@ define PE_THREADS = 24
 define PE_PARENT_ID = 28
 define PE_EXE_FILE = 40
 
-@library("kernel32") declare fn CreateToolhelp32Snapshot(flags: ui32, processId: ui32) -> *void
-@library("kernel32") declare fn Process32FirstW(snapshot: *void, entry: *ui8) -> i32
-@library("kernel32") declare fn Process32NextW(snapshot: *void, entry: *ui8) -> i32
+@library("kernel32") declare fn CreateToolhelp32Snapshot(flags: u32, processId: u32) -> *void
+@library("kernel32") declare fn Process32FirstW(snapshot: *void, entry: *u8) -> i32
+@library("kernel32") declare fn Process32NextW(snapshot: *void, entry: *u8) -> i32
 @library("kernel32") declare fn CloseHandle(handle: *void) -> i32
 
 /// Lists up to `max` processes into `out`; returns how many were written (0 when the snapshot cannot be taken).
@@ -67,23 +67,23 @@ define PE_EXE_FILE = 40
 export fn procList(out: *ProcInfo, max: usize) -> usize {
     local snap: *void = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if (snap as usize) == INVALID_HANDLE_VALUE { return 0 }
-    local entry: [ui8; PE_SIZE]
+    local entry: [u8; PE_SIZE]
     // dwSize must be sizeof(PROCESSENTRY32W) before the first call (the API rejects any other value).
-    local sizeField: *ui32 = &entry[0] as *ui32
+    local sizeField: *u32 = &entry[0] as *u32
     sizeField[0] = PE_SIZE
     local count: usize = 0
     local ok: i32 = Process32FirstW(snap, &entry[0])
     while ok != 0 && count < max {
         local info: ProcInfo
-        info.pid = ((&entry[0] as usize + PE_PROCESS_ID) as *ui32)[0] as i32
-        info.ppid = ((&entry[0] as usize + PE_PARENT_ID) as *ui32)[0] as i32
-        info.threads = ((&entry[0] as usize + PE_THREADS) as *ui32)[0] as i32
-        local namep: *ui16 = (&entry[0] as usize + PE_EXE_FILE) as *ui16
+        info.pid = ((&entry[0] as usize + PE_PROCESS_ID) as *u32)[0] as i32
+        info.ppid = ((&entry[0] as usize + PE_PARENT_ID) as *u32)[0] as i32
+        info.threads = ((&entry[0] as usize + PE_THREADS) as *u32)[0] as i32
+        local namep: *u16 = (&entry[0] as usize + PE_EXE_FILE) as *u16
         toUtf8(namep, fromWideC(namep), &info.name[0], 256, true)
         out[count] = info
         count = count + 1
         // The enumerator's own entry id is reused per call, so dwSize must be reset before every Process32NextW.
-        sizeField = &entry[0] as *ui32
+        sizeField = &entry[0] as *u32
         sizeField[0] = PE_SIZE
         ok = Process32NextW(snap, &entry[0])
     }
@@ -131,14 +131,14 @@ export fn procListFrom(out: *ProcInfo, max: usize, firstPid: i32) -> usize {
 
 /// Reads /proc/<pid>/stat into `info`; false when the pid does not exist.
 fn procRead(pid: i32, info: *ProcInfo) -> bool {
-    local path: [ui8; 64]
+    local path: [u8; 64]
     local at: usize = putPath(&path[0], 0, "/proc/")
     at = putInt(&path[0], at, pid as i64)
     at = putPath(&path[0], at, "/stat")
     path[at] = 0
     local fd: i32 = sysOpenRead(&path[0])
     if fd < 0 { return false }
-    local buf: [ui8; 2048]
+    local buf: [u8; 2048]
     local n: isize = sysRead(fd, &buf[0], 2048)
     sysClose(fd)
     if n <= 0 { return false }
@@ -190,7 +190,7 @@ fn procRead(pid: i32, info: *ProcInfo) -> bool {
 }
 
 /// Copies the NUL-terminated `s` into `buf` at `at`; returns the position after the last byte copied.
-fn putPath(buf: *ui8, at: usize, s: *ui8) -> usize {
+fn putPath(buf: *u8, at: usize, s: *u8) -> usize {
     local i: usize = 0
     while s[i] != 0 {
         buf[at + i] = s[i]
@@ -199,7 +199,7 @@ fn putPath(buf: *ui8, at: usize, s: *ui8) -> usize {
     return at + i
 }
 
-fn putInt(buf: *ui8, at: usize, v: i64) -> usize {
+fn putInt(buf: *u8, at: usize, v: i64) -> usize {
     local n: i64 = v
     local digits: usize = 1
     local t: i64 = n
@@ -210,18 +210,18 @@ fn putInt(buf: *ui8, at: usize, v: i64) -> usize {
     local k: usize = at + digits
     while k > at {
         k = k - 1
-        buf[k] = ((n % 10) as ui8) + 48
+        buf[k] = ((n % 10) as u8) + 48
         n = n / 10
     }
     return at + digits
 }
 
 /// Decimal digits in `buf[0..len]`; 0 for a non-numeric field.
-fn parseInt(buf: *ui8, len: usize) -> i64 {
+fn parseInt(buf: *u8, len: usize) -> i64 {
     local v: i64 = 0
     local i: usize = 0
     while i < len {
-        local c: ui8 = buf[i]
+        local c: u8 = buf[i]
         if c < 48 || c > 57 { return 0 }
         v = v * 10 + (c - 48) as i64
         i = i + 1
@@ -231,7 +231,7 @@ fn parseInt(buf: *ui8, len: usize) -> i64 {
 
 #elif os == "macos"
 
-@library("System") declare fn sysctl(mib: *i32, mibLen: ui32, old: *void, oldLen: *usize, newp: *void, newLen: usize) -> i32
+@library("System") declare fn sysctl(mib: *i32, mibLen: u32, old: *void, oldLen: *usize, newp: *void, newLen: usize) -> i32
 
 // KERN_PROC / KERN_PROC_ALL from <sys/sysctl.h>: {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0}. The MIB has four elements,
 // not three: sysctl(3) documents that KERN_PROC takes one further argument, and the trailing 0 asks for every process.
@@ -250,7 +250,7 @@ define KINFO_SIZE = 648          // sizeof(struct kinfo_proc) on x86_64/arm64 XN
 define KINFO_PID = 40            // offsetof(kinfo_proc, kp_proc.p_pid)
 define KINFO_PPID = 560          // offsetof(kinfo_proc, kp_eproc.e_ppid)
 
-@library("System") declare fn proc_name(pid: i32, buf: *ui8, size: ui32) -> i32
+@library("System") declare fn proc_name(pid: i32, buf: *u8, size: u32) -> i32
 
 /// Lists up to `max` processes into `out`; returns how many were written. The array is fetched in two calls, the
 /// documented sysctl(3) pattern: a NULL probe fills `size` with the byte count the whole table needs, then the second
@@ -266,7 +266,7 @@ export fn procList(out: *ProcInfo, max: usize) -> usize {
     mib[1] = KERN_PROC
     mib[2] = KERN_PROC_ALL
     mib[3] = 0
-    local buf: [ui8; PROC_STACK_RECORDS * KINFO_SIZE]
+    local buf: [u8; PROC_STACK_RECORDS * KINFO_SIZE]
     local want: usize = 0
     local tries: i32 = 0
     local r: i32 = -1

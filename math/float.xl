@@ -16,14 +16,14 @@ define F_PI_2_HI = 1.5707963267948966
 define F_PI_2_MID = 6.123233995736766e-17
 
 /// The bits of `x` as an unsigned 64-bit integer.
-export fn f64Bits(x: f64) -> ui64 {
+export fn f64Bits(x: f64) -> u64 {
     local v: f64 = x
-    return *(&v as *ui64)
+    return *(&v as *u64)
 }
 
 /// The f64 with the bit pattern `b`.
-export fn f64FromBits(b: ui64) -> f64 {
-    local v: ui64 = b
+export fn f64FromBits(b: u64) -> f64 {
+    local v: u64 = b
     return *(&v as *f64)
 }
 
@@ -99,13 +99,13 @@ export fn ldexp(x: f64, n: i32) -> f64 {
     while k > 0 {
         local step: i32 = k
         if step > 1000 { step = 1000 }
-        r = r * f64FromBits(((1023 + step) as ui64) << 52)
+        r = r * f64FromBits(((1023 + step) as u64) << 52)
         k = k - step
     }
     while k < 0 {
         local step: i32 = 0 - k
         if step > 1000 { step = 1000 }
-        r = r * f64FromBits(((1023 - step) as ui64) << 52)
+        r = r * f64FromBits(((1023 - step) as u64) << 52)
         k = k + step
     }
     return r
@@ -270,7 +270,7 @@ export fn modf(x: f64, frac: *f64) -> f64 {
 /// `mag` with the sign bit of `sign` (copysign, IEEE 754 section 5.5.2). A NaN `sign` is read by its bit pattern.
 export fn copysign(mag: f64, sign: f64) -> f64 {
     local neg: bool = (f64Bits(sign) >> 63) != 0
-    local m: ui64 = f64Bits(mag) & 0x7fffffffffffffff
+    local m: u64 = f64Bits(mag) & 0x7fffffffffffffff
     if neg { m = m | 0x8000000000000000 }
     return f64FromBits(m)
 }
@@ -283,7 +283,7 @@ export fn nextafter(x: f64, y: f64) -> f64 {
         if y > 0.0 { return f64FromBits(1) }
         return f64FromBits(0x8000000000000001)
     }
-    local b: ui64 = f64Bits(x)
+    local b: u64 = f64Bits(x)
     if (y > x) == (x > 0.0) {
         b = b + 1
     } else {

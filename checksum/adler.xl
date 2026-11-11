@@ -9,12 +9,12 @@
 export define ADLER32_MOD = 65521
 
 /// Adler-32 of `data[0..n]`, continuing from `adler` (1 for a new checksum).
-export fn adler32Update(adler: ui32, data: *ui8, n: usize) -> ui32 {
-    local a: ui32 = adler & 0xffff
-    local b: ui32 = adler >> 16
+export fn adler32Update(adler: u32, data: *u8, n: usize) -> u32 {
+    local a: u32 = adler & 0xffff
+    local b: u32 = adler >> 16
     local i: usize = 0
     while i < n {
-        a = (a + (data[i] as ui32)) % ADLER32_MOD
+        a = (a + (data[i] as u32)) % ADLER32_MOD
         b = (b + a) % ADLER32_MOD
         i = i + 1
     }
@@ -22,6 +22,6 @@ export fn adler32Update(adler: ui32, data: *ui8, n: usize) -> ui32 {
 }
 
 /// Adler-32 of `data[0..n]`.
-export fn adler32(data: *ui8, n: usize) -> ui32 {
+export fn adler32(data: *u8, n: usize) -> u32 {
     return adler32Update(1, data, n)
 }

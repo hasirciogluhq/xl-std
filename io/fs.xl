@@ -1,11 +1,11 @@
 // std/io/fs: whole-file and streaming file access on top of the raw `std/sys` file calls.
-// Paths are NUL-terminated `*ui8`; written data is a `str`, so embedded NUL bytes are kept.
+// Paths are NUL-terminated `*u8`; written data is a `str`, so embedded NUL bytes are kept.
 // Nothing allocates: the caller supplies the buffers.
 from "../sys" import sysOpenRead, sysOpenWrite, sysClose, sysUnlink, sysFileSize, sysRead, sysWrite
 from "../str/string" import String
 
 /// Writes all of `n` bytes to `fd`; false on error.
-fn writeAll(fd: i32, data: *ui8, n: usize) -> bool {
+fn writeAll(fd: i32, data: *u8, n: usize) -> bool {
     local done: usize = 0
     while done < n {
         local w: isize = sysWrite(fd, &data[done], n - done)
@@ -15,7 +15,7 @@ fn writeAll(fd: i32, data: *ui8, n: usize) -> bool {
     return true
 }
 
-fn store(path: *ui8, data: str, append: bool) -> bool {
+fn store(path: *u8, data: str, append: bool) -> bool {
     local fd: i32 = sysOpenWrite(path, append)
     if fd < 0 { return false }
     local ok: bool = writeAll(fd, data.ptr, data.len)
@@ -24,18 +24,18 @@ fn store(path: *ui8, data: str, append: bool) -> bool {
 }
 
 /// Creates or truncates `path` and writes all bytes of `data`.
-export fn fsWrite(path: *ui8, data: str) -> bool {
+export fn fsWrite(path: *u8, data: str) -> bool {
     return store(path, data, false)
 }
 
 /// Appends all bytes of `data` to `path`, creating it if needed.
-export fn fsAppend(path: *ui8, data: str) -> bool {
+export fn fsAppend(path: *u8, data: str) -> bool {
     return store(path, data, true)
 }
 
 /// Reads the whole file into `buf` (capacity `cap`) and NUL-terminates it. Returns the byte count,
 /// or a negative value on failure (including a file that does not fit in `cap - 1` bytes).
-export fn fsReadAll(path: *ui8, buf: *ui8, cap: usize) -> isize {
+export fn fsReadAll(path: *u8, buf: *u8, cap: usize) -> isize {
     local fd: i32 = sysOpenRead(path)
     if fd < 0 { return -1 }
     local total: usize = 0
@@ -61,7 +61,7 @@ export fn fsReadAll(path: *ui8, buf: *ui8, cap: usize) -> isize {
     return total as isize
 }
 
-export fn fsExists(path: *ui8) -> bool {
+export fn fsExists(path: *u8) -> bool {
     local fd: i32 = sysOpenRead(path)
     if fd < 0 { return false }
     sysClose(fd)
@@ -69,7 +69,7 @@ export fn fsExists(path: *ui8) -> bool {
 }
 
 /// Size in bytes, or -1 when the file cannot be opened.
-export fn fsSize(path: *ui8) -> i64 {
+export fn fsSize(path: *u8) -> i64 {
     local fd: i32 = sysOpenRead(path)
     if fd < 0 { return -1 }
     local n: i64 = sysFileSize(fd)
@@ -77,17 +77,17 @@ export fn fsSize(path: *ui8) -> i64 {
     return n
 }
 
-export fn fsRemove(path: *ui8) -> bool {
+export fn fsRemove(path: *u8) -> bool {
     return sysUnlink(path) == 0
 }
 
 /// Streaming: a file descriptor, negative on failure.
-export fn fsOpenRead(path: *ui8) -> i32 {
+export fn fsOpenRead(path: *u8) -> i32 {
     return sysOpenRead(path)
 }
 
 /// Reads up to `n` bytes; 0 at end of file, negative on error. Not NUL-terminated.
-export fn fsRead(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn fsRead(fd: i32, buf: *u8, n: usize) -> isize {
     return sysRead(fd, buf, n)
 }
 
@@ -96,7 +96,7 @@ export fn fsClose(fd: i32) {
 }
 
 /// Reads the whole file into a new String (empty when the file cannot be read).
-export fn fsReadAllString(path: *ui8) -> String {
+export fn fsReadAllString(path: *u8) -> String {
     local text: String = String()
     local size: i64 = fsSize(path)
     if size <= 0 {

@@ -10,19 +10,19 @@ from "../hash/digest" import digest, digestLen
 from "../../mem/mem" import currentAllocator
 
 /// The concatenation KDF (SP 800-56C one-step, hash `alg`): `out` gets `outLen` bytes. False for an unknown digest.
-export fn concatKdf(alg: i32, z: *ui8, zlen: usize, info: *ui8, ilen: usize, out: *ui8, outLen: usize) -> bool {
+export fn concatKdf(alg: i32, z: *u8, zlen: usize, info: *u8, ilen: usize, out: *u8, outLen: usize) -> bool {
     local hl: usize = digestLen(alg)
     if hl == 0 { return false }
-    local buf: *ui8 = currentAllocator.alloc(4 + zlen + ilen, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(4 + zlen + ilen, 1) as *u8
     if buf == nil { panic("concatKdf: out of memory") }
-    local h: [ui8; 64]
+    local h: [u8; 64]
     local done: usize = 0
-    local counter: ui32 = 1
+    local counter: u32 = 1
     while done < outLen {
-        buf[0] = ((counter >> 24) & 0xff) as ui8
-        buf[1] = ((counter >> 16) & 0xff) as ui8
-        buf[2] = ((counter >> 8) & 0xff) as ui8
-        buf[3] = (counter & 0xff) as ui8
+        buf[0] = ((counter >> 24) & 0xff) as u8
+        buf[1] = ((counter >> 16) & 0xff) as u8
+        buf[2] = ((counter >> 8) & 0xff) as u8
+        buf[3] = (counter & 0xff) as u8
         local i: usize = 0
         while i < zlen {
             buf[4 + i] = z[i]
@@ -49,24 +49,24 @@ export fn concatKdf(alg: i32, z: *ui8, zlen: usize, info: *ui8, ilen: usize, out
 }
 
 /// The ANSI X9.63 KDF with hash `alg`: `out` gets `outLen` bytes. False for an unknown digest.
-export fn x963Kdf(alg: i32, z: *ui8, zlen: usize, info: *ui8, ilen: usize, out: *ui8, outLen: usize) -> bool {
+export fn x963Kdf(alg: i32, z: *u8, zlen: usize, info: *u8, ilen: usize, out: *u8, outLen: usize) -> bool {
     local hl: usize = digestLen(alg)
     if hl == 0 { return false }
-    local buf: *ui8 = currentAllocator.alloc(zlen + 4 + ilen, 1) as *ui8
+    local buf: *u8 = currentAllocator.alloc(zlen + 4 + ilen, 1) as *u8
     if buf == nil { panic("x963Kdf: out of memory") }
-    local h: [ui8; 64]
+    local h: [u8; 64]
     local done: usize = 0
-    local counter: ui32 = 1
+    local counter: u32 = 1
     while done < outLen {
         local i: usize = 0
         while i < zlen {
             buf[i] = z[i]
             i = i + 1
         }
-        buf[zlen] = ((counter >> 24) & 0xff) as ui8
-        buf[zlen + 1] = ((counter >> 16) & 0xff) as ui8
-        buf[zlen + 2] = ((counter >> 8) & 0xff) as ui8
-        buf[zlen + 3] = (counter & 0xff) as ui8
+        buf[zlen] = ((counter >> 24) & 0xff) as u8
+        buf[zlen + 1] = ((counter >> 16) & 0xff) as u8
+        buf[zlen + 2] = ((counter >> 8) & 0xff) as u8
+        buf[zlen + 3] = (counter & 0xff) as u8
         i = 0
         while i < ilen {
             buf[zlen + 4 + i] = info[i]

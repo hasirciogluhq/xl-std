@@ -11,23 +11,23 @@ from "../../sys" import sysUdpSocket, sysTcpConnect, sysWrite, sysRead, sysClose
 export struct NtpResult {
     offset: i64
     delay: i64
-    stratum: ui8
+    stratum: u8
     ok: bool
 }
 
 /// Queries the server at `ip` (host order IPv4) and `port` (123 for NTP). `ok` is false on any failure or timeout.
-export fn ntpQuery(ip: ui32, port: ui16, timeoutMs: i32) -> NtpResult {
+export fn ntpQuery(ip: u32, port: u16, timeoutMs: i32) -> NtpResult {
     local r: NtpResult
     local fd: i32 = sysUdpSocket()
     if fd < 0 { return r }
     defer sysClose(fd)
     sysSetRecvTimeout(fd, timeoutMs)
-    local t1: ui64 = ntpFromUnixNanos(sysClockNanos())
+    local t1: u64 = ntpFromUnixNanos(sysClockNanos())
     local req: String = ntpClientRequest(t1)
     if sysTcpConnect(fd, ip, port) != 0 || sysWrite(fd, req.cstr(), req.length()) != req.length() as isize { return r }
     local buf: String = String(128, 0)
     local got: isize = sysRead(fd, buf.cstr(), 128)
-    local t4: ui64 = ntpFromUnixNanos(sysClockNanos())
+    local t4: u64 = ntpFromUnixNanos(sysClockNanos())
     if got < 48 { return r }
     local p: NtpPacket = ntpParse(&buf)
     if !p.ok || p.mode != 4 || p.origin != t1 { return r }

@@ -1,4 +1,4 @@
-// std/math/bignum: fixed-capacity unsigned big integers (little-endian ui32 limbs, up to 4160 bits) and
+// std/math/bignum: fixed-capacity unsigned big integers (little-endian u32 limbs, up to 4160 bits) and
 // Montgomery modular arithmetic for odd moduli. Built for RSA and the NIST curves in `std/crypto/sig/ecdsa`;
 // not constant-time (only public values are verified with it, never secrets).
 
@@ -7,14 +7,14 @@ define BN_MAX = 130
 /// Montgomery context for an odd modulus of `n` limbs.
 export struct Mont {
     n: usize
-    m: [ui32; 130]
-    r2: [ui32; 130]
-    one: [ui32; 130]    // R mod m: the Montgomery form of 1
-    minv: ui32          // -m^-1 mod 2^32
+    m: [u32; 130]
+    r2: [u32; 130]
+    one: [u32; 130]    // R mod m: the Montgomery form of 1
+    minv: u32          // -m^-1 mod 2^32
     aZero: bool         // curve coefficient a is 0 (secp256k1); set by the caller after montInit, cleared by it
 }
 
-export fn bnZero(a: *ui32, n: usize) {
+export fn bnZero(a: *u32, n: usize) {
     local i: usize = 0
     while i < n {
         a[i] = 0
@@ -22,7 +22,7 @@ export fn bnZero(a: *ui32, n: usize) {
     }
 }
 
-export fn bnCopy(dst: *ui32, src: *ui32, n: usize) {
+export fn bnCopy(dst: *u32, src: *u32, n: usize) {
     local i: usize = 0
     while i < n {
         dst[i] = src[i]
@@ -30,7 +30,7 @@ export fn bnCopy(dst: *ui32, src: *ui32, n: usize) {
     }
 }
 
-export fn bnIsZero(a: *ui32, n: usize) -> bool {
+export fn bnIsZero(a: *u32, n: usize) -> bool {
     local i: usize = 0
     while i < n {
         if a[i] != 0 { return false }
@@ -40,7 +40,7 @@ export fn bnIsZero(a: *ui32, n: usize) -> bool {
 }
 
 /// -1, 0 or 1.
-export fn bnCmp(a: *ui32, b: *ui32, n: usize) -> i32 {
+export fn bnCmp(a: *u32, b: *u32, n: usize) -> i32 {
     local i: usize = n
     while i > 0 {
         i = i - 1
@@ -51,33 +51,33 @@ export fn bnCmp(a: *ui32, b: *ui32, n: usize) -> i32 {
 }
 
 /// r = a + b; returns the carry (0 or 1). `r` may alias an operand.
-export fn bnAdd(r: *ui32, a: *ui32, b: *ui32, n: usize) -> ui32 {
-    local carry: ui64 = 0
+export fn bnAdd(r: *u32, a: *u32, b: *u32, n: usize) -> u32 {
+    local carry: u64 = 0
     local i: usize = 0
     while i < n {
-        local s: ui64 = (a[i] as ui64) + (b[i] as ui64) + carry
-        r[i] = (s & 0xffffffff) as ui32
+        local s: u64 = (a[i] as u64) + (b[i] as u64) + carry
+        r[i] = (s & 0xffffffff) as u32
         carry = s >> 32
         i = i + 1
     }
-    return carry as ui32
+    return carry as u32
 }
 
 /// r = a - b; returns the borrow (0 or 1). `r` may alias an operand.
-export fn bnSub(r: *ui32, a: *ui32, b: *ui32, n: usize) -> ui32 {
-    local borrow: ui64 = 0
+export fn bnSub(r: *u32, a: *u32, b: *u32, n: usize) -> u32 {
+    local borrow: u64 = 0
     local i: usize = 0
     while i < n {
-        local d: ui64 = (a[i] as ui64) - (b[i] as ui64) - borrow
-        r[i] = (d & 0xffffffff) as ui32
+        local d: u64 = (a[i] as u64) - (b[i] as u64) - borrow
+        r[i] = (d & 0xffffffff) as u32
         borrow = (d >> 63) & 1
         i = i + 1
     }
-    return borrow as ui32
+    return borrow as u32
 }
 
 /// Big-endian bytes -> limbs (`n` limbs, zero-extended). False when the value does not fit.
-export fn bnFromBytes(out: *ui32, n: usize, bytes: *ui8, len: usize) -> bool {
+export fn bnFromBytes(out: *u32, n: usize, bytes: *u8, len: usize) -> bool {
     bnZero(out, n)
     local i: usize = 0
     while i < len {
@@ -85,7 +85,7 @@ export fn bnFromBytes(out: *ui32, n: usize, bytes: *ui8, len: usize) -> bool {
         if i / 4 >= n {
             if bytes[pos] != 0 { return false }
         } else {
-            out[i / 4] = out[i / 4] | ((bytes[pos] as ui32) << (((i % 4) * 8) as ui32))
+            out[i / 4] = out[i / 4] | ((bytes[pos] as u32) << (((i % 4) * 8) as u32))
         }
         i = i + 1
     }
@@ -93,20 +93,20 @@ export fn bnFromBytes(out: *ui32, n: usize, bytes: *ui8, len: usize) -> bool {
 }
 
 /// Limbs -> big-endian bytes, exactly `len` bytes (high bytes beyond `len` are dropped).
-export fn bnToBytes(a: *ui32, n: usize, out: *ui8, len: usize) {
+export fn bnToBytes(a: *u32, n: usize, out: *u8, len: usize) {
     local i: usize = 0
     while i < len {
-        local v: ui8 = 0
+        local v: u8 = 0
         if i / 4 < n {
-            v = ((a[i / 4] >> (((i % 4) * 8) as ui32)) & 0xff) as ui8
+            v = ((a[i / 4] >> (((i % 4) * 8) as u32)) & 0xff) as u8
         }
         out[len - 1 - i] = v
         i = i + 1
     }
 }
 
-fn mulInv32(m0: ui32) -> ui32 {
-    local x: ui32 = m0
+fn mulInv32(m0: u32) -> u32 {
+    local x: u32 = m0
     local i: usize = 0
     while i < 5 {
         x = x * (2 - m0 * x)
@@ -116,15 +116,15 @@ fn mulInv32(m0: ui32) -> ui32 {
 }
 
 /// r = 2x mod m.
-fn modDouble(x: *ui32, m: *ui32, n: usize) {
-    local carry: ui32 = bnAdd(x, x, x, n)
+fn modDouble(x: *u32, m: *u32, n: usize) {
+    local carry: u32 = bnAdd(x, x, x, n)
     if carry != 0 || bnCmp(x, m, n) >= 0 {
         bnSub(x, x, m, n)
     }
 }
 
 /// Prepares `c` for the odd modulus `m[0..n]`.
-export fn montInit(c: *Mont, m: *ui32, n: usize) {
+export fn montInit(c: *Mont, m: *u32, n: usize) {
     c.n = n
     c.aZero = false
     bnZero(&c.m[0], BN_MAX)
@@ -150,9 +150,9 @@ export fn montInit(c: *Mont, m: *ui32, n: usize) {
 }
 
 /// r = a * b * R^-1 mod m (Montgomery product). `r` may alias `a` or `b`.
-export fn montMul(c: *Mont, r: *ui32, a: *ui32, b: *ui32) {
+export fn montMul(c: *Mont, r: *u32, a: *u32, b: *u32) {
     local n: usize = c.n
-    local t: [ui32; 132]
+    local t: [u32; 132]
     local i: usize = 0
     while i < n + 2 {
         t[i] = 0
@@ -160,32 +160,32 @@ export fn montMul(c: *Mont, r: *ui32, a: *ui32, b: *ui32) {
     }
     i = 0
     while i < n {
-        local carry: ui64 = 0
-        local bi: ui64 = b[i] as ui64
+        local carry: u64 = 0
+        local bi: u64 = b[i] as u64
         local j: usize = 0
         while j < n {
-            local s: ui64 = (t[j] as ui64) + (a[j] as ui64) * bi + carry
-            t[j] = (s & 0xffffffff) as ui32
+            local s: u64 = (t[j] as u64) + (a[j] as u64) * bi + carry
+            t[j] = (s & 0xffffffff) as u32
             carry = s >> 32
             j = j + 1
         }
-        local s2: ui64 = (t[n] as ui64) + carry
-        t[n] = (s2 & 0xffffffff) as ui32
-        t[n + 1] = (s2 >> 32) as ui32
+        local s2: u64 = (t[n] as u64) + carry
+        t[n] = (s2 & 0xffffffff) as u32
+        t[n + 1] = (s2 >> 32) as u32
 
-        local mm: ui64 = ((t[0] * c.minv) & 0xffffffff) as ui64
-        local s3: ui64 = (t[0] as ui64) + mm * (c.m[0] as ui64)
+        local mm: u64 = ((t[0] * c.minv) & 0xffffffff) as u64
+        local s3: u64 = (t[0] as u64) + mm * (c.m[0] as u64)
         carry = s3 >> 32
         j = 1
         while j < n {
-            local s4: ui64 = (t[j] as ui64) + mm * (c.m[j] as ui64) + carry
-            t[j - 1] = (s4 & 0xffffffff) as ui32
+            local s4: u64 = (t[j] as u64) + mm * (c.m[j] as u64) + carry
+            t[j - 1] = (s4 & 0xffffffff) as u32
             carry = s4 >> 32
             j = j + 1
         }
-        local s5: ui64 = (t[n] as ui64) + carry
-        t[n - 1] = (s5 & 0xffffffff) as ui32
-        t[n] = t[n + 1] + ((s5 >> 32) as ui32)
+        local s5: u64 = (t[n] as u64) + carry
+        t[n - 1] = (s5 & 0xffffffff) as u32
+        t[n] = t[n + 1] + ((s5 >> 32) as u32)
         i = i + 1
     }
     if t[n] != 0 || bnCmp(&t[0], &c.m[0], n) >= 0 {
@@ -195,44 +195,44 @@ export fn montMul(c: *Mont, r: *ui32, a: *ui32, b: *ui32) {
 }
 
 /// Converts `a` (< m) into Montgomery form.
-export fn montTo(c: *Mont, r: *ui32, a: *ui32) {
+export fn montTo(c: *Mont, r: *u32, a: *u32) {
     montMul(c, r, a, &c.r2[0])
 }
 
 /// Converts out of Montgomery form.
-export fn montFrom(c: *Mont, r: *ui32, a: *ui32) {
-    local one: [ui32; 130]
+export fn montFrom(c: *Mont, r: *u32, a: *u32) {
+    local one: [u32; 130]
     bnZero(&one[0], BN_MAX)
     one[0] = 1
     montMul(c, r, a, &one[0])
 }
 
 /// r = a + b mod m (inputs < m).
-export fn modAdd(c: *Mont, r: *ui32, a: *ui32, b: *ui32) {
-    local carry: ui32 = bnAdd(r, a, b, c.n)
+export fn modAdd(c: *Mont, r: *u32, a: *u32, b: *u32) {
+    local carry: u32 = bnAdd(r, a, b, c.n)
     if carry != 0 || bnCmp(r, &c.m[0], c.n) >= 0 {
         bnSub(r, r, &c.m[0], c.n)
     }
 }
 
 /// r = a - b mod m (inputs < m).
-export fn modSub(c: *Mont, r: *ui32, a: *ui32, b: *ui32) {
-    local borrow: ui32 = bnSub(r, a, b, c.n)
+export fn modSub(c: *Mont, r: *u32, a: *u32, b: *u32) {
+    local borrow: u32 = bnSub(r, a, b, c.n)
     if borrow != 0 {
         bnAdd(r, r, &c.m[0], c.n)
     }
 }
 
 /// r = base^exp mod m, all in Montgomery form; `exp` has `en` limbs (a plain integer).
-export fn montPow(c: *Mont, r: *ui32, base: *ui32, exp: *ui32, en: usize) {
-    local acc: [ui32; 130]
+export fn montPow(c: *Mont, r: *u32, base: *u32, exp: *u32, en: usize) {
+    local acc: [u32; 130]
     bnZero(&acc[0], BN_MAX)
     bnCopy(&acc[0], &c.one[0], c.n)
     local i: usize = en * 32
     while i > 0 {
         i = i - 1
         montMul(c, &acc[0], &acc[0], &acc[0])
-        if ((exp[i / 32] >> ((i % 32) as ui32)) & 1) != 0 {
+        if ((exp[i / 32] >> ((i % 32) as u32)) & 1) != 0 {
             montMul(c, &acc[0], &acc[0], base)
         }
     }

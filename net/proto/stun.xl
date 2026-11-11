@@ -12,7 +12,7 @@ define STUN_ATTR_MAPPED = 1
 define STUN_ATTR_XOR_MAPPED = 32
 
 /// Writes a Binding request with the 12-byte transaction ID `txid` into `out` (20 bytes); returns 20.
-export fn stunBindingRequest(txid: *ui8, out: *ui8) -> usize {
+export fn stunBindingRequest(txid: *u8, out: *u8) -> usize {
     out[0] = 0
     out[1] = 1
     out[2] = 0
@@ -31,16 +31,16 @@ export fn stunBindingRequest(txid: *ui8, out: *ui8) -> usize {
 
 /// The mapped IPv4 address of a Binding success response (host order address, port in host order), or ok = false.
 export struct StunAddress {
-    ip: ui32
-    port: ui16
+    ip: u32
+    port: u16
     ok: bool
 }
 
 /// Reads the address from a Binding success response to the request with transaction ID `txid`.
-export fn stunMappedAddress(buf: *ui8, n: usize, txid: *ui8) -> StunAddress {
+export fn stunMappedAddress(buf: *u8, n: usize, txid: *u8) -> StunAddress {
     local r: StunAddress
     if n < 20 { return r }
-    local mtype: ui16 = ((buf[0] as ui16) << 8) | (buf[1] as ui16)
+    local mtype: u16 = ((buf[0] as u16) << 8) | (buf[1] as u16)
     local mlen: usize = ((buf[2] as usize) << 8) | (buf[3] as usize)
     if mtype != 257 || 20 + mlen > n { return r }
     if buf[4] != 0x21 || buf[5] != 0x12 || buf[6] != 0xa4 || buf[7] != 0x42 { return r }
@@ -53,21 +53,21 @@ export fn stunMappedAddress(buf: *ui8, n: usize, txid: *ui8) -> StunAddress {
     local end: usize = 20 + mlen
     local found: bool = false
     while at + 4 <= end {
-        local atype: ui16 = ((buf[at] as ui16) << 8) | (buf[at + 1] as ui16)
+        local atype: u16 = ((buf[at] as u16) << 8) | (buf[at + 1] as u16)
         local alen: usize = ((buf[at + 2] as usize) << 8) | (buf[at + 3] as usize)
         local v: usize = at + 4
         if v + alen > end { return r }
         if atype == 32 && alen >= 8 && buf[v + 1] == 1 {
-            local port: ui32 = (((buf[v + 2] as ui32) << 8) | (buf[v + 3] as ui32)) ^ 0x2112
-            local ip: ui32 = ((buf[v + 4] as ui32) << 24) | ((buf[v + 5] as ui32) << 16) | ((buf[v + 6] as ui32) << 8) | (buf[v + 7] as ui32)
+            local port: u32 = (((buf[v + 2] as u32) << 8) | (buf[v + 3] as u32)) ^ 0x2112
+            local ip: u32 = ((buf[v + 4] as u32) << 24) | ((buf[v + 5] as u32) << 16) | ((buf[v + 6] as u32) << 8) | (buf[v + 7] as u32)
             r.ip = ip ^ 0x2112a442
-            r.port = port as ui16
+            r.port = port as u16
             r.ok = true
             return r
         }
         if atype == 1 && alen >= 8 && buf[v + 1] == 1 && !found {
-            r.port = (((buf[v + 2] as ui16) << 8) | (buf[v + 3] as ui16))
-            r.ip = ((buf[v + 4] as ui32) << 24) | ((buf[v + 5] as ui32) << 16) | ((buf[v + 6] as ui32) << 8) | (buf[v + 7] as ui32)
+            r.port = (((buf[v + 2] as u16) << 8) | (buf[v + 3] as u16))
+            r.ip = ((buf[v + 4] as u32) << 24) | ((buf[v + 5] as u32) << 16) | ((buf[v + 6] as u32) << 8) | (buf[v + 7] as u32)
             found = true
         }
         at = v + ((alen + 3) & ~3)

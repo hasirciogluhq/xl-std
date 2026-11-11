@@ -4,52 +4,52 @@
 // peers cannot observe its cache, like the rest of this stdlib's crypto. `ct`/`pt` may alias.
 from "aes" import aesEncrypt, aesKeyExpand, aesRounds
 
-fn load64(p: *ui8) -> ui64 {
-    local v: ui64 = 0
+fn load64(p: *u8) -> u64 {
+    local v: u64 = 0
     local i: usize = 0
     while i < 8 {
-        v = (v << 8) | (p[i] as ui64)
+        v = (v << 8) | (p[i] as u64)
         i = i + 1
     }
     return v
 }
 
-fn store64(p: *ui8, v: ui64) {
+fn store64(p: *u8, v: u64) {
     local i: usize = 0
     while i < 8 {
-        p[i] = ((v >> (((7 - i) * 8) as ui64)) & 0xff) as ui8
+        p[i] = ((v >> (((7 - i) * 8) as u64)) & 0xff) as u8
         i = i + 1
     }
 }
 
 /// GHASH state: `y = (y xor block) * h` in GF(2^128) with the GCM bit order.
 struct Ghash {
-    hh: ui64
-    hl: ui64
-    yh: ui64
-    yl: ui64
+    hh: u64
+    hl: u64
+    yh: u64
+    yl: u64
 }
 
-fn ghashBlock(g: *Ghash, block: *ui8) {
-    local xh: ui64 = g.yh ^ load64(block)
-    local xl: ui64 = g.yl ^ load64(&block[8])
-    local zh: ui64 = 0
-    local zl: ui64 = 0
-    local vh: ui64 = g.hh
-    local vl: ui64 = g.hl
+fn ghashBlock(g: *Ghash, block: *u8) {
+    local xh: u64 = g.yh ^ load64(block)
+    local xl: u64 = g.yl ^ load64(&block[8])
+    local zh: u64 = 0
+    local zl: u64 = 0
+    local vh: u64 = g.hh
+    local vl: u64 = g.hl
     local i: usize = 0
     while i < 128 {
-        local bit: ui64 = 0
+        local bit: u64 = 0
         if i < 64 {
-            bit = (xh >> ((63 - i) as ui64)) & 1
+            bit = (xh >> ((63 - i) as u64)) & 1
         } else {
-            bit = (xl >> ((127 - i) as ui64)) & 1
+            bit = (xl >> ((127 - i) as u64)) & 1
         }
         if bit != 0 {
             zh = zh ^ vh
             zl = zl ^ vl
         }
-        local lsb: ui64 = vl & 1
+        local lsb: u64 = vl & 1
         vl = (vl >> 1) | (vh << 63)
         vh = vh >> 1
         if lsb != 0 { vh = vh ^ 0xe100000000000000 }
@@ -60,8 +60,8 @@ fn ghashBlock(g: *Ghash, block: *ui8) {
 }
 
 /// Absorbs `n` bytes, zero-padded to a multiple of 16.
-fn ghashData(g: *Ghash, data: *ui8, n: usize) {
-    local block: [ui8; 16]
+fn ghashData(g: *Ghash, data: *u8, n: usize) {
+    local block: [u8; 16]
     local at: usize = 0
     while at < n {
         local take: usize = n - at
@@ -77,7 +77,7 @@ fn ghashData(g: *Ghash, data: *ui8, n: usize) {
     }
 }
 
-fn incCounter(ctr: *ui8) {
+fn incCounter(ctr: *u8) {
     local i: usize = 15
     local carry: bool = true
     while carry && i >= 12 {
@@ -88,8 +88,8 @@ fn incCounter(ctr: *ui8) {
 }
 
 /// CTR keystream starting at counter block `start` (already incremented past J0).
-fn ctrXor(rk: *ui8, rounds: usize, ctr: *ui8, in: *ui8, n: usize, out: *ui8) {
-    local ks: [ui8; 16]
+fn ctrXor(rk: *u8, rounds: usize, ctr: *u8, in: *u8, n: usize, out: *u8) {
+    local ks: [u8; 16]
     local at: usize = 0
     while at < n {
         aesEncrypt(rk, rounds, ctr, &ks[0])
@@ -105,9 +105,9 @@ fn ctrXor(rk: *ui8, rounds: usize, ctr: *ui8, in: *ui8, n: usize, out: *ui8) {
     }
 }
 
-fn tagFor(rk: *ui8, rounds: usize, nonce: *ui8, aad: *ui8, alen: usize, ct: *ui8, n: usize, tag: *ui8) {
-    local zero: [ui8; 16]
-    local hb: [ui8; 16]
+fn tagFor(rk: *u8, rounds: usize, nonce: *u8, aad: *u8, alen: usize, ct: *u8, n: usize, tag: *u8) {
+    local zero: [u8; 16]
+    local hb: [u8; 16]
     local i: usize = 0
     while i < 16 {
         zero[i] = 0
@@ -121,12 +121,12 @@ fn tagFor(rk: *ui8, rounds: usize, nonce: *ui8, aad: *ui8, alen: usize, ct: *ui8
     g.yl = 0
     ghashData(&g, aad, alen)
     ghashData(&g, ct, n)
-    local lens: [ui8; 16]
-    store64(&lens[0], (alen as ui64) * 8)
-    store64(&lens[8], (n as ui64) * 8)
+    local lens: [u8; 16]
+    store64(&lens[0], (alen as u64) * 8)
+    store64(&lens[8], (n as u64) * 8)
     ghashBlock(&g, &lens[0])
     // tag = E(K, J0) xor GHASH
-    local j0: [ui8; 16]
+    local j0: [u8; 16]
     i = 0
     while i < 12 {
         j0[i] = nonce[i]
@@ -136,9 +136,9 @@ fn tagFor(rk: *ui8, rounds: usize, nonce: *ui8, aad: *ui8, alen: usize, ct: *ui8
     j0[13] = 0
     j0[14] = 0
     j0[15] = 1
-    local ej: [ui8; 16]
+    local ej: [u8; 16]
     aesEncrypt(rk, rounds, &j0[0], &ej[0])
-    local gb: [ui8; 16]
+    local gb: [u8; 16]
     store64(&gb[0], g.yh)
     store64(&gb[8], g.yl)
     i = 0
@@ -148,7 +148,7 @@ fn tagFor(rk: *ui8, rounds: usize, nonce: *ui8, aad: *ui8, alen: usize, ct: *ui8
     }
 }
 
-fn startCounter(nonce: *ui8, ctr: *ui8) {
+fn startCounter(nonce: *u8, ctr: *u8) {
     local i: usize = 0
     while i < 12 {
         ctr[i] = nonce[i]
@@ -161,41 +161,41 @@ fn startCounter(nonce: *ui8, ctr: *ui8) {
 }
 
 /// Block cipher check value: `out[0..16] = AES-128(key, in[0..16])` (exported for known-answer tests).
-export fn aes128EncryptBlock(key: *ui8, in: *ui8, out: *ui8) {
-    local rk: [ui8; 176]
+export fn aes128EncryptBlock(key: *u8, in: *u8, out: *u8) {
+    local rk: [u8; 176]
     aesKeyExpand(key, 16, &rk[0])
     aesEncrypt(&rk[0], 10, in, out)
 }
 
 /// Encrypts `pt[0..n]` into `ct` (may alias) and writes the 16-byte `tag`. `key` is `keyLen` bytes (16, 24 or 32;
 /// AES-128, -192 or -256), `nonce` 12 bytes. Panics on any other key length.
-export fn aesGcmSeal(key: *ui8, keyLen: usize, nonce: *ui8, aad: *ui8, alen: usize, pt: *ui8, n: usize, ct: *ui8, tag: *ui8) {
+export fn aesGcmSeal(key: *u8, keyLen: usize, nonce: *u8, aad: *u8, alen: usize, pt: *u8, n: usize, ct: *u8, tag: *u8) {
     local rounds: usize = aesRounds(keyLen)
     if rounds == 0 { panic("aesGcmSeal: the key must be 16, 24 or 32 bytes") }
-    local rk: [ui8; 240]
+    local rk: [u8; 240]
     aesKeyExpand(key, keyLen, &rk[0])
-    local ctr: [ui8; 16]
+    local ctr: [u8; 16]
     startCounter(nonce, &ctr[0])
     ctrXor(&rk[0], rounds, &ctr[0], pt, n, ct)
     tagFor(&rk[0], rounds, nonce, aad, alen, ct, n, tag)
 }
 
 /// Verifies the tag and, only if it matches, decrypts `ct[0..n]` into `pt` (may alias).
-export fn aesGcmOpen(key: *ui8, keyLen: usize, nonce: *ui8, aad: *ui8, alen: usize, ct: *ui8, n: usize, tag: *ui8, pt: *ui8) -> bool {
+export fn aesGcmOpen(key: *u8, keyLen: usize, nonce: *u8, aad: *u8, alen: usize, ct: *u8, n: usize, tag: *u8, pt: *u8) -> bool {
     local rounds: usize = aesRounds(keyLen)
     if rounds == 0 { panic("aesGcmOpen: the key must be 16, 24 or 32 bytes") }
-    local rk: [ui8; 240]
+    local rk: [u8; 240]
     aesKeyExpand(key, keyLen, &rk[0])
-    local want: [ui8; 16]
+    local want: [u8; 16]
     tagFor(&rk[0], rounds, nonce, aad, alen, ct, n, &want[0])
-    local diff: ui8 = 0
+    local diff: u8 = 0
     local i: usize = 0
     while i < 16 {
         diff = diff | (want[i] ^ tag[i])
         i = i + 1
     }
     if diff != 0 { return false }
-    local ctr: [ui8; 16]
+    local ctr: [u8; 16]
     startCounter(nonce, &ctr[0])
     ctrXor(&rk[0], rounds, &ctr[0], ct, n, pt)
     return true

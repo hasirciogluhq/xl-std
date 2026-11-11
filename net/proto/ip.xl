@@ -8,33 +8,33 @@
 // (reply), code 0, a checksum over the whole ICMP message, identifier and sequence number, then the data.
 
 /// The Internet checksum (RFC 1071) of `data[0..n)`, as the 16-bit value to store in the header.
-export fn inetChecksum(data: *ui8, n: usize) -> ui16 {
-    local sum: ui64 = 0
+export fn inetChecksum(data: *u8, n: usize) -> u16 {
+    local sum: u64 = 0
     local i: usize = 0
     while i + 1 < n {
-        sum = sum + (((data[i] as ui64) << 8) | (data[i + 1] as ui64))
+        sum = sum + (((data[i] as u64) << 8) | (data[i + 1] as u64))
         i = i + 2
     }
     if i < n {
-        sum = sum + ((data[i] as ui64) << 8)
+        sum = sum + ((data[i] as u64) << 8)
     }
     while sum >> 16 != 0 {
         sum = (sum & 0xffff) + (sum >> 16)
     }
-    return (~sum & 0xffff) as ui16
+    return (~sum & 0xffff) as u16
 }
 
 /// Writes a 20-byte IPv4 header (no options) into `out` with the header checksum set; returns 20. `src` and `dst` point to
 /// four bytes each (network order). The fragment fields are zero: the don't-fragment flag is set (RFC 791 section 3.2 allows
 /// the sender to choose).
-export fn ipv4Header(src: *ui8, dst: *ui8, protocol: ui8, payloadLen: ui16, id: ui16, ttl: ui8, out: *ui8) -> usize {
-    local total: ui16 = (20 + (payloadLen as usize)) as ui16
+export fn ipv4Header(src: *u8, dst: *u8, protocol: u8, payloadLen: u16, id: u16, ttl: u8, out: *u8) -> usize {
+    local total: u16 = (20 + (payloadLen as usize)) as u16
     out[0] = 0x45
     out[1] = 0
-    out[2] = (total >> 8) as ui8
-    out[3] = (total & 0xff) as ui8
-    out[4] = (id >> 8) as ui8
-    out[5] = (id & 0xff) as ui8
+    out[2] = (total >> 8) as u8
+    out[3] = (total & 0xff) as u8
+    out[4] = (id >> 8) as u8
+    out[5] = (id & 0xff) as u8
     out[6] = 0x40
     out[7] = 0
     out[8] = ttl
@@ -47,15 +47,15 @@ export fn ipv4Header(src: *ui8, dst: *ui8, protocol: ui8, payloadLen: ui16, id: 
         out[16 + i] = dst[i]
         i = i + 1
     }
-    local sum: ui16 = inetChecksum(out, 20)
-    out[10] = (sum >> 8) as ui8
-    out[11] = (sum & 0xff) as ui8
+    local sum: u16 = inetChecksum(out, 20)
+    out[10] = (sum >> 8) as u8
+    out[11] = (sum & 0xff) as u8
     return 20
 }
 
 /// Writes an ICMP echo request (type 8) or reply (type 0) with identifier, sequence and `n` data bytes into `out`, with the
 /// checksum set. Returns the message length, 8 + n.
-export fn icmpEcho(reply: bool, id: ui16, seq: ui16, data: *ui8, n: usize, out: *ui8) -> usize {
+export fn icmpEcho(reply: bool, id: u16, seq: u16, data: *u8, n: usize, out: *u8) -> usize {
     if reply {
         out[0] = 0
     } else {
@@ -64,17 +64,17 @@ export fn icmpEcho(reply: bool, id: ui16, seq: ui16, data: *ui8, n: usize, out: 
     out[1] = 0
     out[2] = 0
     out[3] = 0
-    out[4] = (id >> 8) as ui8
-    out[5] = (id & 0xff) as ui8
-    out[6] = (seq >> 8) as ui8
-    out[7] = (seq & 0xff) as ui8
+    out[4] = (id >> 8) as u8
+    out[5] = (id & 0xff) as u8
+    out[6] = (seq >> 8) as u8
+    out[7] = (seq & 0xff) as u8
     local i: usize = 0
     while i < n {
         out[8 + i] = data[i]
         i = i + 1
     }
-    local sum: ui16 = inetChecksum(out, 8 + n)
-    out[2] = (sum >> 8) as ui8
-    out[3] = (sum & 0xff) as ui8
+    local sum: u16 = inetChecksum(out, 8 + n)
+    out[2] = (sum >> 8) as u8
+    out[3] = (sum & 0xff) as u8
     return 8 + n
 }

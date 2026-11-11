@@ -8,7 +8,7 @@ define ACE_PREFIX = "xn--"
 
 /// Writes the ACE form of the UTF-8 label `text[0..n)` into `out` (capacity `cap`) and returns its length, or -1 when the label
 /// is not valid UTF-8 or does not fit. An all-ASCII label is copied unchanged.
-export fn idnaLabelToAscii(text: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
+export fn idnaLabelToAscii(text: *u8, n: usize, out: *u8, cap: usize) -> isize {
     local ascii: bool = true
     local i: usize = 0
     while i < n {

@@ -13,20 +13,20 @@
 define BASE85_RFC_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~"
 
 /// Encodes `data[0..n)` as RFC 1924 base85 into `out`; returns the length. The output holds at most 5 * ceil(n / 4) bytes.
-export fn base85Encode(data: *ui8, n: usize, out: *ui8) -> usize {
+export fn base85Encode(data: *u8, n: usize, out: *u8) -> usize {
     local o: usize = 0
     local i: usize = 0
     while i < n {
         local group: usize = n - i
         if group > 4 { group = 4 }
-        local v: ui64 = 0
+        local v: u64 = 0
         local k: usize = 0
         while k < 4 {
             v = v << 8
-            if k < group { v = v | (data[i + k] as ui64) }
+            if k < group { v = v | (data[i + k] as u64) }
             k = k + 1
         }
-        local digits: [ui8; 5]
+        local digits: [u8; 5]
         k = 5
         while k > 0 {
             k = k - 1
@@ -45,7 +45,7 @@ export fn base85Encode(data: *ui8, n: usize, out: *ui8) -> usize {
 }
 
 /// The RFC 1924 digit value of `c`, or -1 when `c` is not in the alphabet.
-fn base85Value(c: ui8) -> i64 {
+fn base85Value(c: u8) -> i64 {
     local i: usize = 0
     while i < 85 {
         if BASE85_RFC_ALPHABET[i] == c { return i as i64 }
@@ -56,14 +56,14 @@ fn base85Value(c: ui8) -> i64 {
 
 /// Decodes RFC 1924 base85 text of `n` characters into `out`; returns the byte count or -1 for an invalid character,
 /// a final group of a single digit, or a value that does not fit in 32 bits.
-export fn base85Decode(text: *ui8, n: usize, out: *ui8) -> isize {
+export fn base85Decode(text: *u8, n: usize, out: *u8) -> isize {
     local o: usize = 0
     local i: usize = 0
     while i < n {
         local group: usize = n - i
         if group > 5 { group = 5 }
         if group == 1 { return -1 }
-        local v: ui64 = 0
+        local v: u64 = 0
         local k: usize = 0
         while k < 5 {
             local d: i64 = 84
@@ -71,13 +71,13 @@ export fn base85Decode(text: *ui8, n: usize, out: *ui8) -> isize {
                 d = base85Value(text[i + k])
                 if d < 0 { return -1 }
             }
-            v = v * 85 + (d as ui64)
+            v = v * 85 + (d as u64)
             k = k + 1
         }
         if v > 4294967295 { return -1 }
         k = 0
         while k < group - 1 {
-            out[o + k] = ((v >> ((24 - 8 * (k as i64)) as ui64)) & 0xff) as ui8
+            out[o + k] = ((v >> ((24 - 8 * (k as i64)) as u64)) & 0xff) as u8
             k = k + 1
         }
         o = o + group - 1
@@ -87,7 +87,7 @@ export fn base85Decode(text: *ui8, n: usize, out: *ui8) -> isize {
 }
 
 /// Encodes `data[0..n)` as Adobe ascii85 into `out`; returns the length. The output is at most 5 * ceil(n / 4) bytes.
-export fn ascii85Encode(data: *ui8, n: usize, out: *ui8) -> usize {
+export fn ascii85Encode(data: *u8, n: usize, out: *u8) -> usize {
     local o: usize = 0
     local i: usize = 0
     while i < n {
@@ -98,18 +98,18 @@ export fn ascii85Encode(data: *ui8, n: usize, out: *ui8) -> usize {
             o = o + 1
             i = i + 4
         } else {
-            local v: ui64 = 0
+            local v: u64 = 0
             local k: usize = 0
             while k < 4 {
                 v = v << 8
-                if k < group { v = v | (data[i + k] as ui64) }
+                if k < group { v = v | (data[i + k] as u64) }
                 k = k + 1
             }
-            local digits: [ui8; 5]
+            local digits: [u8; 5]
             k = 5
             while k > 0 {
                 k = k - 1
-                digits[k] = (33 + (v % 85)) as ui8
+                digits[k] = (33 + (v % 85)) as u8
                 v = v / 85
             }
             k = 0
@@ -127,13 +127,13 @@ export fn ascii85Encode(data: *ui8, n: usize, out: *ui8) -> usize {
 /// Decodes Adobe ascii85 text of `n` characters into `out`; whitespace is skipped, 'z' is four zero bytes, and
 /// "~>" ends the data. Returns the byte count or -1 for an invalid character, 'z' inside a group, a single final digit,
 /// or a group that does not fit in 32 bits.
-export fn ascii85Decode(text: *ui8, n: usize, out: *ui8) -> isize {
+export fn ascii85Decode(text: *u8, n: usize, out: *u8) -> isize {
     local o: usize = 0
     local i: usize = 0
     local group: [i64; 5]
     local count: usize = 0
     while i < n {
-        local c: ui8 = text[i]
+        local c: u8 = text[i]
         i = i + 1
         if c == 126 { break }                  // '~' starts the end marker "~>"
         if c == 32 || c == 9 || c == 10 || c == 13 || c == 12 { continue }
@@ -150,16 +150,16 @@ export fn ascii85Decode(text: *ui8, n: usize, out: *ui8) -> isize {
         group[count] = (c - 33) as i64
         count = count + 1
         if count == 5 {
-            local v: ui64 = 0
+            local v: u64 = 0
             local k: usize = 0
             while k < 5 {
-                v = v * 85 + (group[k] as ui64)
+                v = v * 85 + (group[k] as u64)
                 k = k + 1
             }
             if v > 4294967295 { return -1 }
             k = 0
             while k < 4 {
-                out[o + k] = ((v >> ((24 - 8 * (k as i64)) as ui64)) & 0xff) as ui8
+                out[o + k] = ((v >> ((24 - 8 * (k as i64)) as u64)) & 0xff) as u8
                 k = k + 1
             }
             o = o + 4
@@ -168,18 +168,18 @@ export fn ascii85Decode(text: *ui8, n: usize, out: *ui8) -> isize {
     }
     if count == 1 { return -1 }
     if count > 1 {
-        local v: ui64 = 0
+        local v: u64 = 0
         local k: usize = 0
         while k < 5 {
             local d: i64 = 84
             if k < count { d = group[k] }
-            v = v * 85 + (d as ui64)
+            v = v * 85 + (d as u64)
             k = k + 1
         }
         if v > 4294967295 { return -1 }
         k = 0
         while k < count - 1 {
-            out[o + k] = ((v >> ((24 - 8 * (k as i64)) as ui64)) & 0xff) as ui8
+            out[o + k] = ((v >> ((24 - 8 * (k as i64)) as u64)) & 0xff) as u8
             k = k + 1
         }
         o = o + count - 1

@@ -14,11 +14,11 @@ from "entropy" import randomBytes
 export define CSPRNG_RESEED_BYTES = 1048576
 
 export class Csprng {
-    key: [ui8; 32]
-    nonce: [ui8; 12]     // always zero; see the header
-    block: [ui8; 64]     // the current keystream block
+    key: [u8; 32]
+    nonce: [u8; 12]     // always zero; see the header
+    block: [u8; 64]     // the current keystream block
     used: usize          // bytes of `block` already returned; 64 when none is unread
-    counter: ui32        // next block counter for the current key
+    counter: u32        // next block counter for the current key
     produced: usize      // bytes returned since the last reseed
 
     fn init(self) {
@@ -35,7 +35,7 @@ export class Csprng {
 
     /// XORs fresh OS entropy into the key and restarts the block counter.
     fn reseed(self) {
-        local fresh: [ui8; 32]
+        local fresh: [u8; 32]
         randomBytes(&fresh[0], 32)
         local i: usize = 0
         while i < 32 {
@@ -47,7 +47,7 @@ export class Csprng {
     }
 
     /// Writes `n` random bytes to `out[0..n]`.
-    fn fill(self, out: *ui8, n: usize) {
+    fn fill(self, out: *u8, n: usize) {
         if self.produced + n > CSPRNG_RESEED_BYTES {
             self.reseed()
         }
@@ -76,13 +76,13 @@ export class Csprng {
     }
 
     /// One random 64-bit value, least significant byte first when read as bytes.
-    fn nextU64(self) -> ui64 {
-        local b: [ui8; 8]
+    fn nextU64(self) -> u64 {
+        local b: [u8; 8]
         self.fill(&b[0], 8)
-        local v: ui64 = 0
+        local v: u64 = 0
         local i: usize = 0
         while i < 8 {
-            v = v | ((b[i] as ui64) << ((i * 8) as ui64))
+            v = v | ((b[i] as u64) << ((i * 8) as u64))
             i = i + 1
         }
         return v

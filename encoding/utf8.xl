@@ -6,7 +6,7 @@
 
 /// The number of bytes of the UTF-8 sequence that starts with `c`, or 0 when `c` cannot start one (a continuation byte,
 /// 0xC0, 0xC1, or 0xF5 and above).
-export fn utf8SeqLen(c: ui8) -> usize {
+export fn utf8SeqLen(c: u8) -> usize {
     if c < 0x80 { return 1 }
     if c >= 0xc2 && c <= 0xdf { return 2 }
     if c >= 0xe0 && c <= 0xef { return 3 }
@@ -16,7 +16,7 @@ export fn utf8SeqLen(c: ui8) -> usize {
 
 /// Decodes the sequence at `s[0..n)`. Returns the code point and writes its byte length to `len`; returns -1 for an
 /// invalid or truncated sequence (and sets `len` to 1, so a scanner can skip one byte).
-export fn utf8Decode(s: *ui8, n: usize, len: *usize) -> i32 {
+export fn utf8Decode(s: *u8, n: usize, len: *usize) -> i32 {
     *len = 1
     if n == 0 { return -1 }
     local k: usize = utf8SeqLen(s[0])
@@ -54,7 +54,7 @@ export fn utf8Decode(s: *ui8, n: usize, len: *usize) -> i32 {
 }
 
 /// True when `s[0..n)` is entirely valid UTF-8.
-export fn utf8Valid(s: *ui8, n: usize) -> bool {
+export fn utf8Valid(s: *u8, n: usize) -> bool {
     local pos: usize = 0
     while pos < n {
         local len: usize = 0
@@ -74,22 +74,22 @@ export fn utf8EncodedLen(cp: i32) -> usize {
 }
 
 /// Writes the UTF-8 encoding of `cp` to `out` (at least 4 bytes) and returns its length, or 0 for an invalid code point.
-export fn utf8Encode(cp: i32, out: *ui8) -> usize {
+export fn utf8Encode(cp: i32, out: *u8) -> usize {
     local k: usize = utf8EncodedLen(cp)
     if k == 1 {
-        out[0] = cp as ui8
+        out[0] = cp as u8
     } else if k == 2 {
-        out[0] = (0xc0 | (cp >> 6)) as ui8
-        out[1] = (0x80 | (cp & 0x3f)) as ui8
+        out[0] = (0xc0 | (cp >> 6)) as u8
+        out[1] = (0x80 | (cp & 0x3f)) as u8
     } else if k == 3 {
-        out[0] = (0xe0 | (cp >> 12)) as ui8
-        out[1] = (0x80 | ((cp >> 6) & 0x3f)) as ui8
-        out[2] = (0x80 | (cp & 0x3f)) as ui8
+        out[0] = (0xe0 | (cp >> 12)) as u8
+        out[1] = (0x80 | ((cp >> 6) & 0x3f)) as u8
+        out[2] = (0x80 | (cp & 0x3f)) as u8
     } else if k == 4 {
-        out[0] = (0xf0 | (cp >> 18)) as ui8
-        out[1] = (0x80 | ((cp >> 12) & 0x3f)) as ui8
-        out[2] = (0x80 | ((cp >> 6) & 0x3f)) as ui8
-        out[3] = (0x80 | (cp & 0x3f)) as ui8
+        out[0] = (0xf0 | (cp >> 18)) as u8
+        out[1] = (0x80 | ((cp >> 12) & 0x3f)) as u8
+        out[2] = (0x80 | ((cp >> 6) & 0x3f)) as u8
+        out[3] = (0x80 | (cp & 0x3f)) as u8
     }
     return k
 }

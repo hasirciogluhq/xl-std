@@ -27,7 +27,7 @@ export fn maxInt(a: i64, b: i64) -> i64 {
 /// Square root by Newton's method from a bit-level first guess.
 export fn sqrt(x: f64) -> f64 {
     if x <= 0.0 { return 0.0 }
-    local bits: ui64 = *(&x as *ui64)
+    local bits: u64 = *(&x as *u64)
     bits = (bits / 2) + 2303911188496170496     // halves the exponent: ~sqrt as a first guess
     local g: f64 = *(&bits as *f64)
     local i: i32 = 0

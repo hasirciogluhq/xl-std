@@ -61,10 +61,10 @@ fn numberText(v: i64) -> String {
     local out: String = String()
     local x: i64 = v
     if x < 0 { x = 0 }
-    local digits: [ui8; 20]
+    local digits: [u8; 20]
     local n: usize = 0
     while true {
-        digits[n] = (48 + (x % 10)) as ui8
+        digits[n] = (48 + (x % 10)) as u8
         n = n + 1
         x = x / 10
         if x == 0 { break }

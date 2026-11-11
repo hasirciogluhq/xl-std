@@ -8,7 +8,7 @@ from "str" import fromParts, view, eq, find, contains, startsWith, endsWith
 from "compare" import compare, equalIgnoreCase, globMatch, isSpace
 
 export class String {
-    ptr: *ui8     // nil when cap == 0
+    ptr: *u8     // nil when cap == 0
     len: usize    // bytes of content
     cap: usize    // bytes for content, not counting the NUL slot
 
@@ -26,7 +26,7 @@ export class String {
     }
 
     /// `n` copies of the byte `b`.
-    fn init(self, n: usize, b: ui8) {
+    fn init(self, n: usize, b: u8) {
         self.ptr = nil
         self.len = 0
         self.cap = 0
@@ -58,7 +58,7 @@ export class String {
     }
 
     /// NUL-terminated bytes (an empty String gives a pointer to a static NUL).
-    fn cstr(self) -> *ui8 {
+    fn cstr(self) -> *u8 {
         if self.cap == 0 {
             return ""
         }
@@ -66,7 +66,7 @@ export class String {
     }
 
     /// The byte at `i`; panics when `i` is outside the content.
-    fn at(self, i: usize) -> ui8 {
+    fn at(self, i: usize) -> u8 {
         if i >= self.len {
             panic("String index out of bounds")
         }
@@ -85,7 +85,7 @@ export class String {
         if want < 15 {
             want = 15
         }
-        local fresh: *ui8 = currentAllocator.alloc(want + 1, 1) as *ui8
+        local fresh: *u8 = currentAllocator.alloc(want + 1, 1) as *u8
         if fresh == nil {
             panic("String: out of memory")
         }
@@ -100,7 +100,7 @@ export class String {
         self.cap = want
     }
 
-    fn push(self, b: ui8) {
+    fn push(self, b: u8) {
         self.reserve(self.len + 1)
         self.ptr[self.len] = b
         self.len = self.len + 1
@@ -219,7 +219,7 @@ export class String {
         local out: String = String()
         local i: usize = 0
         while i < self.len {
-            local c: ui8 = self.ptr[i]
+            local c: u8 = self.ptr[i]
             if c >= 65 && c <= 90 {
                 c = c + 32
             }
@@ -234,7 +234,7 @@ export class String {
         local out: String = String()
         local i: usize = 0
         while i < self.len {
-            local c: ui8 = self.ptr[i]
+            local c: u8 = self.ptr[i]
             if c >= 97 && c <= 122 {
                 c = c - 32
             }
@@ -330,7 +330,7 @@ export fn splitAsciiWhitespace(s: str) -> Vec<String> {
 /// `dst` is then a shorter string, not a broken one. Used where a buffer has a fixed size (an OS API field, a
 /// fixed-width table) and the leftover is expected to be dropped rather than reported. No terminator is written: the
 /// return value is the length, and the caller adds one when its protocol needs it.
-export fn copyTruncated(s: str, dst: *ui8, cap: usize) -> usize {
+export fn copyTruncated(s: str, dst: *u8, cap: usize) -> usize {
     if s.len <= cap {
         if s.len > 0 { memcpy(dst as *void, s.ptr as *void, s.len) }
         return s.len

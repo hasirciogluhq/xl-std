@@ -3,12 +3,12 @@
 from "../sys" import sysMap, sysUnmap
 
 export(c) fn memcpy(dst: *void, src: *void, n: usize) -> *void {
-    local d: *ui8 = dst as *ui8
-    local s: *ui8 = src as *ui8
+    local d: *u8 = dst as *u8
+    local s: *u8 = src as *u8
     local i: usize = 0
     if (d as usize) % 8 == 0 && (s as usize) % 8 == 0 {
-        local dw: *ui64 = dst as *ui64
-        local sw: *ui64 = src as *ui64
+        local dw: *u64 = dst as *u64
+        local sw: *u64 = src as *u64
         local words: usize = n / 8
         local w: usize = 0
         while w < words {
@@ -25,8 +25,8 @@ export(c) fn memcpy(dst: *void, src: *void, n: usize) -> *void {
 }
 
 export(c) fn memmove(dst: *void, src: *void, n: usize) -> *void {
-    local d: *ui8 = dst as *ui8
-    local s: *ui8 = src as *ui8
+    local d: *u8 = dst as *u8
+    local s: *u8 = src as *u8
     if (d as usize) <= (s as usize) {
         local i: usize = 0
         while i < n {
@@ -44,12 +44,12 @@ export(c) fn memmove(dst: *void, src: *void, n: usize) -> *void {
 }
 
 export(c) fn memset(dst: *void, value: i32, n: usize) -> *void {
-    local d: *ui8 = dst as *ui8
-    local b: ui8 = (value as ui32) as ui8
+    local d: *u8 = dst as *u8
+    local b: u8 = (value as u32) as u8
     local i: usize = 0
     if (d as usize) % 8 == 0 && n >= 8 {
-        local dw: *ui64 = dst as *ui64
-        local word: ui64 = b as ui64
+        local dw: *u64 = dst as *u64
+        local word: u64 = b as u64
         word = word * 72340172838076673     // 0x0101010101010101 replicates the byte
         local words: usize = n / 8
         local w: usize = 0
@@ -72,8 +72,8 @@ export(c) fn bzero(dst: *void, n: usize) {
 }
 
 export(c) fn memcmp(a: *void, b: *void, n: usize) -> i32 {
-    local x: *ui8 = a as *ui8
-    local y: *ui8 = b as *ui8
+    local x: *u8 = a as *u8
+    local y: *u8 = b as *u8
     local i: usize = 0
     while i < n {
         if x[i] != y[i] {
@@ -86,7 +86,7 @@ export(c) fn memcmp(a: *void, b: *void, n: usize) -> i32 {
 }
 
 /// Length of a NUL-terminated string.
-export fn strlen(s: *ui8) -> usize {
+export fn strlen(s: *u8) -> usize {
     local n: usize = 0
     while s[n] != 0 {
         n = n + 1

@@ -11,27 +11,27 @@ from "x509" import Cert, Tlv, derRead, parseTime, sigAlgOf, x509VerifySignature
 
 /// A parsed CRL. `hasNextUpdate` is false when the nextUpdate field is absent (RFC 5280 section 5.1.2.5).
 export struct Crl {
-    tbs: *ui8                 // the tbsCertList TLV: the signed bytes
+    tbs: *u8                 // the tbsCertList TLV: the signed bytes
     tbsLen: usize
-    issuer: *ui8              // the issuer Name TLV
+    issuer: *u8              // the issuer Name TLV
     issuerLen: usize
     sigAlg: i32
-    sig: *ui8                 // signature bytes, without the unused-bits byte
+    sig: *u8                 // signature bytes, without the unused-bits byte
     sigLen: usize
     thisUpdate: i64           // seconds since 1970-01-01 UTC
     nextUpdate: i64
     hasNextUpdate: bool
-    revoked: *ui8             // body of the revokedCertificates SEQUENCE (empty when absent)
+    revoked: *u8             // body of the revokedCertificates SEQUENCE (empty when absent)
     revokedLen: usize
     ok: bool
 }
 
 /// Parses a DER CRL.
-export fn crlParse(der: *ui8, len: usize) -> Crl {
+export fn crlParse(der: *u8, len: usize) -> Crl {
     local c: Crl
     local outer: Tlv
     if !derRead(der, len, &outer) || outer.tag != 0x30 { return c }
-    local body: *ui8 = outer.body
+    local body: *u8 = outer.body
     local avail: usize = outer.len
     local tbs: Tlv
     if !derRead(body, avail, &tbs) || tbs.tag != 0x30 { return c }
@@ -51,7 +51,7 @@ export fn crlParse(der: *ui8, len: usize) -> Crl {
     c.sig = &sigTlv.body[1]
     c.sigLen = sigTlv.len - 1
     // the tbsCertList fields
-    local tb: *ui8 = tbs.body
+    local tb: *u8 = tbs.body
     local tl: usize = tbs.len
     local p: usize = 0
     local f: Tlv
@@ -96,7 +96,7 @@ export fn crlParse(der: *ui8, len: usize) -> Crl {
 
 /// True when the serial number `serial[0..n)` (the INTEGER content) is listed in the CRL. Leading zero bytes are ignored on both
 /// sides, so 0x00 0x80 and 0x80 are the same number.
-export fn crlIsRevoked(c: *Crl, serial: *ui8, n: usize) -> bool {
+export fn crlIsRevoked(c: *Crl, serial: *u8, n: usize) -> bool {
     if !c.ok { return false }
     local p: usize = 0
     while p < c.revokedLen {
@@ -111,7 +111,7 @@ export fn crlIsRevoked(c: *Crl, serial: *ui8, n: usize) -> bool {
 }
 
 /// Compares two INTEGER contents as unsigned magnitudes after stripping leading zero bytes.
-fn sameInteger(a: *ui8, an: usize, b: *ui8, bn: usize) -> bool {
+fn sameInteger(a: *u8, an: usize, b: *u8, bn: usize) -> bool {
     local i: usize = 0
     while i + 1 < an && a[i] == 0 { i = i + 1 }
     local j: usize = 0

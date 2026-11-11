@@ -274,7 +274,7 @@ fn isRedirect(status: i32) -> bool {
 
 /// One request/response exchange on a fresh connection. Fills `out` on success.
 fn exchange(c: *Client, u: *Url, method: str, req: *Request, body: str, out: *Response) -> i32 {
-    local hostBuf: [ui8; 256] = [0; 256]
+    local hostBuf: [u8; 256] = [0; 256]
     local host: str = fromC(&u.host[0])
     local fd: i32 = -1
     local tls: TlsConn
@@ -286,7 +286,7 @@ fn exchange(c: *Client, u: *Url, method: str, req: *Request, body: str, out: *Re
         }
         fd = tls.fd
     } else {
-        local ip: ui32 = 0
+        local ip: u32 = 0
         if !dnsResolve(&u.host[0], &ip) { return CLIENT_ERR_DNS }
         fd = sysTcpSocket()
         if fd < 0 { return CLIENT_ERR_CONNECT }
@@ -305,7 +305,7 @@ fn exchange(c: *Client, u: *Url, method: str, req: *Request, body: str, out: *Re
     head.append(host)
     if (!u.https && u.port != 80) || (u.https && u.port != 443) {
         head.append(":")
-        head.append(toString(u.port as ui64).asStr())
+        head.append(toString(u.port as u64).asStr())
     }
     head.append("\r\nUser-Agent: ")
     head.append(c.userAgent.asStr())
@@ -314,7 +314,7 @@ fn exchange(c: *Client, u: *Url, method: str, req: *Request, body: str, out: *Re
     if body.len > 0 || eq(method, "POST") || eq(method, "PUT") {
         if !req.headers.Has("Content-Length") {
             head.append("Content-Length: ")
-            head.append(toString(body.len as ui64).asStr())
+            head.append(toString(body.len as u64).asStr())
             head.append("\r\n")
         }
     }
@@ -332,7 +332,7 @@ fn exchange(c: *Client, u: *Url, method: str, req: *Request, body: str, out: *Re
     return code
 }
 
-fn send(https: bool, tls: *TlsConn, fd: i32, data: *ui8, n: usize) -> bool {
+fn send(https: bool, tls: *TlsConn, fd: i32, data: *u8, n: usize) -> bool {
     if https { return tlsWrite(tls, data, n) }
     local done: usize = 0
     while done < n {
@@ -343,7 +343,7 @@ fn send(https: bool, tls: *TlsConn, fd: i32, data: *ui8, n: usize) -> bool {
     return true
 }
 
-fn recvSome(https: bool, tls: *TlsConn, fd: i32, buf: *ui8, n: usize) -> isize {
+fn recvSome(https: bool, tls: *TlsConn, fd: i32, buf: *u8, n: usize) -> isize {
     if https { return tlsRead(tls, buf, n) }
     return sysRead(fd, buf, n)
 }
@@ -359,7 +359,7 @@ fn closeConn(https: bool, tls: *TlsConn, fd: i32) {
 /// Reads the status line and the header fields, then the body by the framing of the response.
 fn readResponse(https: bool, tls: *TlsConn, fd: i32, method: str, out: *Response) -> i32 {
     local raw: String = String()
-    local chunk: [ui8; 4096]
+    local chunk: [u8; 4096]
     local headEnd: isize = -1
     while headEnd < 0 {
         local got: isize = recvSome(https, tls, fd, &chunk[0], 4096)
@@ -417,7 +417,7 @@ fn trimTo(s: str, n: usize) -> String {
 fn readChunked(https: bool, tls: *TlsConn, fd: i32, first: str, out: *Response) -> i32 {
     local buf: String = String()
     buf.append(first)
-    local chunk: [ui8; 4096]
+    local chunk: [u8; 4096]
     while true {
         local line: isize = findCrlf(buf.asStr(), 0)
         while line < 0 {
@@ -457,7 +457,7 @@ fn readChunked(https: bool, tls: *TlsConn, fd: i32, first: str, out: *Response) 
     return CLIENT_OK
 }
 
-fn hexOf(c: ui8) -> i32 {
+fn hexOf(c: u8) -> i32 {
     if c >= 48 && c <= 57 { return (c - 48) as i32 }
     if c >= 65 && c <= 70 { return (c - 55) as i32 }
     if c >= 97 && c <= 102 { return (c - 87) as i32 }
@@ -540,8 +540,8 @@ fn equalFold(a: str, b: str) -> bool {
     if a.len != b.len { return false }
     local i: usize = 0
     while i < a.len {
-        local x: ui8 = a[i]
-        local y: ui8 = b[i]
+        local x: u8 = a[i]
+        local y: u8 = b[i]
         if x >= 65 && x <= 90 { x = x + 32 }
         if y >= 65 && y <= 90 { y = y + 32 }
         if x != y { return false }

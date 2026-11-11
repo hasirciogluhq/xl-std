@@ -18,20 +18,20 @@ from "../str/str" import fromParts
 from "../mem/mem" import currentAllocator
 
 /// HMAC-SHA256 of `msg` under the byte key `key` into 32 bytes at `out`.
-fn mac256(key: str, msg: str, out: *ui8) {
+fn mac256(key: str, msg: str, out: *u8) {
     hmac(DIGEST_SHA256, key.ptr, key.len, msg.ptr, msg.len, out)
 }
 
 /// The 32-byte signing key for the date (YYYYMMDD), region, and service (SigV4 derivation steps above).
-export fn sigv4SigningKey(secret: str, dateStamp: str, region: str, service: str, out: *ui8) {
+export fn sigv4SigningKey(secret: str, dateStamp: str, region: str, service: str, out: *u8) {
     local prefix: String = String()
     prefix.append("AWS4")
     prefix.append(secret)
-    local kDate: [ui8; 32]
+    local kDate: [u8; 32]
     mac256(prefix.asStr(), dateStamp, &kDate[0])
-    local kRegion: [ui8; 32]
+    local kRegion: [u8; 32]
     mac256(fromParts(&kDate[0], 32), region, &kRegion[0])
-    local kService: [ui8; 32]
+    local kService: [u8; 32]
     mac256(fromParts(&kRegion[0], 32), service, &kService[0])
     mac256(fromParts(&kService[0], 32), "aws4_request", out)
 }
@@ -39,11 +39,11 @@ export fn sigv4SigningKey(secret: str, dateStamp: str, region: str, service: str
 /// The signature of `stringToSign` as 64 lowercase hex characters, using the signing key derived from the secret, date,
 /// region and service.
 export fn sigv4Signature(secret: str, dateStamp: str, region: str, service: str, stringToSign: str) -> String {
-    local key: [ui8; 32]
+    local key: [u8; 32]
     sigv4SigningKey(secret, dateStamp, region, service, &key[0])
-    local mac: [ui8; 32]
+    local mac: [u8; 32]
     mac256(fromParts(&key[0], 32), stringToSign, &mac[0])
-    local hx: [ui8; 64]
+    local hx: [u8; 64]
     hexEncode(&mac[0], 32, &hx[0])
     local out: String = String()
     out.append(fromParts(&hx[0], 64))

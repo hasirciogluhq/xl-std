@@ -14,53 +14,53 @@ define RSA_KEYGEN_E = 65537
 define RSA_KEYGEN_LIMBS = 130
 
 /// out = a * s for `na` limbs and a 32-bit `s`; `out` has na + 1 limbs. Returns nothing (the product always fits).
-fn mulSmall(a: *ui32, na: usize, s: ui32, out: *ui32) {
-    local carry: ui64 = 0
+fn mulSmall(a: *u32, na: usize, s: u32, out: *u32) {
+    local carry: u64 = 0
     local i: usize = 0
     while i < na {
-        local v: ui64 = (a[i] as ui64) * (s as ui64) + carry
-        out[i] = (v & 0xffffffff) as ui32
+        local v: u64 = (a[i] as u64) * (s as u64) + carry
+        out[i] = (v & 0xffffffff) as u32
         carry = v >> 32
         i = i + 1
     }
-    out[na] = carry as ui32
+    out[na] = carry as u32
 }
 
 /// The remainder of the `na`-limb number `a` divided by the 32-bit `d`; the quotient is written to `q` (na limbs).
-fn divSmall(a: *ui32, na: usize, d: ui32, q: *ui32) -> ui32 {
-    local rem: ui64 = 0
+fn divSmall(a: *u32, na: usize, d: u32, q: *u32) -> u32 {
+    local rem: u64 = 0
     local i: usize = na
     while i > 0 {
         i = i - 1
-        local cur: ui64 = (rem << 32) | (a[i] as ui64)
-        q[i] = (cur / (d as ui64)) as ui32
-        rem = cur % (d as ui64)
+        local cur: u64 = (rem << 32) | (a[i] as u64)
+        q[i] = (cur / (d as u64)) as u32
+        rem = cur % (d as u64)
     }
-    return rem as ui32
+    return rem as u32
 }
 
 /// out = a * b (na and nb limbs, out holds na + nb limbs).
-fn mulLimbs(a: *ui32, na: usize, b: *ui32, nb: usize, out: *ui32) {
+fn mulLimbs(a: *u32, na: usize, b: *u32, nb: usize, out: *u32) {
     bnZero(out, na + nb)
     local i: usize = 0
     while i < na {
-        local carry: ui64 = 0
+        local carry: u64 = 0
         local j: usize = 0
         while j < nb {
-            local v: ui64 = (out[i + j] as ui64) + (a[i] as ui64) * (b[j] as ui64) + carry
-            out[i + j] = (v & 0xffffffff) as ui32
+            local v: u64 = (out[i + j] as u64) + (a[i] as u64) * (b[j] as u64) + carry
+            out[i + j] = (v & 0xffffffff) as u32
             carry = v >> 32
             j = j + 1
         }
-        out[i + nb] = carry as ui32
+        out[i + nb] = carry as u32
         i = i + 1
     }
 }
 
 /// True when the odd candidate has a small prime factor (below 1000), so Miller-Rabin is not needed.
-fn hasSmallFactor(p: *ui32, n: usize) -> bool {
-    local tmp: [ui32; 130]
-    local primes: [ui32; 45] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+fn hasSmallFactor(p: *u32, n: usize) -> bool {
+    local tmp: [u32; 130]
+    local primes: [u32; 45] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
                                 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191,
                                 193, 197, 199]
     local i: usize = 0
@@ -72,18 +72,18 @@ fn hasSmallFactor(p: *ui32, n: usize) -> bool {
 }
 
 /// A random prime of `bits` bits (top two bits set, odd, p - 1 not divisible by e). Writes n limbs.
-fn randomPrime(bits: usize, p: *ui32) {
+fn randomPrime(bits: usize, p: *u32) {
     local n: usize = (bits + 31) / 32
     local bytes: usize = (bits + 7) / 8
-    local buf: [ui8; 520]
+    local buf: [u8; 520]
     // bits in the most significant byte (1 to 8)
     local top: usize = bits - (bytes - 1) * 8
     while true {
         randomBytes(&buf[0], bytes)
-        buf[0] = buf[0] & ((0xff >> ((8 - top) as ui8)) as ui8)
-        buf[0] = buf[0] | ((1 << ((top - 1) as ui8)) as ui8)
+        buf[0] = buf[0] & ((0xff >> ((8 - top) as u8)) as u8)
+        buf[0] = buf[0] | ((1 << ((top - 1) as u8)) as u8)
         if top >= 2 {
-            buf[0] = buf[0] | ((1 << ((top - 2) as ui8)) as ui8)
+            buf[0] = buf[0] | ((1 << ((top - 2) as u8)) as u8)
         } else {
             buf[1] = buf[1] | 0x80
         }
@@ -92,9 +92,9 @@ fn randomPrime(bits: usize, p: *ui32) {
         bnFromBytes(p, n, &buf[0], bytes)
         if hasSmallFactor(p, n) { continue }
         // (p - 1) mod e must not be zero
-        local tmp: [ui32; 130]
-        local pm1: [ui32; 130]
-        local one: [ui32; 130]
+        local tmp: [u32; 130]
+        local pm1: [u32; 130]
+        local one: [u32; 130]
         bnZero(&one[0], 130)
         one[0] = 1
         bnSub(&pm1[0], p, &one[0], n)
@@ -105,44 +105,44 @@ fn randomPrime(bits: usize, p: *ui32) {
 
 /// Generates an RSA key of `bits` bits (512 to 4096, a multiple of 16): n and d are written big-endian to `n` and `d`,
 /// `bits / 8` bytes each. The public exponent is 65537. False for unsupported sizes.
-export fn rsaGenerateKey(bits: usize, n: *ui8, d: *ui8) -> bool {
+export fn rsaGenerateKey(bits: usize, n: *u8, d: *u8) -> bool {
     if bits < 512 || bits > 4096 || bits % 16 != 0 { return false }
     local half: usize = bits / 2
     local hn: usize = (half + 31) / 32
-    local p: [ui32; 130]
-    local q: [ui32; 130]
+    local p: [u32; 130]
+    local q: [u32; 130]
     randomPrime(half, &p[0])
     randomPrime(half, &q[0])
     // n = p * q
-    local nl: [ui32; 130]
+    local nl: [u32; 130]
     mulLimbs(&p[0], hn, &q[0], hn, &nl[0])
     // phi = (p - 1)(q - 1)
-    local one: [ui32; 130]
+    local one: [u32; 130]
     bnZero(&one[0], 130)
     one[0] = 1
-    local pm1: [ui32; 130]
-    local qm1: [ui32; 130]
+    local pm1: [u32; 130]
+    local qm1: [u32; 130]
     bnSub(&pm1[0], &p[0], &one[0], hn)
     bnSub(&qm1[0], &q[0], &one[0], hn)
-    local phi: [ui32; 130]
+    local phi: [u32; 130]
     mulLimbs(&pm1[0], hn, &qm1[0], hn, &phi[0])
     local phiN: usize = 2 * hn
     // k = -(phi mod e)^-1 mod e, by a search over the small modulus (e is 65537, so 65537 candidates at most)
-    local tmp: [ui32; 130]
-    local rem: ui32 = divSmall(&phi[0], phiN, RSA_KEYGEN_E, &tmp[0])
-    local k: ui32 = 1
+    local tmp: [u32; 130]
+    local rem: u32 = divSmall(&phi[0], phiN, RSA_KEYGEN_E, &tmp[0])
+    local k: u32 = 1
     while k < RSA_KEYGEN_E {
-        if (((rem as ui64) * (k as ui64)) % (RSA_KEYGEN_E as ui64)) == (RSA_KEYGEN_E as ui64 - 1) { break }
+        if (((rem as u64) * (k as u64)) % (RSA_KEYGEN_E as u64)) == (RSA_KEYGEN_E as u64 - 1) { break }
         k = k + 1
     }
     // t = k * phi + 1; d = t / e
-    local kphi: [ui32; 130]
+    local kphi: [u32; 130]
     mulSmall(&phi[0], phiN, k, &kphi[0])
-    local t: [ui32; 130]
+    local t: [u32; 130]
     bnCopy(&t[0], &kphi[0], phiN + 1)
     bnAdd(&t[0], &t[0], &one[0], phiN + 1)
-    local dl: [ui32; 130]
-    local r2: ui32 = divSmall(&t[0], phiN + 1, RSA_KEYGEN_E, &dl[0])
+    local dl: [u32; 130]
+    local r2: u32 = divSmall(&t[0], phiN + 1, RSA_KEYGEN_E, &dl[0])
     if r2 != 0 { return false }
     bnToBytes(&nl[0], hn * 2, n, bits / 8)
     bnToBytes(&dl[0], phiN + 1, d, bits / 8)

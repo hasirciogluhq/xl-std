@@ -8,11 +8,11 @@ from "../../math/bignum" import Mont, montInit, montTo, montFrom, montPow, modAd
 
 define X448_LIMBS = 14
 
-fn cswapN(swap: ui32, a: *ui32, b: *ui32, n: usize) {
-    local mask: ui32 = 0 - swap
+fn cswapN(swap: u32, a: *u32, b: *u32, n: usize) {
+    local mask: u32 = 0 - swap
     local i: usize = 0
     while i < n {
-        local t: ui32 = mask & (a[i] ^ b[i])
+        local t: u32 = mask & (a[i] ^ b[i])
         a[i] = a[i] ^ t
         b[i] = b[i] ^ t
         i = i + 1
@@ -20,8 +20,8 @@ fn cswapN(swap: ui32, a: *ui32, b: *ui32, n: usize) {
 }
 
 /// Little-endian 56 bytes to 14 limbs (the bignum loader takes big-endian bytes).
-fn leToLimbs448(le: *ui8, out: *ui32) {
-    local be: [ui8; 56]
+fn leToLimbs448(le: *u8, out: *u32) {
+    local be: [u8; 56]
     local i: usize = 0
     while i < 56 {
         be[i] = le[55 - i]
@@ -32,8 +32,8 @@ fn leToLimbs448(le: *ui8, out: *ui32) {
 
 /// out = X448(scalar, u): 56-byte inputs and output, little-endian. False when the result is all zero (a low-order
 /// input), which the caller must treat as failure.
-export fn x448(out: *ui8, scalar: *ui8, u: *ui8) -> bool {
-    local k: [ui8; 56]
+export fn x448(out: *u8, scalar: *u8, u: *u8) -> bool {
+    local k: [u8; 56]
     local i: usize = 0
     while i < 56 {
         k[i] = scalar[i]
@@ -43,7 +43,7 @@ export fn x448(out: *ui8, scalar: *ui8, u: *ui8) -> bool {
     k[55] = k[55] | 128
 
     // p = 2^448 - 2^224 - 1: every limb all ones except limb 7, whose low word is 2^224 cleared
-    local p: [ui32; 14]
+    local p: [u32; 14]
     i = 0
     while i < 14 {
         p[i] = 0xffffffff
@@ -53,40 +53,40 @@ export fn x448(out: *ui8, scalar: *ui8, u: *ui8) -> bool {
     local c: Mont
     montInit(&c, &p[0], X448_LIMBS)
 
-    local ul: [ui32; 14]
+    local ul: [u32; 14]
     leToLimbs448(u, &ul[0])
-    local x1: [ui32; 14]
-    local x2: [ui32; 14]
-    local z2: [ui32; 14]
-    local x3: [ui32; 14]
-    local z3: [ui32; 14]
+    local x1: [u32; 14]
+    local x2: [u32; 14]
+    local z2: [u32; 14]
+    local x3: [u32; 14]
+    local z3: [u32; 14]
     montTo(&c, &x1[0], &ul[0])
     bnCopy(&x2[0], &c.one[0], X448_LIMBS)
     bnZero(&z2[0], X448_LIMBS)
     bnCopy(&x3[0], &x1[0], X448_LIMBS)
     bnCopy(&z3[0], &c.one[0], X448_LIMBS)
 
-    local a24l: [ui32; 14]
-    local a24: [ui32; 14]
+    local a24l: [u32; 14]
+    local a24: [u32; 14]
     bnZero(&a24l[0], X448_LIMBS)
     a24l[0] = 39081
     montTo(&c, &a24[0], &a24l[0])
 
-    local a: [ui32; 14]
-    local aa: [ui32; 14]
-    local b: [ui32; 14]
-    local bb: [ui32; 14]
-    local e: [ui32; 14]
-    local cc: [ui32; 14]
-    local d: [ui32; 14]
-    local da: [ui32; 14]
-    local cb: [ui32; 14]
-    local t: [ui32; 14]
-    local swap: ui32 = 0
+    local a: [u32; 14]
+    local aa: [u32; 14]
+    local b: [u32; 14]
+    local bb: [u32; 14]
+    local e: [u32; 14]
+    local cc: [u32; 14]
+    local d: [u32; 14]
+    local da: [u32; 14]
+    local cb: [u32; 14]
+    local t: [u32; 14]
+    local swap: u32 = 0
     local bit: usize = 448
     while bit > 0 {
         bit = bit - 1
-        local kt: ui32 = ((k[bit / 8] >> ((bit % 8) as ui8)) & 1) as ui32
+        local kt: u32 = ((k[bit / 8] >> ((bit % 8) as u8)) & 1) as u32
         swap = swap ^ kt
         cswapN(swap, &x2[0], &x3[0], X448_LIMBS)
         cswapN(swap, &z2[0], &z3[0], X448_LIMBS)
@@ -114,21 +114,21 @@ export fn x448(out: *ui8, scalar: *ui8, u: *ui8) -> bool {
     cswapN(swap, &z2[0], &z3[0], X448_LIMBS)
 
     // result = x2 * z2^(p-2)
-    local two: [ui32; 14]
-    local exp: [ui32; 14]
+    local two: [u32; 14]
+    local exp: [u32; 14]
     bnZero(&two[0], X448_LIMBS)
     two[0] = 2
     bnSub(&exp[0], &p[0], &two[0], X448_LIMBS)
-    local zi: [ui32; 14]
+    local zi: [u32; 14]
     montPow(&c, &zi[0], &z2[0], &exp[0], X448_LIMBS)
     montMul(&c, &x2[0], &x2[0], &zi[0])
     montFrom(&c, &x2[0], &x2[0])
     i = 0
     while i < 56 {
-        out[i] = ((x2[i / 4] >> (((i % 4) * 8) as ui32)) & 0xff) as ui8
+        out[i] = ((x2[i / 4] >> (((i % 4) * 8) as u32)) & 0xff) as u8
         i = i + 1
     }
-    local nz: ui8 = 0
+    local nz: u8 = 0
     i = 0
     while i < 56 {
         nz = nz | out[i]
@@ -138,8 +138,8 @@ export fn x448(out: *ui8, scalar: *ui8, u: *ui8) -> bool {
 }
 
 /// out = X448(scalar, 5): the public key of a private scalar (RFC 7748 section 6.2 base point u = 5).
-export fn x448Base(out: *ui8, scalar: *ui8) -> bool {
-    local five: [ui8; 56]
+export fn x448Base(out: *u8, scalar: *u8) -> bool {
+    local five: [u8; 56]
     local i: usize = 0
     while i < 56 {
         five[i] = 0

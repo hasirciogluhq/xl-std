@@ -9,23 +9,23 @@
 from "../str/str" import fromParts
 
 export struct Semver {
-    major: ui64
-    minor: ui64
-    patch: ui64
+    major: u64
+    minor: u64
+    patch: u64
     pre: str
     valid: bool
 }
 
 /// Parses one decimal number from `text` (no sign, no leading zero unless it is "0", fits in 64 bits); returns false on error.
-fn parseNumber(text: str, out: *ui64) -> bool {
+fn parseNumber(text: str, out: *u64) -> bool {
     if text.len == 0 { return false }
     if text.len > 1 && text[0] == 48 { return false }
-    local v: ui64 = 0
+    local v: u64 = 0
     local i: usize = 0
     while i < text.len {
-        local c: ui8 = text[i]
+        local c: u8 = text[i]
         if c < 48 || c > 57 { return false }
-        local d: ui64 = (c - 48) as ui64
+        local d: u64 = (c - 48) as u64
         if v > (0xffffffffffffffff - d) / 10 { return false }
         v = v * 10 + d
         i = i + 1
@@ -35,7 +35,7 @@ fn parseNumber(text: str, out: *ui64) -> bool {
 }
 
 /// True when `c` is a character of an identifier: [0-9A-Za-z-].
-fn isIdentChar(c: ui8) -> bool {
+fn isIdentChar(c: u8) -> bool {
     return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45
 }
 
@@ -138,8 +138,8 @@ fn compareIdent(a: str, b: str) -> i32 {
         i = i + 1
     }
     if an && bn {
-        local x: ui64 = 0
-        local y: ui64 = 0
+        local x: u64 = 0
+        local y: u64 = 0
         parseNumber(a, &x)
         parseNumber(b, &y)
         if x < y { return -1 }

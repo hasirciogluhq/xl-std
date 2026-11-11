@@ -8,11 +8,11 @@
 // `crc` (start with 0), exactly as zlib's crc32(). Bitwise form: no table, so no 1 KiB of static data.
 
 /// One reflected CRC step over `n` bytes. `crc` is the complemented running register.
-fn crcReflected(poly: ui32, crc: ui32, data: *ui8, n: usize) -> ui32 {
-    local c: ui32 = crc
+fn crcReflected(poly: u32, crc: u32, data: *u8, n: usize) -> u32 {
+    local c: u32 = crc
     local i: usize = 0
     while i < n {
-        c = c ^ (data[i] as ui32)
+        c = c ^ (data[i] as u32)
         local bit: i32 = 0
         while bit < 8 {
             if c & 1 != 0 {
@@ -28,21 +28,21 @@ fn crcReflected(poly: ui32, crc: ui32, data: *ui8, n: usize) -> ui32 {
 }
 
 /// CRC-32 (IEEE) of `data[0..n]`, continuing from `crc` (0 for a new checksum).
-export fn crc32Update(crc: ui32, data: *ui8, n: usize) -> ui32 {
+export fn crc32Update(crc: u32, data: *u8, n: usize) -> u32 {
     return crcReflected(0xEDB88320, crc ^ 0xffffffff, data, n) ^ 0xffffffff
 }
 
 /// CRC-32 (IEEE) of `data[0..n]`.
-export fn crc32(data: *ui8, n: usize) -> ui32 {
+export fn crc32(data: *u8, n: usize) -> u32 {
     return crc32Update(0, data, n)
 }
 
 /// CRC-32C (Castagnoli) of `data[0..n]`, continuing from `crc` (0 for a new checksum).
-export fn crc32cUpdate(crc: ui32, data: *ui8, n: usize) -> ui32 {
+export fn crc32cUpdate(crc: u32, data: *u8, n: usize) -> u32 {
     return crcReflected(0x82F63B78, crc ^ 0xffffffff, data, n) ^ 0xffffffff
 }
 
 /// CRC-32C (Castagnoli) of `data[0..n]`.
-export fn crc32c(data: *ui8, n: usize) -> ui32 {
+export fn crc32c(data: *u8, n: usize) -> u32 {
     return crc32cUpdate(0, data, n)
 }

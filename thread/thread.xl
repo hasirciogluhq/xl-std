@@ -13,8 +13,8 @@ struct ThreadCtx {
     arg: *void
     stack: *void
     stackSize: usize
-    tid: ui32          // non-zero while the thread runs
-    detached: ui32
+    tid: u32          // non-zero while the thread runs
+    detached: u32
     next: *ThreadCtx   // zombie list link (detached threads)
 }
 
@@ -91,7 +91,7 @@ export fn threadValid(t: Thread) -> bool {
 export fn threadJoin(t: Thread) {
     local c: *ThreadCtx = t.ctx
     if c == nil { return }
-    local v: ui32 = __builtin_atomicLoad(&c.tid, MemoryOrder.acquire)
+    local v: u32 = __builtin_atomicLoad(&c.tid, MemoryOrder.acquire)
     while v != 0 {
         sysWait(&c.tid, v)
         v = __builtin_atomicLoad(&c.tid, MemoryOrder.acquire)

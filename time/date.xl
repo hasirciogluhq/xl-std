@@ -95,7 +95,7 @@ export fn validDate(d: DateTime) -> bool {
 
 /// Writes the RFC 3339 UTC form `YYYY-MM-DDTHH:MM:SSZ` of `d` (20 bytes for years 1000 to 9999) into `out` and returns 20,
 /// or 0 when the date is invalid or the year is outside 0 to 9999.
-export fn formatRfc3339(d: DateTime, out: *ui8) -> usize {
+export fn formatRfc3339(d: DateTime, out: *u8) -> usize {
     if !validDate(d) || d.year < 0 || d.year > 9999 { return 0 }
     putDigits(out, 0, d.year, 4)
     out[4] = 45
@@ -112,12 +112,12 @@ export fn formatRfc3339(d: DateTime, out: *ui8) -> usize {
     return 20
 }
 
-fn putDigits(out: *ui8, at: usize, v: i64, width: usize) {
+fn putDigits(out: *u8, at: usize, v: i64, width: usize) {
     local x: i64 = v
     local i: usize = width
     while i > 0 {
         i = i - 1
-        out[at + i] = (48 + (x % 10)) as ui8
+        out[at + i] = (48 + (x % 10)) as u8
         x = x / 10
     }
 }
@@ -130,7 +130,7 @@ export struct ParsedTime {
 
 /// Parses an RFC 3339 date-time with a `Z` offset, `YYYY-MM-DDTHH:MM:SSZ` (the `T` may be a space, as RFC 3339 section 5.6
 /// allows). Fractional seconds are skipped.
-export fn parseRfc3339(s: *ui8, n: usize) -> ParsedTime {
+export fn parseRfc3339(s: *u8, n: usize) -> ParsedTime {
     local r: ParsedTime
     if n < 20 { return r }
     if s[4] != 45 || s[7] != 45 || (s[10] != 84 && s[10] != 116 && s[10] != 32) || s[13] != 58 || s[16] != 58 { return r }
@@ -157,11 +157,11 @@ export fn parseRfc3339(s: *ui8, n: usize) -> ParsedTime {
 }
 
 /// The value of `width` ASCII digits at `at`, or -1 when one of them is not a digit.
-fn digitsAt(s: *ui8, at: usize, width: usize) -> i64 {
+fn digitsAt(s: *u8, at: usize, width: usize) -> i64 {
     local x: i64 = 0
     local i: usize = 0
     while i < width {
-        local c: ui8 = s[at + i]
+        local c: u8 = s[at + i]
         if c < 48 || c > 57 { return -1 }
         x = x * 10 + ((c - 48) as i64)
         i = i + 1

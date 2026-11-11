@@ -6,18 +6,18 @@
 define BASE91_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&()*+,./:;<=>?@[]^_`{|}~\""
 
 /// Encodes `src[0..n)` into `out`; returns the length. `out` needs at most 2 * n + 2 bytes.
-export fn base91Encode(src: *ui8, n: usize, out: *ui8) -> usize {
+export fn base91Encode(src: *u8, n: usize, out: *u8) -> usize {
     local alpha: str = BASE91_ALPHABET
-    local b: ui32 = 0
-    local bits: ui32 = 0
+    local b: u32 = 0
+    local bits: u32 = 0
     local o: usize = 0
     local i: usize = 0
     while i < n {
-        b = b | ((src[i] as ui32) << bits)
+        b = b | ((src[i] as u32) << bits)
         bits = bits + 8
         i = i + 1
         if bits > 13 {
-            local v: ui32 = b & 8191
+            local v: u32 = b & 8191
             if v > 88 {
                 b = b >> 13
                 bits = bits - 13
@@ -43,11 +43,11 @@ export fn base91Encode(src: *ui8, n: usize, out: *ui8) -> usize {
 }
 
 /// Decodes `src[0..n)` into `out`; returns the byte count, or -1 for a character outside the alphabet. `out` needs at most n bytes.
-export fn base91Decode(src: *ui8, n: usize, out: *ui8) -> isize {
+export fn base91Decode(src: *u8, n: usize, out: *u8) -> isize {
     local alpha: str = BASE91_ALPHABET
     local v: i32 = -1
-    local b: ui32 = 0
-    local bits: ui32 = 0
+    local b: u32 = 0
+    local bits: u32 = 0
     local o: usize = 0
     local i: usize = 0
     while i < n {
@@ -66,14 +66,14 @@ export fn base91Decode(src: *ui8, n: usize, out: *ui8) -> isize {
             v = d
         } else {
             v = v + d * 91
-            b = b | ((v as ui32) << bits)
+            b = b | ((v as u32) << bits)
             if (v & 8191) > 88 {
                 bits = bits + 13
             } else {
                 bits = bits + 14
             }
             while bits > 7 {
-                out[o] = (b & 255) as ui8
+                out[o] = (b & 255) as u8
                 o = o + 1
                 b = b >> 8
                 bits = bits - 8
@@ -82,7 +82,7 @@ export fn base91Decode(src: *ui8, n: usize, out: *ui8) -> isize {
         }
     }
     if v >= 0 {
-        out[o] = ((b | ((v as ui32) << bits)) & 255) as ui8
+        out[o] = ((b | ((v as u32) << bits)) & 255) as u8
         o = o + 1
     }
     return o as isize

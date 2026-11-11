@@ -7,8 +7,8 @@
 // Not collision resistant against an adversary; intended for hash tables and quick fingerprints.
 
 /// 64-bit constant from two 32-bit halves.
-fn word(hi: ui32, lo: ui32) -> ui64 {
-    return ((hi as ui64) << 32) | (lo as ui64)
+fn word(hi: u32, lo: u32) -> u64 {
+    return ((hi as u64) << 32) | (lo as u64)
 }
 
 export define FNV32_BASIS = 0x811c9dc5
@@ -16,44 +16,44 @@ export define FNV32_PRIME = 16777619
 export define FNV64_PRIME = 1099511628211
 
 /// FNV-1a 32-bit of `data[0..n]`.
-export fn fnv1a32(data: *ui8, n: usize) -> ui32 {
-    local h: ui32 = FNV32_BASIS
+export fn fnv1a32(data: *u8, n: usize) -> u32 {
+    local h: u32 = FNV32_BASIS
     local i: usize = 0
     while i < n {
-        h = (h ^ (data[i] as ui32)) * FNV32_PRIME
+        h = (h ^ (data[i] as u32)) * FNV32_PRIME
         i = i + 1
     }
     return h
 }
 
 /// FNV-1 32-bit of `data[0..n]`.
-export fn fnv1_32(data: *ui8, n: usize) -> ui32 {
-    local h: ui32 = FNV32_BASIS
+export fn fnv1_32(data: *u8, n: usize) -> u32 {
+    local h: u32 = FNV32_BASIS
     local i: usize = 0
     while i < n {
-        h = (h * FNV32_PRIME) ^ (data[i] as ui32)
+        h = (h * FNV32_PRIME) ^ (data[i] as u32)
         i = i + 1
     }
     return h
 }
 
 /// FNV-1a 64-bit of `data[0..n]`.
-export fn fnv1a64(data: *ui8, n: usize) -> ui64 {
-    local h: ui64 = word(0xcbf29ce4, 0x84222325)
+export fn fnv1a64(data: *u8, n: usize) -> u64 {
+    local h: u64 = word(0xcbf29ce4, 0x84222325)
     local i: usize = 0
     while i < n {
-        h = (h ^ (data[i] as ui64)) * FNV64_PRIME
+        h = (h ^ (data[i] as u64)) * FNV64_PRIME
         i = i + 1
     }
     return h
 }
 
 /// FNV-1 64-bit of `data[0..n]`.
-export fn fnv1_64(data: *ui8, n: usize) -> ui64 {
-    local h: ui64 = word(0xcbf29ce4, 0x84222325)
+export fn fnv1_64(data: *u8, n: usize) -> u64 {
+    local h: u64 = word(0xcbf29ce4, 0x84222325)
     local i: usize = 0
     while i < n {
-        h = (h * FNV64_PRIME) ^ (data[i] as ui64)
+        h = (h * FNV64_PRIME) ^ (data[i] as u64)
         i = i + 1
     }
     return h

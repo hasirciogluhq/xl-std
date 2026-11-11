@@ -34,8 +34,8 @@ export fn multipartBoundary(contentType: str) -> str {
     return ""
 }
 
-fn lowerAt(s: str, i: usize) -> ui8 {
-    local c: ui8 = s[i]
+fn lowerAt(s: str, i: usize) -> u8 {
+    local c: u8 = s[i]
     if c >= 65 && c <= 90 { return c + 32 }
     return c
 }

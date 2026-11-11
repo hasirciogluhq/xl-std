@@ -10,8 +10,8 @@ from "../cipher/aes" import aesEncrypt, aesKeyExpand, aesRounds
 from "../cipher/aesgcm" import aesGcmSeal
 
 /// K1 (or K2) = dbl(in): multiplication by x in GF(2^128), big-endian bytes, RFC 4493 section 2.3.
-fn doubleBlock(inb: *ui8, out: *ui8) {
-    local carry: ui8 = inb[0] >> 7
+fn doubleBlock(inb: *u8, out: *u8) {
+    local carry: u8 = inb[0] >> 7
     local i: usize = 0
     while i < 15 {
         out[i] = ((inb[i] << 1) | (inb[i + 1] >> 7)) & 0xff
@@ -20,7 +20,7 @@ fn doubleBlock(inb: *ui8, out: *ui8) {
     out[15] = ((inb[15] << 1) & 0xff) ^ (carry * 0x87)
 }
 
-fn xorBlock(dst: *ui8, src: *ui8) {
+fn xorBlock(dst: *u8, src: *u8) {
     local i: usize = 0
     while i < 16 {
         dst[i] = dst[i] ^ src[i]
@@ -29,15 +29,15 @@ fn xorBlock(dst: *ui8, src: *ui8) {
 }
 
 /// AES-128-CMAC of `msg[0..mlen)` under `key` into the 16 bytes at `out` (NIST SP 800-38B section 6.1).
-export fn cmacAes(key: *ui8, keyLen: usize, msg: *ui8, mlen: usize, out: *ui8) {
+export fn cmacAes(key: *u8, keyLen: usize, msg: *u8, mlen: usize, out: *u8) {
     local rounds: usize = aesRounds(keyLen)
     if rounds == 0 { panic("cmacAes: the key must be 16, 24 or 32 bytes") }
-    local rk: [ui8; 240]
+    local rk: [u8; 240]
     aesKeyExpand(key, keyLen, &rk[0])
-    local zero: [ui8; 16]
-    local l: [ui8; 16]
-    local k1: [ui8; 16]
-    local k2: [ui8; 16]
+    local zero: [u8; 16]
+    local l: [u8; 16]
+    local k1: [u8; 16]
+    local k2: [u8; 16]
     local i: usize = 0
     while i < 16 {
         zero[i] = 0
@@ -51,8 +51,8 @@ export fn cmacAes(key: *ui8, keyLen: usize, msg: *ui8, mlen: usize, out: *ui8) {
     local blocks: usize = (mlen + 15) / 16
     local complete: bool = blocks > 0 && mlen % 16 == 0
     if blocks == 0 { blocks = 1 }
-    local c: [ui8; 16]
-    local cur: [ui8; 16]
+    local c: [u8; 16]
+    local cur: [u8; 16]
     i = 0
     while i < 16 {
         c[i] = 0
@@ -69,7 +69,7 @@ export fn cmacAes(key: *ui8, keyLen: usize, msg: *ui8, mlen: usize, out: *ui8) {
         b = b + 1
     }
     // the final block
-    local last: [ui8; 16]
+    local last: [u8; 16]
     local start: usize = b * 16
     local rest: usize = mlen - start
     i = 0
@@ -94,6 +94,6 @@ export fn cmacAes(key: *ui8, keyLen: usize, msg: *ui8, mlen: usize, out: *ui8) {
 
 /// AES-128-GMAC of the additional data `aad[0..alen)` with a 12-byte `nonce`: the GCM tag with an empty plaintext
 /// (NIST SP 800-38D, section 7.1 with P = empty), written to the 16 bytes at `tag`. Authentication only.
-export fn gmacAes(key: *ui8, keyLen: usize, nonce: *ui8, aad: *ui8, alen: usize, tag: *ui8) {
+export fn gmacAes(key: *u8, keyLen: usize, nonce: *u8, aad: *u8, alen: usize, tag: *u8) {
     aesGcmSeal(key, keyLen, nonce, aad, alen, nil, 0, nil, tag)
 }

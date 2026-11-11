@@ -5,7 +5,7 @@
 // 64-bit little-endian bit length (RFC 1321 section 3.1 and 3.2). The digest is a, b, c, d little-endian.
 // K[i] = floor(abs(sin(i + 1)) * 2^32) (RFC 1321 section 3.4); the rotate counts are in SHIFT (section 3.4).
 
-global K: [ui32; 64] = [
+global K: [u32; 64] = [
     0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
     0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
     0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
@@ -17,28 +17,28 @@ global K: [ui32; 64] = [
 ]
 
 // Rotate counts for the four rounds, four per round (RFC 1321 section 3.4).
-global SHIFT: [ui32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21]
+global SHIFT: [u32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21]
 
-fn rotl(x: ui32, n: ui32) -> ui32 {
+fn rotl(x: u32, n: u32) -> u32 {
     return (x << n) | (x >> (32 - n))
 }
 
 /// Compresses one 64-byte block into `h[0..4]`.
-fn block(h: *ui32, p: *ui8) {
-    local m: [ui32; 16]
+fn block(h: *u32, p: *u8) {
+    local m: [u32; 16]
     local i: usize = 0
     while i < 16 {
-        m[i] = (p[i * 4] as ui32) | ((p[i * 4 + 1] as ui32) << 8) |
-               ((p[i * 4 + 2] as ui32) << 16) | ((p[i * 4 + 3] as ui32) << 24)
+        m[i] = (p[i * 4] as u32) | ((p[i * 4 + 1] as u32) << 8) |
+               ((p[i * 4 + 2] as u32) << 16) | ((p[i * 4 + 3] as u32) << 24)
         i = i + 1
     }
-    local a: ui32 = h[0]
-    local b: ui32 = h[1]
-    local c: ui32 = h[2]
-    local d: ui32 = h[3]
+    local a: u32 = h[0]
+    local b: u32 = h[1]
+    local c: u32 = h[2]
+    local d: u32 = h[3]
     i = 0
     while i < 64 {
-        local f: ui32 = 0
+        local f: u32 = 0
         local g: usize = 0
         if i < 16 {
             f = (b & c) | (~b & d)
@@ -68,10 +68,10 @@ fn block(h: *ui32, p: *ui8) {
 
 /// Streaming MD5 state. A plain struct copy (`*a = *b`) snapshots a running hash.
 export struct Md5 {
-    h: [ui32; 4]
-    buf: [ui8; 64]
+    h: [u32; 4]
+    buf: [u8; 64]
     used: usize
-    total: ui64
+    total: u64
 }
 
 export fn md5Init(s: *Md5) {
@@ -83,8 +83,8 @@ export fn md5Init(s: *Md5) {
     s.total = 0
 }
 
-export fn md5Update(s: *Md5, data: *ui8, n: usize) {
-    s.total = s.total + (n as ui64)
+export fn md5Update(s: *Md5, data: *u8, n: usize) {
+    s.total = s.total + (n as u64)
     local i: usize = 0
     while i < n {
         s.buf[s.used] = data[i]
@@ -98,9 +98,9 @@ export fn md5Update(s: *Md5, data: *ui8, n: usize) {
 }
 
 /// Finishes a copy of the state: `s` itself keeps absorbing afterwards. Writes the 16 digest bytes to `out`.
-export fn md5Final(s: *Md5, out: *ui8) {
+export fn md5Final(s: *Md5, out: *u8) {
     local c: Md5 = *s
-    local bits: ui64 = c.total << 3
+    local bits: u64 = c.total << 3
     c.buf[c.used] = 0x80
     c.used = c.used + 1
     if c.used > 56 {
@@ -117,22 +117,22 @@ export fn md5Final(s: *Md5, out: *ui8) {
     }
     local i: usize = 0
     while i < 8 {
-        c.buf[56 + i] = ((bits >> ((i as ui64) * 8)) & 0xff) as ui8
+        c.buf[56 + i] = ((bits >> ((i as u64) * 8)) & 0xff) as u8
         i = i + 1
     }
     block(&c.h[0], &c.buf[0])
     i = 0
     while i < 4 {
-        out[i * 4] = (c.h[i] & 0xff) as ui8
-        out[i * 4 + 1] = ((c.h[i] >> 8) & 0xff) as ui8
-        out[i * 4 + 2] = ((c.h[i] >> 16) & 0xff) as ui8
-        out[i * 4 + 3] = (c.h[i] >> 24) as ui8
+        out[i * 4] = (c.h[i] & 0xff) as u8
+        out[i * 4 + 1] = ((c.h[i] >> 8) & 0xff) as u8
+        out[i * 4 + 2] = ((c.h[i] >> 16) & 0xff) as u8
+        out[i * 4 + 3] = (c.h[i] >> 24) as u8
         i = i + 1
     }
 }
 
 /// MD5 of `data[0..n]` into the 16 bytes at `out`.
-export fn md5(data: *ui8, n: usize, out: *ui8) {
+export fn md5(data: *u8, n: usize, out: *u8) {
     local s: Md5
     md5Init(&s)
     md5Update(&s, data, n)

@@ -19,9 +19,9 @@ fn b64urlLen(n: usize) -> usize {
 }
 
 /// Signs `header` and `payload` (both JSON text) with `key` and returns the compact token (RFC 7515 section 5.1).
-export fn jwtSignHs256(header: str, payload: str, key: *ui8, klen: usize) -> String {
-    local hb: *ui8 = currentAllocator.alloc(b64urlLen(header.len) + 1, 1) as *ui8
-    local pb: *ui8 = currentAllocator.alloc(b64urlLen(payload.len) + 1, 1) as *ui8
+export fn jwtSignHs256(header: str, payload: str, key: *u8, klen: usize) -> String {
+    local hb: *u8 = currentAllocator.alloc(b64urlLen(header.len) + 1, 1) as *u8
+    local pb: *u8 = currentAllocator.alloc(b64urlLen(payload.len) + 1, 1) as *u8
     if hb == nil || pb == nil { panic("jwtSignHs256: out of memory") }
     local hl: usize = base64UrlEncodeRaw(header.ptr, header.len, hb)
     local pl: usize = base64UrlEncodeRaw(payload.ptr, payload.len, pb)
@@ -29,9 +29,9 @@ export fn jwtSignHs256(header: str, payload: str, key: *ui8, klen: usize) -> Str
     signingInput.append(fromParts(hb, hl))
     signingInput.append(".")
     signingInput.append(fromParts(pb, pl))
-    local mac: [ui8; 32]
+    local mac: [u8; 32]
     hmac(DIGEST_SHA256, key, klen, signingInput.cstr(), signingInput.length(), &mac[0])
-    local sb: *ui8 = currentAllocator.alloc(b64urlLen(32) + 1, 1) as *ui8
+    local sb: *u8 = currentAllocator.alloc(b64urlLen(32) + 1, 1) as *u8
     if sb == nil { panic("jwtSignHs256: out of memory") }
     local sl: usize = base64UrlEncodeRaw(&mac[0], 32, sb)
     local token: String = String()
@@ -46,7 +46,7 @@ export fn jwtSignHs256(header: str, payload: str, key: *ui8, klen: usize) -> Str
 
 /// Verifies an HS256 compact token against `key`. Returns true only when the header names alg HS256 and the signature
 /// matches (compared in constant time). The header and payload are not parsed here: use jsonPointerGet on the decoded parts.
-export fn jwtVerifyHs256(token: str, key: *ui8, klen: usize) -> bool {
+export fn jwtVerifyHs256(token: str, key: *u8, klen: usize) -> bool {
     // the signing input is everything before the last dot; the signature is after it
     local last: i64 = -1
     local i: usize = 0
@@ -69,7 +69,7 @@ export fn jwtVerifyHs256(token: str, key: *ui8, klen: usize) -> bool {
     }
     if first < 0 { return false }
     local headerText: str = fromParts(token.ptr, first as usize)
-    local decoded: *ui8 = currentAllocator.alloc(headerText.len + 4, 1) as *ui8
+    local decoded: *u8 = currentAllocator.alloc(headerText.len + 4, 1) as *u8
     if decoded == nil { panic("jwtVerifyHs256: out of memory") }
     local dl: isize = base64UrlDecodeRaw(headerText.ptr, headerText.len, decoded)
     if dl <= 0 {
@@ -81,9 +81,9 @@ export fn jwtVerifyHs256(token: str, key: *ui8, klen: usize) -> bool {
     local isHs256: bool = eq(alg, "\"HS256\"")
     currentAllocator.free(decoded as *void)
     if !isHs256 { return false }
-    local mac: [ui8; 32]
+    local mac: [u8; 32]
     hmac(DIGEST_SHA256, key, klen, signingInput.ptr, signingInput.len, &mac[0])
-    local want: *ui8 = currentAllocator.alloc(b64urlLen(32) + 1, 1) as *ui8
+    local want: *u8 = currentAllocator.alloc(b64urlLen(32) + 1, 1) as *u8
     if want == nil { panic("jwtVerifyHs256: out of memory") }
     local wl: usize = base64UrlEncodeRaw(&mac[0], 32, want)
     local ok: bool = wl == sigText.len && constantTimeEq(want, sigText.ptr, wl)

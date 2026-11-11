@@ -9,10 +9,10 @@ from "../../str/str" import fromParts
 
 /// Writes the length prefix and the message `msg[0..n)` into `out` (capacity `cap`); returns the total length, or 0 when it does not
 /// fit or the message is longer than 65535 bytes.
-export fn dnsFrameTcp(msg: *ui8, n: usize, out: *ui8, cap: usize) -> usize {
+export fn dnsFrameTcp(msg: *u8, n: usize, out: *u8, cap: usize) -> usize {
     if n > 65535 || n + 2 > cap { return 0 }
-    out[0] = ((n >> 8) & 0xff) as ui8
-    out[1] = (n & 0xff) as ui8
+    out[0] = ((n >> 8) & 0xff) as u8
+    out[1] = (n & 0xff) as u8
     local i: usize = 0
     while i < n {
         out[2 + i] = msg[i]
@@ -23,7 +23,7 @@ export fn dnsFrameTcp(msg: *ui8, n: usize, out: *ui8, cap: usize) -> usize {
 
 /// Reads the length prefix of a framed message at the start of `buf[0..n)`; returns the message length, or -1 when the frame is
 /// incomplete.
-export fn dnsUnframeTcp(buf: *ui8, n: usize) -> isize {
+export fn dnsUnframeTcp(buf: *u8, n: usize) -> isize {
     if n < 2 { return -1 }
     local len: usize = ((buf[0] as usize) << 8) | (buf[1] as usize)
     if n < 2 + len { return -1 }
@@ -32,7 +32,7 @@ export fn dnsUnframeTcp(buf: *ui8, n: usize) -> isize {
 
 /// The EDNS0 query (RFC 6891): the standard query of dnsBuildQuery with one OPT pseudo-record (root name, type 41, CLASS = the
 /// UDP payload size, TTL 0 for version 0 and no flags, empty RDATA) in the additional section. Returns the length, or -1.
-export fn dnsBuildQueryEdns(id: ui16, name: *ui8, n: usize, qtype: ui16, udpSize: ui16, out: *ui8, cap: usize) -> isize {
+export fn dnsBuildQueryEdns(id: u16, name: *u8, n: usize, qtype: u16, udpSize: u16, out: *u8, cap: usize) -> isize {
     local len: isize = dnsBuildQuery(id, name, n, qtype, out, cap)
     if len < 0 { return -1 }
     local at: usize = len as usize
@@ -43,8 +43,8 @@ export fn dnsBuildQueryEdns(id: ui16, name: *ui8, n: usize, qtype: ui16, udpSize
     out[at] = 0
     out[at + 1] = 0
     out[at + 2] = 41
-    out[at + 3] = ((udpSize >> 8) & 0xff) as ui8
-    out[at + 4] = (udpSize & 0xff) as ui8
+    out[at + 3] = ((udpSize >> 8) & 0xff) as u8
+    out[at + 4] = (udpSize & 0xff) as u8
     out[at + 5] = 0
     out[at + 6] = 0
     out[at + 7] = 0
@@ -55,8 +55,8 @@ export fn dnsBuildQueryEdns(id: ui16, name: *ui8, n: usize, qtype: ui16, udpSize
 }
 
 /// The request target of a DNS over HTTPS GET (RFC 8484 section 4.1): `path` followed by "?dns=" and the base64url of the query.
-export fn dohRequestTarget(path: str, msg: *ui8, n: usize) -> String {
-    local enc: [ui8; 2048]
+export fn dohRequestTarget(path: str, msg: *u8, n: usize) -> String {
+    local enc: [u8; 2048]
     local m: usize = base64UrlEncodeRaw(msg, n, &enc[0])
     local out: String = String()
     out.append(path)

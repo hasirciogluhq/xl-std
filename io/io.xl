@@ -11,7 +11,7 @@ export fn print(s: str) {
     fmtWrite(&sink, s)
 }
 
-export fn print(p: *ui8) {
+export fn print(p: *u8) {
     local sink: FmtSink = FmtSink(FmtFd, 1, nil, 0, nil)
     fmtWrite(&sink, p)
 }
@@ -21,7 +21,7 @@ export fn print(v: i64) {
     fmtWrite(&sink, v)
 }
 
-export fn print(v: ui64) {
+export fn print(v: u64) {
     local sink: FmtSink = FmtSink(FmtFd, 1, nil, 0, nil)
     fmtWrite(&sink, v)
 }
@@ -53,7 +53,7 @@ export fn println(s: str) {
     sink.write("\n")
 }
 
-export fn println(p: *ui8) {
+export fn println(p: *u8) {
     local sink: FmtSink = FmtSink(FmtFd, 1, nil, 0, nil)
     fmtWrite(&sink, p)
     sink.write("\n")
@@ -65,7 +65,7 @@ export fn println(v: i64) {
     sink.write("\n")
 }
 
-export fn println(v: ui64) {
+export fn println(v: u64) {
     local sink: FmtSink = FmtSink(FmtFd, 1, nil, 0, nil)
     fmtWrite(&sink, v)
     sink.write("\n")
@@ -109,7 +109,7 @@ export fn eprint(s: str) {
     fmtWrite(&sink, s)
 }
 
-export fn eprint(p: *ui8) {
+export fn eprint(p: *u8) {
     local sink: FmtSink = FmtSink(FmtFd, 2, nil, 0, nil)
     fmtWrite(&sink, p)
 }
@@ -119,7 +119,7 @@ export fn eprint(v: i64) {
     fmtWrite(&sink, v)
 }
 
-export fn eprint(v: ui64) {
+export fn eprint(v: u64) {
     local sink: FmtSink = FmtSink(FmtFd, 2, nil, 0, nil)
     fmtWrite(&sink, v)
 }
@@ -150,7 +150,7 @@ export fn eprintln(s: str) {
     sink.write("\n")
 }
 
-export fn eprintln(p: *ui8) {
+export fn eprintln(p: *u8) {
     local sink: FmtSink = FmtSink(FmtFd, 2, nil, 0, nil)
     fmtWrite(&sink, p)
     sink.write("\n")
@@ -162,7 +162,7 @@ export fn eprintln(v: i64) {
     sink.write("\n")
 }
 
-export fn eprintln(v: ui64) {
+export fn eprintln(v: u64) {
     local sink: FmtSink = FmtSink(FmtFd, 2, nil, 0, nil)
     fmtWrite(&sink, v)
     sink.write("\n")
@@ -199,7 +199,7 @@ export fn fprint(fd: i32, s: str) {
     fmtWrite(&sink, s)
 }
 
-export fn fprint(fd: i32, p: *ui8) {
+export fn fprint(fd: i32, p: *u8) {
     local sink: FmtSink = FmtSink(FmtFd, fd, nil, 0, nil)
     fmtWrite(&sink, p)
 }
@@ -209,7 +209,7 @@ export fn fprint(fd: i32, v: i64) {
     fmtWrite(&sink, v)
 }
 
-export fn fprint(fd: i32, v: ui64) {
+export fn fprint(fd: i32, v: u64) {
     local sink: FmtSink = FmtSink(FmtFd, fd, nil, 0, nil)
     fmtWrite(&sink, v)
 }
@@ -240,7 +240,7 @@ export fn fprintln(fd: i32, s: str) {
     sink.write("\n")
 }
 
-export fn fprintln(fd: i32, p: *ui8) {
+export fn fprintln(fd: i32, p: *u8) {
     local sink: FmtSink = FmtSink(FmtFd, fd, nil, 0, nil)
     fmtWrite(&sink, p)
     sink.write("\n")
@@ -252,7 +252,7 @@ export fn fprintln(fd: i32, v: i64) {
     sink.write("\n")
 }
 
-export fn fprintln(fd: i32, v: ui64) {
+export fn fprintln(fd: i32, v: u64) {
     local sink: FmtSink = FmtSink(FmtFd, fd, nil, 0, nil)
     fmtWrite(&sink, v)
     sink.write("\n")

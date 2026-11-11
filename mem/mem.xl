@@ -20,10 +20,10 @@ define DIRECT = 255                // class marker: block was mapped on its own
 define PAGE = 4096
 
 struct HeapState {
-    lock: ui32
-    bump: *ui8
-    bumpEnd: *ui8
-    free: [*ui8; CLASS_COUNT]
+    lock: u32
+    bump: *u8
+    bumpEnd: *u8
+    free: [*u8; CLASS_COUNT]
 }
 
 global heapState: HeapState
@@ -75,10 +75,10 @@ fn heapAlloc(size: usize, align: usize) -> *void {
     }
     local c: usize = classOf(size)
     lockHeap()
-    local head: *ui8 = heapState.free[c]
+    local head: *u8 = heapState.free[c]
     if head != nil {
         local next: *usize = (head as usize + HEADER) as *usize
-        heapState.free[c] = next[0] as *ui8
+        heapState.free[c] = next[0] as *u8
         unlockHeap()
         return (head as usize + HEADER) as *void
     }
@@ -91,11 +91,11 @@ fn heapAlloc(size: usize, align: usize) -> *void {
             unlockHeap()
             return nil
         }
-        heapState.bump = fresh as *ui8
-        heapState.bumpEnd = ((fresh as usize) + chunk) as *ui8
+        heapState.bump = fresh as *u8
+        heapState.bumpEnd = ((fresh as usize) + chunk) as *u8
     }
-    local block: *ui8 = heapState.bump
-    heapState.bump = ((block as usize) + bytes) as *ui8
+    local block: *u8 = heapState.bump
+    heapState.bump = ((block as usize) + bytes) as *u8
     unlockHeap()
     local words: *usize = block as *usize
     words[0] = c
@@ -105,7 +105,7 @@ fn heapAlloc(size: usize, align: usize) -> *void {
 
 fn heapFree(p: *void) {
     if p == nil { return }
-    local block: *ui8 = ((p as usize) - HEADER) as *ui8
+    local block: *u8 = ((p as usize) - HEADER) as *u8
     local words: *usize = block as *usize
     if words[0] == DIRECT {
         sysUnmap(block as *void, words[1])

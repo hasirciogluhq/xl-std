@@ -43,22 +43,22 @@ define CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 define CUID_COUNTER_MOD = 1679616            // 36^4: the counter wraps after four base36 characters
 
 /// Writes the `bytes` low bytes of `value` big-endian at `out`.
-fn putBE(out: *ui8, value: ui64, bytes: usize) {
+fn putBE(out: *u8, value: u64, bytes: usize) {
     local i: usize = 0
     while i < bytes {
-        out[i] = ((value >> (((bytes - 1 - i) * 8) as ui64)) & 0xff) as ui8
+        out[i] = ((value >> (((bytes - 1 - i) * 8) as u64)) & 0xff) as u8
         i = i + 1
     }
 }
 
 /// Divides the big-endian number `work[0..n]` in place by `d` and returns the remainder.
 /// Long division one byte at a time: remainder * 256 + byte stays below 2^32 for d <= 2^24.
-fn divmodBytes(work: *ui8, n: usize, d: ui64) -> ui64 {
-    local rem: ui64 = 0
+fn divmodBytes(work: *u8, n: usize, d: u64) -> u64 {
+    local rem: u64 = 0
     local i: usize = 0
     while i < n {
-        local cur: ui64 = rem * 256 + (work[i] as ui64)
-        work[i] = (cur / d) as ui8
+        local cur: u64 = rem * 256 + (work[i] as u64)
+        work[i] = (cur / d) as u8
         rem = cur % d
         i = i + 1
     }
@@ -67,17 +67,17 @@ fn divmodBytes(work: *ui8, n: usize, d: ui64) -> ui64 {
 
 /// Writes exactly `width` digits of the big-endian number `work[0..n]` in `base`, taken from `alphabet`, left-padded
 /// with the zero digit. A number with more digits keeps its lowest `width` digits. `work` is destroyed.
-fn toDigits(work: *ui8, n: usize, base: ui64, alphabet: str, out: *ui8, width: usize) {
+fn toDigits(work: *u8, n: usize, base: u64, alphabet: str, out: *u8, width: usize) {
     local k: usize = 0
     while k < width {
-        local rem: ui64 = divmodBytes(work, n, base)
+        local rem: u64 = divmodBytes(work, n, base)
         out[width - 1 - k] = alphabet[rem as usize]
         k = k + 1
     }
 }
 
 /// True when `work[0..n]` is zero.
-fn isZeroBytes(work: *ui8, n: usize) -> bool {
+fn isZeroBytes(work: *u8, n: usize) -> bool {
     local i: usize = 0
     while i < n {
         if work[i] != 0 { return false }
@@ -89,14 +89,14 @@ fn isZeroBytes(work: *ui8, n: usize) -> bool {
 /// A uniform random index below `limit` (limit <= 256): bytes at or above the largest multiple of `limit` are
 /// rejected, so every index is equally likely (no modulo bias). `buf` is a scratch buffer of 64 bytes refilled
 /// by `randomBytes` as needed; `used` tracks the bytes taken from it.
-fn randomBelow(limit: ui64, buf: *ui8, used: *usize) -> ui64 {
-    local accept: ui64 = (256 / limit) * limit
+fn randomBelow(limit: u64, buf: *u8, used: *usize) -> u64 {
+    local accept: u64 = (256 / limit) * limit
     while true {
         if *used >= 64 {
             randomBytes(buf, 64)
             *used = 0
         }
-        local b: ui64 = buf[*used] as ui64
+        local b: u64 = buf[*used] as u64
         *used = *used + 1
         if b < accept {
             return b % limit
@@ -109,8 +109,8 @@ fn randomBelow(limit: ui64, buf: *ui8, used: *usize) -> ui64 {
 
 /// Writes the 26-character ULID for `unixMillis` with 80 fresh random bits. Not monotonic within one
 /// millisecond: use `UlidGen` when IDs made in the same millisecond must sort in order.
-export fn ulid(unixMillis: ui64) -> String {
-    local raw: [ui8; 16]
+export fn ulid(unixMillis: u64) -> String {
+    local raw: [u8; 16]
     putBE(&raw[0], unixMillis, 6)
     randomBytes(&raw[6], 10)
     return ulidEncode(&raw[0])
@@ -118,14 +118,14 @@ export fn ulid(unixMillis: ui64) -> String {
 
 /// The 16 bytes at `raw` as 26 Crockford base32 characters. The first character carries the top 2 bits, which
 /// are zero, so the value is 130 bits long.
-fn ulidEncode(raw: *ui8) -> String {
-    local text: [ui8; 26]
-    local acc: ui64 = 0
-    local accBits: ui64 = 2                  // the two leading zero bits
+fn ulidEncode(raw: *u8) -> String {
+    local text: [u8; 26]
+    local acc: u64 = 0
+    local accBits: u64 = 2                  // the two leading zero bits
     local o: usize = 0
     local i: usize = 0
     while i < 16 {
-        acc = (acc << 8) | (raw[i] as ui64)
+        acc = (acc << 8) | (raw[i] as u64)
         accBits = accBits + 8
         while accBits >= 5 {
             accBits = accBits - 5
@@ -143,15 +143,15 @@ fn ulidEncode(raw: *ui8) -> String {
 /// generator sort in creation order even when the clock does not advance. A later millisecond starts a fresh
 /// random part. Panics if the 80-bit random part would overflow inside one millisecond.
 export class UlidGen {
-    lastMs: ui64
-    rand: [ui8; 10]
+    lastMs: u64
+    rand: [u8; 10]
 
     fn init(self) {
         self.lastMs = 0
         randomBytes(&self.rand[0], 10)
     }
 
-    fn next(self, unixMillis: ui64) -> String {
+    fn next(self, unixMillis: u64) -> String {
         if unixMillis != self.lastMs {
             randomBytes(&self.rand[0], 10)
             self.lastMs = unixMillis
@@ -166,7 +166,7 @@ export class UlidGen {
                 panic("ulid: random part overflowed inside one millisecond")
             }
         }
-        local raw: [ui8; 16]
+        local raw: [u8; 16]
         putBE(&raw[0], unixMillis, 6)
         local k: usize = 0
         while k < 10 {
@@ -180,10 +180,10 @@ export class UlidGen {
 // ---- cuid v1 and v2 ------------------------------------------------------------------------------
 
 /// The per-process cuid state: counter and fingerprint, set on first use.
-global cuidCounter: ui64
-global cuidFingerprint: [ui8; 4]
+global cuidCounter: u64
+global cuidFingerprint: [u8; 4]
 global cuidReady: bool
-global cuidSeed: [ui8; 64]
+global cuidSeed: [u8; 64]
 global cuidUsed: usize = 64
 
 fn cuidInit() {
@@ -194,9 +194,9 @@ fn cuidInit() {
 }
 
 /// Writes `width` base36 characters of `value` (left-padded with '0') at `out`.
-fn base36Pad(value: ui64, width: usize, out: *ui8) {
+fn base36Pad(value: u64, width: usize, out: *u8) {
     local k: usize = 0
-    local v: ui64 = value
+    local v: u64 = value
     while k < width {
         out[width - 1 - k] = BASE36[(v % 36) as usize]
         v = v / 36
@@ -206,13 +206,13 @@ fn base36Pad(value: ui64, width: usize, out: *ui8) {
 
 /// A cuid v1 for `unixMillis`: 25 characters, starting with 'c'. Counter and fingerprint are per process; the
 /// fingerprint is 4 random base36 characters instead of the reference's host hash (no hostname without OS calls).
-export fn cuidV1(unixMillis: ui64) -> String {
+export fn cuidV1(unixMillis: u64) -> String {
     cuidInit()
-    local text: [ui8; 25]
+    local text: [u8; 25]
     text[0] = 99                           // 'c'
     base36Pad(unixMillis, 8, &text[1])
     base36Pad(cuidCounter, 4, &text[9])
-    cuidCounter = (cuidCounter + 1) % (CUID_COUNTER_MOD as ui64)
+    cuidCounter = (cuidCounter + 1) % (CUID_COUNTER_MOD as u64)
     local k: usize = 0
     while k < 4 {
         text[13 + k] = BASE36[(cuidFingerprint[k] % 36) as usize]
@@ -230,9 +230,9 @@ export fn cuidV1(unixMillis: ui64) -> String {
 
 /// A cuid v2 of 24 characters (the reference default): a random lowercase letter, then 23 base36 digits of the
 /// SHA-256 of (milliseconds, counter, fingerprint, 16 random bytes). See the file header for the deviation.
-export fn cuidV2(unixMillis: ui64) -> String {
+export fn cuidV2(unixMillis: u64) -> String {
     cuidInit()
-    local input: [ui8; 8 + 8 + 4 + 16]
+    local input: [u8; 8 + 8 + 4 + 16]
     putBE(&input[0], unixMillis, 8)
     putBE(&input[8], cuidCounter, 8)
     cuidCounter = cuidCounter + 1
@@ -242,10 +242,10 @@ export fn cuidV2(unixMillis: ui64) -> String {
         k = k + 1
     }
     randomBytes(&input[20], 16)
-    local digest: [ui8; 32]
+    local digest: [u8; 32]
     sha256(&input[0], 36, &digest[0])
-    local text: [ui8; 24]
-    text[0] = (97 + randomBelow(26, &cuidSeed[0], &cuidUsed)) as ui8
+    local text: [u8; 24]
+    text[0] = (97 + randomBelow(26, &cuidSeed[0], &cuidUsed)) as u8
     toDigits(&digest[0], 32, 36, BASE36, &text[1], 23)
     local out: String = String()
     out.append(fromParts(&text[0], 24))
@@ -262,13 +262,13 @@ export fn nanoid(size: usize, alphabet: str) -> String {
     if alphabet.len == 0 || alphabet.len > 256 {
         panic("nanoid: the alphabet must hold 1 to 256 bytes")
     }
-    local mask: ui64 = 1
-    while mask < (alphabet.len as ui64) {
+    local mask: u64 = 1
+    while mask < (alphabet.len as u64) {
         mask = mask * 2
     }
     mask = mask - 1
     local out: String = String()
-    local buf: [ui8; 64]
+    local buf: [u8; 64]
     local used: usize = 64
     local made: usize = 0
     while made < size {
@@ -276,9 +276,9 @@ export fn nanoid(size: usize, alphabet: str) -> String {
             randomBytes(&buf[0], 64)
             used = 0
         }
-        local idx: ui64 = (buf[used] as ui64) & mask
+        local idx: u64 = (buf[used] as u64) & mask
         used = used + 1
-        if idx < (alphabet.len as ui64) {
+        if idx < (alphabet.len as u64) {
             out.push(alphabet[idx as usize])
             made = made + 1
         }
@@ -294,13 +294,13 @@ define SNOWFLAKE_TWITTER_EPOCH = 1288834974657
 /// Snowflake ID source for one machine. IDs made by one source are strictly increasing. Panics when the
 /// clock goes back, or when more than 4096 IDs are asked for in one millisecond (the caller must wait).
 export class Snowflake {
-    epochMs: ui64
-    machine: ui64
-    lastMs: ui64
-    seq: ui64
+    epochMs: u64
+    machine: u64
+    lastMs: u64
+    seq: u64
 
     /// `machine` is 0 to 1023; `epochMs` is the custom epoch in Unix milliseconds.
-    fn init(self, machine: ui64, epochMs: ui64) {
+    fn init(self, machine: u64, epochMs: u64) {
         if machine > 1023 {
             panic("snowflake: the machine id must be 0 to 1023")
         }
@@ -311,7 +311,7 @@ export class Snowflake {
     }
 
     /// The next ID for the time `unixMillis` (must not be before the epoch and not before the previous call).
-    fn next(self, unixMillis: ui64) -> ui64 {
+    fn next(self, unixMillis: u64) -> u64 {
         if unixMillis < self.epochMs {
             panic("snowflake: the time is before the epoch")
         }
@@ -337,11 +337,11 @@ export class Snowflake {
 define KSUID_EPOCH = 1400000000
 
 /// A KSUID for `unixSeconds` (at or after the epoch): 27 base62 characters, left-padded with '0'.
-export fn ksuid(unixSeconds: ui64) -> String {
-    local raw: [ui8; 20]
+export fn ksuid(unixSeconds: u64) -> String {
+    local raw: [u8; 20]
     putBE(&raw[0], unixSeconds - KSUID_EPOCH, 4)
     randomBytes(&raw[4], 16)
-    local text: [ui8; 27]
+    local text: [u8; 27]
     toDigits(&raw[0], 20, 62, BASE62, &text[0], 27)
     local out: String = String()
     out.append(fromParts(&text[0], 27))
@@ -353,18 +353,18 @@ export fn ksuid(unixSeconds: ui64) -> String {
 // at a random value (MongoDB BSON specification, ObjectId: https://bsonspec.org/spec.html; MongoDB manual).
 // Text: 24 lowercase hexadecimal characters. Older than cuid and ULID; it is still the database default.
 export class ObjectIdGen {
-    process: [ui8; 5]
-    counter: ui64
+    process: [u8; 5]
+    counter: u64
 
     fn init(self) {
         randomBytes(&self.process[0], 5)
-        local start: [ui8; 3]
+        local start: [u8; 3]
         randomBytes(&start[0], 3)
-        self.counter = ((start[0] as ui64) << 16) | ((start[1] as ui64) << 8) | (start[2] as ui64)
+        self.counter = ((start[0] as u64) << 16) | ((start[1] as u64) << 8) | (start[2] as u64)
     }
 
-    fn next(self, unixSeconds: ui64) -> String {
-        local raw: [ui8; 12]
+    fn next(self, unixSeconds: u64) -> String {
+        local raw: [u8; 12]
         putBE(&raw[0], unixSeconds, 4)
         local k: usize = 0
         while k < 5 {
@@ -373,7 +373,7 @@ export class ObjectIdGen {
         }
         putBE(&raw[9], self.counter, 3)
         self.counter = (self.counter + 1) & 0xffffff
-        local text: [ui8; 24]
+        local text: [u8; 24]
         hexEncode(&raw[0], 12, &text[0])
         local out: String = String()
         out.append(fromParts(&text[0], 24))
@@ -387,20 +387,20 @@ export class ObjectIdGen {
 // in lowercase without padding. The machine and process bytes are random per process here, because no hostname
 // or pid is read without OS calls; the reference uses a hash of the hostname and the real pid.
 export class XidGen {
-    machine: [ui8; 3]
-    pid: [ui8; 2]
-    counter: ui64
+    machine: [u8; 3]
+    pid: [u8; 2]
+    counter: u64
 
     fn init(self) {
         randomBytes(&self.machine[0], 3)
         randomBytes(&self.pid[0], 2)
-        local start: [ui8; 3]
+        local start: [u8; 3]
         randomBytes(&start[0], 3)
-        self.counter = ((start[0] as ui64) << 16) | ((start[1] as ui64) << 8) | (start[2] as ui64)
+        self.counter = ((start[0] as u64) << 16) | ((start[1] as u64) << 8) | (start[2] as u64)
     }
 
-    fn next(self, unixSeconds: ui64) -> String {
-        local raw: [ui8; 12]
+    fn next(self, unixSeconds: u64) -> String {
+        local raw: [u8; 12]
         putBE(&raw[0], unixSeconds, 4)
         local k: usize = 0
         while k < 3 {
@@ -411,7 +411,7 @@ export class XidGen {
         raw[8] = self.pid[1]
         putBE(&raw[9], self.counter, 3)
         self.counter = (self.counter + 1) & 0xffffff
-        local text: [ui8; 20]
+        local text: [u8; 20]
         base32Bits(&raw[0], 12, 0, "0123456789abcdefghijklmnopqrstuv", &text[0])
         local out: String = String()
         out.append(fromParts(&text[0], 20))
@@ -421,13 +421,13 @@ export class XidGen {
 
 /// Writes the base-32 characters of the `n` bytes at `raw`, after `pad` leading zero bits, using `alphabet`.
 /// A final partial group is padded with zero bits on the right. Output length: ceil((pad + 8n) / 5).
-fn base32Bits(raw: *ui8, n: usize, pad: ui64, alphabet: str, out: *ui8) {
-    local acc: ui64 = 0
-    local accBits: ui64 = pad
+fn base32Bits(raw: *u8, n: usize, pad: u64, alphabet: str, out: *u8) {
+    local acc: u64 = 0
+    local accBits: u64 = pad
     local o: usize = 0
     local i: usize = 0
     while i < n {
-        acc = ((acc << 8) | (raw[i] as ui64)) & 0xffffffff
+        acc = ((acc << 8) | (raw[i] as u64)) & 0xffffffff
         accBits = accBits + 8
         while accBits >= 5 {
             accBits = accBits - 5
@@ -446,13 +446,13 @@ fn base32Bits(raw: *ui8, n: usize, pad: ui64, alphabet: str, out: *ui8) {
 // https://github.com/sony/sonyflake). Sequence is per 10 ms unit. Unlike Snowflake it trades resolution for
 // a longer lifetime (about 174 years).
 export class Sonyflake {
-    startMs: ui64
-    machine: ui64
-    lastTen: ui64
-    seq: ui64
+    startMs: u64
+    machine: u64
+    lastTen: u64
+    seq: u64
 
     /// `startMs` is the start time in Unix milliseconds; `machine` is 0 to 65535.
-    fn init(self, startMs: ui64, machine: ui64) {
+    fn init(self, startMs: u64, machine: u64) {
         if machine > 65535 {
             panic("sonyflake: the machine id must be 0 to 65535")
         }
@@ -464,11 +464,11 @@ export class Sonyflake {
 
     /// The next ID for the time `unixMillis`. Panics before the start time, on a backwards clock, or when more than
     /// 256 IDs are asked for inside one 10 ms unit.
-    fn next(self, unixMillis: ui64) -> ui64 {
+    fn next(self, unixMillis: u64) -> u64 {
         if unixMillis < self.startMs {
             panic("sonyflake: the time is before the start time")
         }
-        local ten: ui64 = (unixMillis - self.startMs) / 10
+        local ten: u64 = (unixMillis - self.startMs) / 10
         if ten < self.lastTen {
             panic("sonyflake: the clock went backwards")
         }
@@ -490,12 +490,12 @@ export class Sonyflake {
 // blog, "Sharding & IDs", 2012: https://instagram-engineering.com/sharding-ids-at-instagram-1cf5a71e5a5c).
 // The epoch is caller-provided. Each shard keeps its own sequence per millisecond.
 export class InstagramIdGen {
-    epochMs: ui64
-    shard: ui64
-    lastMs: ui64
-    seq: ui64
+    epochMs: u64
+    shard: u64
+    lastMs: u64
+    seq: u64
 
-    fn init(self, epochMs: ui64, shard: ui64) {
+    fn init(self, epochMs: u64, shard: u64) {
         if shard > 8191 {
             panic("instagram: the shard id must be 0 to 8191")
         }
@@ -505,7 +505,7 @@ export class InstagramIdGen {
         self.seq = 0
     }
 
-    fn next(self, unixMillis: ui64) -> ui64 {
+    fn next(self, unixMillis: u64) -> u64 {
         if unixMillis < self.epochMs {
             panic("instagram: the time is before the epoch")
         }
@@ -530,10 +530,10 @@ export class InstagramIdGen {
 // https://github.com/f4b6a3/tsid-creator). Sortable by creation time, and no coordination is needed.
 define TSID_EPOCH_MS = 1577836800000
 
-export fn tsid(unixMillis: ui64) -> ui64 {
-    local r: [ui8; 3]
+export fn tsid(unixMillis: u64) -> u64 {
+    local r: [u8; 3]
     randomBytes(&r[0], 3)
-    local rnd: ui64 = (((r[0] as ui64) << 16) | ((r[1] as ui64) << 8) | (r[2] as ui64)) & 0x3fffff
+    local rnd: u64 = (((r[0] as u64) << 16) | ((r[1] as u64) << 8) | (r[2] as u64)) & 0x3fffff
     return (((unixMillis - TSID_EPOCH_MS) & 0x3ffffffffff) << 22) | rnd
 }
 
@@ -544,12 +544,12 @@ export fn tsid(unixMillis: ui64) -> ui64 {
 define PUSHID_ALPHABET = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"
 
 export class PushIdGen {
-    lastMs: ui64
-    digits: [ui8; 12]
+    lastMs: u64
+    digits: [u8; 12]
 
     fn init(self) {
         self.lastMs = 0
-        local r: [ui8; 12]
+        local r: [u8; 12]
         randomBytes(&r[0], 12)
         local k: usize = 0
         while k < 12 {
@@ -558,10 +558,10 @@ export class PushIdGen {
         }
     }
 
-    fn next(self, unixMillis: ui64) -> String {
+    fn next(self, unixMillis: u64) -> String {
         if unixMillis != self.lastMs {
             self.lastMs = unixMillis
-            local r: [ui8; 12]
+            local r: [u8; 12]
             randomBytes(&r[0], 12)
             local k: usize = 0
             while k < 12 {
@@ -580,8 +580,8 @@ export class PushIdGen {
                 panic("pushid: random part overflowed inside one millisecond")
             }
         }
-        local text: [ui8; 20]
-        local t: ui64 = unixMillis
+        local text: [u8; 20]
+        local t: u64 = unixMillis
         local k: usize = 0
         while k < 8 {
             text[7 - k] = PUSHID_ALPHABET[(t & 63) as usize]

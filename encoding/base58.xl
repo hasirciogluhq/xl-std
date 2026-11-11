@@ -4,31 +4,31 @@
 define B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 /// Writes the Base58 text of `data[0..n)` to `out` (at most n * 138 / 100 + 1 bytes) and returns its length.
-export fn base58Encode(data: *ui8, n: usize, out: *ui8) -> usize {
+export fn base58Encode(data: *u8, n: usize, out: *u8) -> usize {
     local zeros: usize = 0
     while zeros < n && data[zeros] == 0 {
         zeros = zeros + 1
     }
-    local work: [ui8; 512]
+    local work: [u8; 512]
     local i: usize = 0
     while i < n {
         work[i] = data[i]
         i = i + 1
     }
-    local digits: [ui8; 800]
+    local digits: [u8; 800]
     local nd: usize = 0
     local start: usize = zeros
     while start < n {
         // divide the big-endian number work[start..n) by 58
-        local rem: ui32 = 0
+        local rem: u32 = 0
         i = start
         while i < n {
-            local cur: ui32 = (rem << 8) | (work[i] as ui32)
-            work[i] = (cur / 58) as ui8
+            local cur: u32 = (rem << 8) | (work[i] as u32)
+            work[i] = (cur / 58) as u8
             rem = cur % 58
             i = i + 1
         }
-        digits[nd] = rem as ui8
+        digits[nd] = rem as u8
         nd = nd + 1
         while start < n && work[start] == 0 {
             start = start + 1
@@ -49,7 +49,7 @@ export fn base58Encode(data: *ui8, n: usize, out: *ui8) -> usize {
 }
 
 /// The value of a Base58 character, or -1.
-fn b58Value(c: ui8) -> i32 {
+fn b58Value(c: u8) -> i32 {
     local i: usize = 0
     while i < 58 {
         if B58_ALPHABET[i] == c { return i as i32 }
@@ -60,29 +60,29 @@ fn b58Value(c: ui8) -> i32 {
 
 /// Decodes Base58 text of `n` characters into `out` (at most n bytes); returns the byte count, or -1 for a character outside
 /// the alphabet or an output that does not fit in `cap`.
-export fn base58Decode(text: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
+export fn base58Decode(text: *u8, n: usize, out: *u8, cap: usize) -> isize {
     local zeros: usize = 0
     while zeros < n && text[zeros] == 49 {
         zeros = zeros + 1
     }
-    local bytes: [ui8; 800]
+    local bytes: [u8; 800]
     local nb: usize = 0
     local i: usize = zeros
     while i < n {
         local v: i32 = b58Value(text[i])
         if v < 0 { return -1 }
         // bytes = bytes * 58 + v, big-endian stored least significant first
-        local carry: ui32 = v as ui32
+        local carry: u32 = v as u32
         local k: usize = 0
         while k < nb {
-            local t: ui32 = (bytes[k] as ui32) * 58 + carry
-            bytes[k] = (t & 0xff) as ui8
+            local t: u32 = (bytes[k] as u32) * 58 + carry
+            bytes[k] = (t & 0xff) as u8
             carry = t >> 8
             k = k + 1
         }
         while carry > 0 {
             if nb >= 800 { return -1 }
-            bytes[nb] = (carry & 0xff) as ui8
+            bytes[nb] = (carry & 0xff) as u8
             nb = nb + 1
             carry = carry >> 8
         }

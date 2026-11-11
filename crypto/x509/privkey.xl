@@ -11,13 +11,13 @@ define MAX_DER = 4608
 
 export struct PrivKey {
     keyType: i32              // KEY_RSA, KEY_EC_P256 or KEY_EC_P384 (from `std/crypto/x509/x509`)
-    n: [ui8; 512]             // RSA modulus (leading zeros removed)
+    n: [u8; 512]             // RSA modulus (leading zeros removed)
     nLen: usize
-    d: [ui8; 512]             // RSA private exponent, or the EC private scalar (curve size, left padded)
+    d: [u8; 512]             // RSA private exponent, or the EC private scalar (curve size, left padded)
     dLen: usize
 }
 
-fn same(a: *ui8, b: *ui8, n: usize) -> bool {
+fn same(a: *u8, b: *u8, n: usize) -> bool {
     local i: usize = 0
     while i < n {
         if a[i] != b[i] { return false }
@@ -26,7 +26,7 @@ fn same(a: *ui8, b: *ui8, n: usize) -> bool {
     return true
 }
 
-fn copy(dst: *ui8, src: *ui8, n: usize) {
+fn copy(dst: *u8, src: *u8, n: usize) {
     local i: usize = 0
     while i < n {
         dst[i] = src[i]
@@ -36,8 +36,8 @@ fn copy(dst: *ui8, src: *ui8, n: usize) {
 
 /// Curve of a named-curve OID (`prime256v1`, `secp384r1`), or KEY_NONE.
 fn curveOf(t: *Tlv) -> i32 {
-    local p256: [ui8; 8] = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
-    local p384: [ui8; 5] = [0x2b, 0x81, 0x04, 0x00, 0x22]
+    local p256: [u8; 8] = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
+    local p384: [u8; 5] = [0x2b, 0x81, 0x04, 0x00, 0x22]
     if t.tag != 0x06 { return KEY_NONE }
     if t.len == 8 && same(t.body, &p256[0], 8) { return KEY_EC_P256 }
     if t.len == 5 && same(t.body, &p384[0], 5) { return KEY_EC_P384 }
@@ -45,7 +45,7 @@ fn curveOf(t: *Tlv) -> i32 {
 }
 
 /// Reads an INTEGER into `out` without its leading zero bytes; returns its length (0 on error).
-fn readInt(p: *ui8, avail: usize, out: *ui8, cap: usize, used: *usize) -> usize {
+fn readInt(p: *u8, avail: usize, out: *u8, cap: usize, used: *usize) -> usize {
     local t: Tlv
     if !derRead(p, avail, &t) || t.tag != 0x02 { return 0 }
     *used = t.total
@@ -58,18 +58,18 @@ fn readInt(p: *ui8, avail: usize, out: *ui8, cap: usize, used: *usize) -> usize 
 }
 
 /// RSAPrivateKey (PKCS#1): SEQUENCE { version, n, e, d, p, q, dp, dq, qinv }.
-fn rsaFromPkcs1(der: *ui8, len: usize, k: *PrivKey) -> bool {
+fn rsaFromPkcs1(der: *u8, len: usize, k: *PrivKey) -> bool {
     local seq: Tlv
     if !derRead(der, len, &seq) || seq.tag != 0x30 { return false }
     local p: usize = 0
     local used: usize = 0
-    local ver: [ui8; 4]
+    local ver: [u8; 4]
     if readInt(seq.body, seq.len, &ver[0], 4, &used) == 0 { return false }
     p = used
     local nl: usize = readInt(&seq.body[p], seq.len - p, &k.n[0], 512, &used)
     if nl == 0 { return false }
     p = p + used
-    local e: [ui8; 16]
+    local e: [u8; 16]
     if readInt(&seq.body[p], seq.len - p, &e[0], 16, &used) == 0 { return false }
     p = p + used
     local dl: usize = readInt(&seq.body[p], seq.len - p, &k.d[0], 512, &used)
@@ -82,7 +82,7 @@ fn rsaFromPkcs1(der: *ui8, len: usize, k: *PrivKey) -> bool {
 
 /// ECPrivateKey (SEC1): SEQUENCE { 1, OCTET STRING privateKey, [0] parameters, [1] publicKey }.
 /// `hint` is the curve from a PKCS#8 wrapper, or KEY_NONE.
-fn ecFromSec1(der: *ui8, len: usize, hint: i32, k: *PrivKey) -> bool {
+fn ecFromSec1(der: *u8, len: usize, hint: i32, k: *PrivKey) -> bool {
     local seq: Tlv
     if !derRead(der, len, &seq) || seq.tag != 0x30 { return false }
     local ver: Tlv
@@ -117,9 +117,9 @@ fn ecFromSec1(der: *ui8, len: usize, hint: i32, k: *PrivKey) -> bool {
 }
 
 /// PrivateKeyInfo (PKCS#8): SEQUENCE { 0, SEQUENCE { algorithm OID, parameters }, OCTET STRING }.
-fn fromPkcs8(der: *ui8, len: usize, k: *PrivKey) -> bool {
-    local rsaOid: [ui8; 9] = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01]
-    local ecOid: [ui8; 7] = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
+fn fromPkcs8(der: *u8, len: usize, k: *PrivKey) -> bool {
+    local rsaOid: [u8; 9] = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01]
+    local ecOid: [u8; 7] = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
     local seq: Tlv
     if !derRead(der, len, &seq) || seq.tag != 0x30 { return false }
     local ver: Tlv
@@ -149,8 +149,8 @@ fn fromPkcs8(der: *ui8, len: usize, k: *PrivKey) -> bool {
 
 /// Parses the first private key in the PEM `text[0..len]`. False when none is found or it is
 /// unsupported (encrypted, Ed25519, other curves).
-export fn privKeyParsePem(text: *ui8, len: usize, k: *PrivKey) -> bool {
-    local der: [ui8; 4608]
+export fn privKeyParsePem(text: *u8, len: usize, k: *PrivKey) -> bool {
+    local der: [u8; 4608]
     k.keyType = KEY_NONE
     local pos: usize = 0
     local n: usize = pemNext(text, len, &pos, "PRIVATE KEY", &der[0], MAX_DER)

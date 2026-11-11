@@ -27,12 +27,12 @@ define REPLACEMENT_3 = 0xbd
 /// Writes the UTF-8 bytes of the code point that starts at unit `i` to `enc` (4 bytes) and returns their count; sets
 /// `units` to 1 or 2 for the number of UTF-16 units consumed. A high surrogate is joined only with an immediately
 /// following low surrogate; a lone surrogate becomes U+FFFD.
-fn unitAt(src: *ui16, n: usize, i: usize, enc: *ui8, units: *usize) -> usize {
-    local u: ui32 = src[i] as ui32
+fn unitAt(src: *u16, n: usize, i: usize, enc: *u8, units: *usize) -> usize {
+    local u: u32 = src[i] as u32
     *units = 1
     local cp: i32 = -1
     if u >= 0xd800 && u <= 0xdbff && i + 1 < n {
-        local lo: ui32 = src[i + 1] as ui32
+        local lo: u32 = src[i + 1] as u32
         if lo >= 0xdc00 && lo <= 0xdfff {
             // The pair encodes one code point above the basic plane: (hi - D800) << 10 | (lo - DC00) + 10000.
             cp = ((((u - 0xd800) << 10) | (lo - 0xdc00)) + 0x10000) as i32
@@ -50,30 +50,30 @@ fn unitAt(src: *ui16, n: usize, i: usize, enc: *ui8, units: *usize) -> usize {
         return 3
     }
     if cp < 0x80 {
-        enc[0] = cp as ui8
+        enc[0] = cp as u8
         return 1
     }
     if cp < 0x800 {
-        enc[0] = (0xc0 | (cp >> 6)) as ui8
-        enc[1] = (0x80 | (cp & 0x3f)) as ui8
+        enc[0] = (0xc0 | (cp >> 6)) as u8
+        enc[1] = (0x80 | (cp & 0x3f)) as u8
         return 2
     }
     if cp < 0x10000 {
-        enc[0] = (0xe0 | (cp >> 12)) as ui8
-        enc[1] = (0x80 | ((cp >> 6) & 0x3f)) as ui8
-        enc[2] = (0x80 | (cp & 0x3f)) as ui8
+        enc[0] = (0xe0 | (cp >> 12)) as u8
+        enc[1] = (0x80 | ((cp >> 6) & 0x3f)) as u8
+        enc[2] = (0x80 | (cp & 0x3f)) as u8
         return 3
     }
-    enc[0] = (0xf0 | (cp >> 18)) as ui8
-    enc[1] = (0x80 | ((cp >> 12) & 0x3f)) as ui8
-    enc[2] = (0x80 | ((cp >> 6) & 0x3f)) as ui8
-    enc[3] = (0x80 | (cp & 0x3f)) as ui8
+    enc[0] = (0xf0 | (cp >> 18)) as u8
+    enc[1] = (0x80 | ((cp >> 12) & 0x3f)) as u8
+    enc[2] = (0x80 | ((cp >> 6) & 0x3f)) as u8
+    enc[3] = (0x80 | (cp & 0x3f)) as u8
     return 4
 }
 
 /// The UTF-16 units of the NUL-terminated array `src` (the terminator excluded). Use it when a Windows API hands back
 /// a `WCHAR *` and the unit count is not known; `toUtf8` and `toUtf8Exact` then take the length it returns.
-export fn fromWideC(src: *ui16) -> usize {
+export fn fromWideC(src: *u16) -> usize {
     local n: usize = 0
     while src[n] != 0 { n = n + 1 }
     return n
@@ -83,13 +83,13 @@ export fn fromWideC(src: *ui16) -> usize {
 /// how many were written, which is at most `cap` and always ends on a code point boundary. With `terminate` the
 /// function also writes a NUL at that position and keeps it outside the count, so it needs `written + 1 <= cap`; the
 /// last code point that would need the terminator's byte is skipped instead of written.
-export fn toUtf8(src: *ui16, n: usize, out: *ui8, cap: usize, terminate: bool) -> usize {
+export fn toUtf8(src: *u16, n: usize, out: *u8, cap: usize, terminate: bool) -> usize {
     local reserve: usize = 0
     if terminate { reserve = 1 }
     local used: usize = 0
     local i: usize = 0
     while i < n {
-        local enc: [ui8; 4]
+        local enc: [u8; 4]
         local units: usize = 0
         local k: usize = unitAt(src, n, i, &enc[0], &units)
         if used + k + reserve > cap { break }
@@ -107,16 +107,16 @@ export fn toUtf8(src: *ui16, n: usize, out: *ui8, cap: usize, terminate: bool) -
 
 /// Strict UTF-16 -> UTF-8: as `toUtf8`, but an unpaired surrogate anywhere in the input fails the conversion. The input
 /// is checked before anything is written, so on failure the result is -1 and `out` is unchanged.
-export fn toUtf8Exact(src: *ui16, n: usize, out: *ui8, cap: usize, terminate: bool) -> i64 {
+export fn toUtf8Exact(src: *u16, n: usize, out: *u8, cap: usize, terminate: bool) -> i64 {
     local reserve: usize = 0
     if terminate { reserve = 1 }
     // Validate first, so a failure never leaves a half-written buffer behind.
     local i: usize = 0
     while i < n {
-        local u: ui32 = src[i] as ui32
+        local u: u32 = src[i] as u32
         if u >= 0xd800 && u <= 0xdbff {
             if i + 1 >= n { return -1 }
-            local lo: ui32 = src[i + 1] as ui32
+            local lo: u32 = src[i + 1] as u32
             if lo < 0xdc00 || lo > 0xdfff { return -1 }
             i = i + 2
         } else if u >= 0xdc00 && u <= 0xdfff {
@@ -130,13 +130,13 @@ export fn toUtf8Exact(src: *ui16, n: usize, out: *ui8, cap: usize, terminate: bo
 
 /// The number of bytes `toUtf8` would write under the same arguments. Called with a `cap` at least the full size, it is
 /// the exact size the whole string needs, which is how a caller sizes a buffer before allocating it.
-export fn utf8LenOf(src: *ui16, n: usize, cap: usize, terminate: bool) -> usize {
+export fn utf8LenOf(src: *u16, n: usize, cap: usize, terminate: bool) -> usize {
     local reserve: usize = 0
     if terminate { reserve = 1 }
     local used: usize = 0
     local i: usize = 0
     while i < n {
-        local enc: [ui8; 4]
+        local enc: [u8; 4]
         local units: usize = 0
         local k: usize = unitAt(src, n, i, &enc[0], &units)
         if used + k + reserve > cap { break }
@@ -147,13 +147,13 @@ export fn utf8LenOf(src: *ui16, n: usize, cap: usize, terminate: bool) -> usize 
 }
 
 /// True when `n` units of `src` are well-formed UTF-16: every surrogate is part of a complete pair.
-export fn valid(src: *ui16, n: usize) -> bool {
+export fn valid(src: *u16, n: usize) -> bool {
     local i: usize = 0
     while i < n {
-        local u: ui32 = src[i] as ui32
+        local u: u32 = src[i] as u32
         if u >= 0xd800 && u <= 0xdbff {
             if i + 1 >= n { return false }
-            local lo: ui32 = src[i + 1] as ui32
+            local lo: u32 = src[i + 1] as u32
             if lo < 0xdc00 || lo > 0xdfff { return false }
             i = i + 2
         } else if u >= 0xdc00 && u <= 0xdfff {
@@ -168,7 +168,7 @@ export fn valid(src: *ui16, n: usize) -> bool {
 /// Writes the UTF-16 units of the UTF-8 in `s[0..n)` to `out` (capacity `cap` units, terminator included when
 /// `terminate`); returns the units written. An invalid UTF-8 byte becomes U+FFFD. Used on the way back out to an OS API
 /// (a path, an environment name), never for display.
-export fn fromUtf8(s: *ui8, n: usize, out: *ui16, cap: usize, terminate: bool) -> usize {
+export fn fromUtf8(s: *u8, n: usize, out: *u16, cap: usize, terminate: bool) -> usize {
     local reserve: usize = 0
     if terminate { reserve = 1 }
     local used: usize = 0
@@ -183,11 +183,11 @@ export fn fromUtf8(s: *ui8, n: usize, out: *ui16, cap: usize, terminate: bool) -
         if used + unitsNeeded + reserve > cap { break }
         if cp >= 0x10000 {
             local v: i32 = cp - 0x10000
-            out[used] = (0xd800 | (v >> 10)) as ui16
-            out[used + 1] = (0xdc00 | (v & 0x3ff)) as ui16
+            out[used] = (0xd800 | (v >> 10)) as u16
+            out[used + 1] = (0xdc00 | (v & 0x3ff)) as u16
             used = used + 2
         } else {
-            out[used] = cp as ui16
+            out[used] = cp as u16
             used = used + 1
         }
     }
@@ -197,8 +197,8 @@ export fn fromUtf8(s: *ui8, n: usize, out: *ui16, cap: usize, terminate: bool) -
 
 /// One UTF-8 code point at `s[i]`: the code point, or U+FFFD for an invalid or truncated sequence, with `len` set to
 /// the bytes consumed (at least 1, so the caller always advances).
-fn utf8Unit(s: *ui8, n: usize, i: usize, len: *usize) -> i32 {
-    local c: ui8 = s[i]
+fn utf8Unit(s: *u8, n: usize, i: usize, len: *usize) -> i32 {
+    local c: u8 = s[i]
     *len = 1
     if c < 0x80 { return c as i32 }
     local k: usize = 0

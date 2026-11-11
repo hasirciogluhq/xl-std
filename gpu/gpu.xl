@@ -22,24 +22,24 @@ define DRM_DIR = "/dev/dri"
     minor: i32
     patch: i32
     nameLen: usize
-    name: *ui8
+    name: *u8
     dateLen: usize
-    date: *ui8
+    date: *u8
     descLen: usize
-    desc: *ui8
+    desc: *u8
 }
 
 /// One render node: its path and the driver name the kernel reports for it.
 export struct GpuDevice {
-    path: [ui8; 32]
-    driver: [ui8; 64]
+    path: [u8; 32]
+    driver: [u8; 64]
     ok: bool
 }
 
 /// Asks the driver behind the render node `fd` for its name into `driver`; returns the name length, or 0.
-fn driverName(fd: i32, driver: *ui8) -> usize {
+fn driverName(fd: i32, driver: *u8) -> usize {
     local v: DrmVersion
-    local name: [ui8; 64]
+    local name: [u8; 64]
     v.nameLen = DRM_NAME_MAX
     v.name = &name[0]
     v.dateLen = 0
@@ -59,7 +59,7 @@ fn driverName(fd: i32, driver: *ui8) -> usize {
 }
 
 /// True when `p` starts with the bytes of `prefix`.
-fn startsWith(p: *ui8, prefix: str) -> bool {
+fn startsWith(p: *u8, prefix: str) -> bool {
     local i: usize = 0
     while i < prefix.len {
         if p[i] != prefix[i] { return false }
@@ -69,7 +69,7 @@ fn startsWith(p: *ui8, prefix: str) -> bool {
 }
 
 /// Writes `DRM_DIR "/" name` (NUL-terminated) into `out` (capacity `cap`); false when it does not fit.
-fn buildPath(out: *ui8, cap: usize, name: *ui8) -> bool {
+fn buildPath(out: *u8, cap: usize, name: *u8) -> bool {
     local dir: str = DRM_DIR
     local i: usize = 0
     while i < dir.len {
@@ -95,7 +95,7 @@ fn buildPath(out: *ui8, cap: usize, name: *ui8) -> bool {
 export fn gpuDrmDevices(out: *GpuDevice, max: usize) -> usize {
     local dir: i32 = sysOpenRead(DRM_DIR)
     if dir < 0 { return 0 }
-    local buf: [ui8; 4096]
+    local buf: [u8; 4096]
     local count: usize = 0
     while count < max {
         local got: isize = sysGetdents(dir, &buf[0], 4096)
@@ -136,8 +136,8 @@ export fn gpuAvailable() -> bool {
 #else
 
 export struct GpuDevice {
-    path: [ui8; 32]
-    driver: [ui8; 64]
+    path: [u8; 32]
+    driver: [u8; 64]
     ok: bool
 }
 

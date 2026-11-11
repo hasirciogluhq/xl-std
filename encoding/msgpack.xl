@@ -10,20 +10,20 @@ define MP_MAX_DEPTH = 64
 
 /// The result of reading an unsigned integer: `value`, the position after it, and `ok`.
 export struct MsgpackUint {
-    value: ui64
+    value: u64
     next: usize
     ok: bool
 }
 
 /// Writes an unsigned integer in the smallest form; returns the length (1 to 9).
-export fn msgpackUint(v: ui64, out: *ui8) -> usize {
+export fn msgpackUint(v: u64, out: *u8) -> usize {
     if v < 128 {
-        out[0] = v as ui8
+        out[0] = v as u8
         return 1
     }
     if v <= 0xff {
         out[0] = 0xcc
-        out[1] = v as ui8
+        out[1] = v as u8
         return 2
     }
     if v <= 0xffff {
@@ -42,38 +42,38 @@ export fn msgpackUint(v: ui64, out: *ui8) -> usize {
 }
 
 /// Writes a signed integer in the smallest form; returns the length (1 to 9).
-export fn msgpackInt(v: i64, out: *ui8) -> usize {
-    if v >= 0 { return msgpackUint(v as ui64, out) }
+export fn msgpackInt(v: i64, out: *u8) -> usize {
+    if v >= 0 { return msgpackUint(v as u64, out) }
     if v >= -32 {
-        out[0] = (v as i8) as ui8
+        out[0] = (v as i8) as u8
         return 1
     }
     if v >= -128 {
         out[0] = 0xd0
-        out[1] = (v as i8) as ui8
+        out[1] = (v as i8) as u8
         return 2
     }
     if v >= -32768 {
         out[0] = 0xd1
-        putBe(out, 1, v as ui64, 2)
+        putBe(out, 1, v as u64, 2)
         return 3
     }
     if v >= -2147483648 {
         out[0] = 0xd2
-        putBe(out, 1, v as ui64, 4)
+        putBe(out, 1, v as u64, 4)
         return 5
     }
     out[0] = 0xd3
-    putBe(out, 1, v as ui64, 8)
+    putBe(out, 1, v as u64, 8)
     return 9
 }
 
 /// The length header of a string (str family), the header of a binary blob, or the header of an array or map with `count`
 /// items (`kind` is 115, 98, 97 or 109). The caller writes the payload or the items after it; returns the header length.
-export fn msgpackHead(kind: ui8, count: ui64, out: *ui8) -> usize {
+export fn msgpackHead(kind: u8, count: u64, out: *u8) -> usize {
     if kind == 97 {
         if count < 16 {
-            out[0] = (0x90 | count) as ui8
+            out[0] = (0x90 | count) as u8
             return 1
         }
         if count <= 0xffff {
@@ -87,7 +87,7 @@ export fn msgpackHead(kind: ui8, count: ui64, out: *ui8) -> usize {
     }
     if kind == 109 {
         if count < 16 {
-            out[0] = (0x80 | count) as ui8
+            out[0] = (0x80 | count) as u8
             return 1
         }
         if count <= 0xffff {
@@ -101,12 +101,12 @@ export fn msgpackHead(kind: ui8, count: ui64, out: *ui8) -> usize {
     }
     if kind == 115 {
         if count < 32 {
-            out[0] = (0xa0 | count) as ui8
+            out[0] = (0xa0 | count) as u8
             return 1
         }
         if count <= 0xff {
             out[0] = 0xd9
-            out[1] = count as ui8
+            out[1] = count as u8
             return 2
         }
         if count <= 0xffff {
@@ -121,7 +121,7 @@ export fn msgpackHead(kind: ui8, count: ui64, out: *ui8) -> usize {
     // binary blob
     if count <= 0xff {
         out[0] = 0xc4
-        out[1] = count as ui8
+        out[1] = count as u8
         return 2
     }
     if count <= 0xffff {
@@ -135,8 +135,8 @@ export fn msgpackHead(kind: ui8, count: ui64, out: *ui8) -> usize {
 }
 
 /// A whole string value (UTF-8 bytes); returns the length.
-export fn msgpackStr(s: *ui8, n: usize, out: *ui8) -> usize {
-    local h: usize = msgpackHead(115, n as ui64, out)
+export fn msgpackStr(s: *u8, n: usize, out: *u8) -> usize {
+    local h: usize = msgpackHead(115, n as u64, out)
     local i: usize = 0
     while i < n {
         out[h + i] = s[i]
@@ -145,7 +145,7 @@ export fn msgpackStr(s: *ui8, n: usize, out: *ui8) -> usize {
     return h + n
 }
 
-export fn msgpackBool(b: bool, out: *ui8) -> usize {
+export fn msgpackBool(b: bool, out: *u8) -> usize {
     if b {
         out[0] = 0xc3
     } else {
@@ -154,43 +154,43 @@ export fn msgpackBool(b: bool, out: *ui8) -> usize {
     return 1
 }
 
-export fn msgpackNil(out: *ui8) -> usize {
+export fn msgpackNil(out: *u8) -> usize {
     out[0] = 0xc0
     return 1
 }
 
 /// A float64 value (format cb, big-endian IEEE 754 bit pattern); returns 9.
-export fn msgpackFloat64(bits: ui64, out: *ui8) -> usize {
+export fn msgpackFloat64(bits: u64, out: *u8) -> usize {
     out[0] = 0xcb
     putBe(out, 1, bits, 8)
     return 9
 }
 
-fn putBe(out: *ui8, at: usize, v: ui64, width: usize) {
+fn putBe(out: *u8, at: usize, v: u64, width: usize) {
     local i: usize = 0
     while i < width {
-        out[at + i] = ((v >> (((width - 1 - i) * 8) as ui64)) & 0xff) as ui8
+        out[at + i] = ((v >> (((width - 1 - i) * 8) as u64)) & 0xff) as u8
         i = i + 1
     }
 }
 
-fn getBe(buf: *ui8, at: usize, width: usize) -> ui64 {
-    local v: ui64 = 0
+fn getBe(buf: *u8, at: usize, width: usize) -> u64 {
+    local v: u64 = 0
     local i: usize = 0
     while i < width {
-        v = (v << 8) | (buf[at + i] as ui64)
+        v = (v << 8) | (buf[at + i] as u64)
         i = i + 1
     }
     return v
 }
 
 /// Reads an unsigned integer value at `pos` (positive fixint or uint 8 to 64). `ok` is false for any other value.
-export fn msgpackReadUint(buf: *ui8, n: usize, pos: usize) -> MsgpackUint {
+export fn msgpackReadUint(buf: *u8, n: usize, pos: usize) -> MsgpackUint {
     local r: MsgpackUint
     if pos >= n { return r }
-    local f: ui8 = buf[pos]
+    local f: u8 = buf[pos]
     if f < 0x80 {
-        r.value = f as ui64
+        r.value = f as u64
         r.next = pos + 1
         r.ok = true
         return r
@@ -213,7 +213,7 @@ export fn msgpackReadUint(buf: *ui8, n: usize, pos: usize) -> MsgpackUint {
 }
 
 /// The payload size, after the format byte, of a fixed-size value (numbers, fixext); 0 for the others.
-fn fixedPayload(f: ui8) -> usize {
+fn fixedPayload(f: u8) -> usize {
     if f == 0xca || f == 0xce || f == 0xd2 { return 4 }
     if f == 0xcb || f == 0xcf || f == 0xd3 { return 8 }
     if f == 0xcc || f == 0xd0 { return 1 }
@@ -228,13 +228,13 @@ fn fixedPayload(f: ui8) -> usize {
 }
 
 /// The position after the value at `pos`, or 0 when it is malformed or runs past `n`.
-export fn msgpackSkip(buf: *ui8, n: usize, pos: usize) -> usize {
+export fn msgpackSkip(buf: *u8, n: usize, pos: usize) -> usize {
     return skipDepth(buf, n, pos, 0)
 }
 
-fn skipDepth(buf: *ui8, n: usize, pos: usize, depth: usize) -> usize {
+fn skipDepth(buf: *u8, n: usize, pos: usize, depth: usize) -> usize {
     if depth > MP_MAX_DEPTH || pos >= n { return 0 }
-    local f: ui8 = buf[pos]
+    local f: u8 = buf[pos]
     local p: usize = pos + 1
     // inline values: no payload
     if f < 0x80 || f >= 0xe0 || f == 0xc0 || f == 0xc2 || f == 0xc3 { return p }
@@ -264,7 +264,7 @@ fn skipPayload(n: usize, at: usize, size: usize) -> usize {
 }
 
 /// Skips `count` consecutive values at `p`.
-fn skipItems(buf: *ui8, n: usize, p: usize, count: usize, depth: usize) -> usize {
+fn skipItems(buf: *u8, n: usize, p: usize, count: usize, depth: usize) -> usize {
     local q: usize = p
     local k: usize = 0
     while k < count {
@@ -276,14 +276,14 @@ fn skipItems(buf: *ui8, n: usize, p: usize, count: usize, depth: usize) -> usize
 }
 
 /// Skips a container whose item count is `width` bytes at `p`. `mult` is 1 for an array and 2 for a map (two values per pair).
-fn skipContainer(buf: *ui8, n: usize, p: usize, width: usize, mult: usize, depth: usize) -> usize {
+fn skipContainer(buf: *u8, n: usize, p: usize, width: usize, mult: usize, depth: usize) -> usize {
     if n - p < width { return 0 }
     local count: usize = (getBe(buf, p, width) as usize) * mult
     return skipItems(buf, n, p + width, count, depth)
 }
 
 /// Skips a sized value: a `width`-byte length at `p`, then `extra` bytes (the ext type byte) and that many bytes of data.
-fn skipSized(buf: *ui8, n: usize, p: usize, width: usize, extra: usize) -> usize {
+fn skipSized(buf: *u8, n: usize, p: usize, width: usize, extra: usize) -> usize {
     if n - p < width { return 0 }
     local size: usize = getBe(buf, p, width) as usize
     return skipPayload(n, p + width, size + extra)

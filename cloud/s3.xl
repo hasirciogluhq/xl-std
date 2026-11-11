@@ -482,9 +482,9 @@ fn scopeOf(c: *S3Client, dateStamp: str) -> String {
 
 /// Hex of the SHA-256 of `data`.
 fn hashHex(data: str) -> String {
-    local digest: [ui8; 32]
+    local digest: [u8; 32]
     sha256(data.ptr, data.len, &digest[0])
-    local hex: [ui8; 64]
+    local hex: [u8; 64]
     hexEncode(&digest[0], 32, &hex[0])
     local s: String = String()
     s.append(fromParts(&hex[0], 64))
@@ -616,12 +616,12 @@ fn dateOnly(stamp: str) -> String {
 }
 
 fn paddedNumber(v: i64, width: usize) -> String {
-    local digits: [ui8; 20]
+    local digits: [u8; 20]
     local x: i64 = v
     if x < 0 { x = 0 }
     local n: usize = 0
     while true {
-        digits[n] = (48 + (x % 10)) as ui8
+        digits[n] = (48 + (x % 10)) as u8
         n = n + 1
         x = x / 10
         if x == 0 { break }

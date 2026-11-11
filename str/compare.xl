@@ -8,12 +8,12 @@
 // `?` cannot be matched by a glob. The rules are the common shell-style subset; see xlang-docs/known-limitations.md.
 
 /// ASCII whitespace: space, tab, newline, vertical tab, form feed and carriage return.
-export fn isSpace(c: ui8) -> bool {
+export fn isSpace(c: u8) -> bool {
     return c == 32 || (c >= 9 && c <= 13)
 }
 
 /// ASCII lowercase of one byte: A-Z become a-z, every other byte is unchanged.
-fn lowerAscii(c: ui8) -> ui8 {
+fn lowerAscii(c: u8) -> u8 {
     if c >= 65 && c <= 90 { return c + 32 }
     return c
 }
@@ -92,9 +92,9 @@ export fn globMatch(pattern: str, text: str) -> bool {    local p: usize = 0
 }
 
 /// Byte offset of the first occurrence of byte `b` in `s`, or -1. The one-byte form of a search: a delimiter scan
-/// (`findByte(line, b')')`), a quote seek, a field terminator. `b` is a `ui8`, so the caller names the character
+/// (`findByte(line, b')')`), a quote seek, a field terminator. `b` is a `u8`, so the caller names the character
 /// literally instead of building a one-byte `str` first.
-export fn findByte(s: str, b: ui8) -> i64 {
+export fn findByte(s: str, b: u8) -> i64 {
     local i: usize = 0
     while i < s.len {
         if s[i] == b { return i as i64 }
@@ -104,7 +104,7 @@ export fn findByte(s: str, b: ui8) -> i64 {
 }
 
 /// Byte offset of the last occurrence of byte `b` in `s`, or -1.
-export fn findLastByte(s: str, b: ui8) -> i64 {
+export fn findLastByte(s: str, b: u8) -> i64 {
     local i: i64 = s.len as i64
     while i > 0 {
         i = i - 1

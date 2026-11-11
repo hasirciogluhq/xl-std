@@ -8,13 +8,13 @@ from "../str/string" import String
 from "../str/str" import fromParts
 
 /// Encodes `der[0..n)` as a PEM block with `label[0..llen)`.
-export fn pemEncode(label: *ui8, llen: usize, der: *ui8, n: usize) -> String {
+export fn pemEncode(label: *u8, llen: usize, der: *u8, n: usize) -> String {
     local out: String = String()
     out.append("-----BEGIN ")
     out.append(fromParts(label, llen))
     out.append("-----\n")
     local b64cap: usize = base64EncodedLen(n)
-    local body: *ui8 = currentAllocator.alloc(b64cap + 1, 1) as *ui8
+    local body: *u8 = currentAllocator.alloc(b64cap + 1, 1) as *u8
     if body == nil { panic("pemEncode: out of memory") }
     local b64len: usize = base64Encode(der, n, body)
     local i: usize = 0

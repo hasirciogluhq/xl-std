@@ -10,7 +10,7 @@ from "../mem/mem" import currentAllocator
 /// Parses the record at `text[pos..n)`. Advances `pos` past the record and its line break. Returns the fields; on a
 /// malformed quoted field (a quote followed by a byte other than a comma, a line break, or another quote) the field
 /// ends there and the rest of the record is taken as it is.
-export fn csvRecord(text: *ui8, n: usize, pos: *usize) -> Vec<String> {
+export fn csvRecord(text: *u8, n: usize, pos: *usize) -> Vec<String> {
     local fields: Vec<String> = Vec<String>()
     local i: usize = *pos
     local field: String = String()

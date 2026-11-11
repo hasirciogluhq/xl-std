@@ -10,21 +10,21 @@ from "../cipher/salsa20" import salsaCore
 from "pbkdf2" import pbkdf2
 from "../../mem/mem" import currentAllocator
 
-fn le32(p: *ui8) -> ui32 {
-    return (p[0] as ui32) | ((p[1] as ui32) << 8) | ((p[2] as ui32) << 16) | ((p[3] as ui32) << 24)
+fn le32(p: *u8) -> u32 {
+    return (p[0] as u32) | ((p[1] as u32) << 8) | ((p[2] as u32) << 16) | ((p[3] as u32) << 24)
 }
 
-fn put32(p: *ui8, v: ui32) {
-    p[0] = (v & 0xff) as ui8
-    p[1] = ((v >> 8) & 0xff) as ui8
-    p[2] = ((v >> 16) & 0xff) as ui8
-    p[3] = ((v >> 24) & 0xff) as ui8
+fn put32(p: *u8, v: u32) {
+    p[0] = (v & 0xff) as u8
+    p[1] = ((v >> 8) & 0xff) as u8
+    p[2] = ((v >> 16) & 0xff) as u8
+    p[3] = ((v >> 24) & 0xff) as u8
 }
 
 /// Salsa20/8 core on the 64-byte block `b`, in place (RFC 7914 section 3, with feed-forward).
-fn salsa8(b: *ui8) {
-    local input: [ui32; 16]
-    local output: [ui32; 16]
+fn salsa8(b: *u8) {
+    local input: [u32; 16]
+    local output: [u32; 16]
     local i: usize = 0
     while i < 16 {
         input[i] = le32(&b[i * 4])
@@ -40,8 +40,8 @@ fn salsa8(b: *ui8) {
 
 /// BlockMix (RFC 7914 section 4): `b` holds 2r blocks of 64 bytes; `y` receives the mixed blocks in the order
 /// even blocks first, then odd blocks.
-fn blockMix(b: *ui8, r: usize, y: *ui8) {
-    local x: [ui8; 64]
+fn blockMix(b: *u8, r: usize, y: *u8) {
+    local x: [u8; 64]
     local i: usize = 0
     while i < 64 {
         x[i] = b[(2 * r - 1) * 64 + i]
@@ -67,19 +67,19 @@ fn blockMix(b: *ui8, r: usize, y: *ui8) {
 }
 
 /// Integerify (section 4): the first 8 bytes of the last 64-byte block as a little-endian integer.
-fn integerify(b: *ui8, r: usize) -> ui64 {
+fn integerify(b: *u8, r: usize) -> u64 {
     local base: usize = (2 * r - 1) * 64
-    local v: ui64 = 0
+    local v: u64 = 0
     local i: usize = 0
     while i < 8 {
-        v = v | ((b[base + i] as ui64) << ((8 * i) as ui64))
+        v = v | ((b[base + i] as u64) << ((8 * i) as u64))
         i = i + 1
     }
     return v
 }
 
 /// ROMix (section 4) on the 128r-byte chunk `b`, using `v` (N * 128r bytes) and the scratch buffers `x` and `y`.
-fn roMix(b: *ui8, r: usize, n: usize, v: *ui8, x: *ui8, y: *ui8) {
+fn roMix(b: *u8, r: usize, n: usize, v: *u8, x: *u8, y: *u8) {
     local len: usize = 128 * r
     local i: usize = 0
     while i < len {
@@ -103,7 +103,7 @@ fn roMix(b: *ui8, r: usize, n: usize, v: *ui8, x: *ui8, y: *ui8) {
     }
     k = 0
     while k < n {
-        local j: usize = (integerify(x, r) % (n as ui64)) as usize
+        local j: usize = (integerify(x, r) % (n as u64)) as usize
         i = 0
         while i < len {
             x[i] = x[i] ^ v[j * len + i]
@@ -126,14 +126,14 @@ fn roMix(b: *ui8, r: usize, n: usize, v: *ui8, x: *ui8, y: *ui8) {
 
 /// scrypt(P, S, N, r, p) into `out` (`outLen` bytes). N must be a power of two above 1; r and p are at least 1. False
 /// for invalid parameters.
-export fn scrypt(pass: *ui8, plen: usize, salt: *ui8, slen: usize, n: usize, r: usize, p: usize, out: *ui8, outLen: usize) -> bool {
+export fn scrypt(pass: *u8, plen: usize, salt: *u8, slen: usize, n: usize, r: usize, p: usize, out: *u8, outLen: usize) -> bool {
     if n < 2 || (n & (n - 1)) != 0 || r == 0 || p == 0 { return false }
     local chunk: usize = 128 * r
     local bl: usize = p * chunk
-    local b: *ui8 = currentAllocator.alloc(bl, 1) as *ui8
-    local v: *ui8 = currentAllocator.alloc(n * chunk, 1) as *ui8
-    local x: *ui8 = currentAllocator.alloc(chunk, 1) as *ui8
-    local y: *ui8 = currentAllocator.alloc(chunk, 1) as *ui8
+    local b: *u8 = currentAllocator.alloc(bl, 1) as *u8
+    local v: *u8 = currentAllocator.alloc(n * chunk, 1) as *u8
+    local x: *u8 = currentAllocator.alloc(chunk, 1) as *u8
+    local y: *u8 = currentAllocator.alloc(chunk, 1) as *u8
     if b == nil || v == nil || x == nil || y == nil { panic("scrypt: out of memory") }
     pbkdf2(DIGEST_SHA256, pass, plen, salt, slen, 1, b, bl)
     local i: usize = 0

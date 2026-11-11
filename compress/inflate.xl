@@ -12,23 +12,23 @@ define INFL_MAXBITS = 15
 
 /// A canonical Huffman code: the number of codes of each length and the symbols in code order.
 struct Huff {
-    count: [ui16; 16]
-    symbol: [ui16; 320]
+    count: [u16; 16]
+    symbol: [u16; 320]
 }
 
 /// The input bit reader.
 struct Bits {
-    src: *ui8
+    src: *u8
     n: usize
     pos: usize
-    buf: ui32
-    cnt: ui32
+    buf: u32
+    cnt: u32
 }
 
-fn bitsNeed(b: *Bits, need: ui32) -> bool {
+fn bitsNeed(b: *Bits, need: u32) -> bool {
     while b.cnt < need {
         if b.pos >= b.n { return false }
-        b.buf = b.buf | ((b.src[b.pos] as ui32) << b.cnt)
+        b.buf = b.buf | ((b.src[b.pos] as u32) << b.cnt)
         b.pos = b.pos + 1
         b.cnt = b.cnt + 8
     }
@@ -36,10 +36,10 @@ fn bitsNeed(b: *Bits, need: ui32) -> bool {
 }
 
 /// Reads `need` bits (at most 16) LSB first; returns -1 on end of input.
-fn getBits(b: *Bits, need: ui32) -> i32 {
+fn getBits(b: *Bits, need: u32) -> i32 {
     if need == 0 { return 0 }
     if !bitsNeed(b, need) { return -1 }
-    local v: ui32 = b.buf & ((1 << need) - 1)
+    local v: u32 = b.buf & ((1 << need) - 1)
     b.buf = b.buf >> need
     b.cnt = b.cnt - need
     return v as i32
@@ -47,7 +47,7 @@ fn getBits(b: *Bits, need: ui32) -> i32 {
 
 /// Builds the canonical code from the code lengths `lengths[0..n)` (RFC 1951 section 3.2.2). False for an
 /// over-subscribed code (more codes than the lengths allow).
-fn buildHuff(h: *Huff, lengths: *ui16, n: usize) -> bool {
+fn buildHuff(h: *Huff, lengths: *u16, n: usize) -> bool {
     local i: usize = 0
     while i < 16 {
         h.count[i] = 0
@@ -66,7 +66,7 @@ fn buildHuff(h: *Huff, lengths: *ui16, n: usize) -> bool {
         if left < 0 { return false }
         len = len + 1
     }
-    local offs: [ui16; 16]
+    local offs: [u16; 16]
     offs[1] = 0
     len = 1
     while len < 15 {
@@ -76,7 +76,7 @@ fn buildHuff(h: *Huff, lengths: *ui16, n: usize) -> bool {
     i = 0
     while i < n {
         if lengths[i] != 0 {
-            h.symbol[offs[lengths[i]]] = i as ui16
+            h.symbol[offs[lengths[i]]] = i as u16
             offs[lengths[i]] = offs[lengths[i]] + 1
         }
         i = i + 1
@@ -108,33 +108,33 @@ fn decodeSym(b: *Bits, h: *Huff) -> i32 {
 }
 
 // The base values and extra bit counts of the length codes 257..285 and the distance codes 0..29 (RFC 1951 3.2.5).
-global LEN_BASE: [ui16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
-global LEN_EXTRA: [ui16; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
-global DIST_BASE: [ui16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
-global DIST_EXTRA: [ui16; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+global LEN_BASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+global LEN_EXTRA: [u16; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+global DIST_BASE: [u16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+global DIST_EXTRA: [u16; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
 
 /// Decodes the literal/length and distance codes of one block into `out` (length `olen` so far, capacity `cap`).
 /// Returns the new output length, or -1 on error.
-fn codes(b: *Bits, lit: *Huff, dist: *Huff, out: *ui8, olen: usize, cap: usize) -> isize {
+fn codes(b: *Bits, lit: *Huff, dist: *Huff, out: *u8, olen: usize, cap: usize) -> isize {
     local o: usize = olen
     while true {
         local sym: i32 = decodeSym(b, lit)
         if sym < 0 { return -1 }
         if sym < 256 {
             if o >= cap { return -1 }
-            out[o] = sym as ui8
+            out[o] = sym as u8
             o = o + 1
         } else if sym == 256 {
             return o as isize
         } else {
             local li: i32 = sym - 257
             if li >= 29 { return -1 }
-            local extra: i32 = getBits(b, LEN_EXTRA[li as usize] as ui32)
+            local extra: i32 = getBits(b, LEN_EXTRA[li as usize] as u32)
             if extra < 0 { return -1 }
             local length: usize = (LEN_BASE[li as usize] as usize) + (extra as usize)
             local ds: i32 = decodeSym(b, dist)
             if ds < 0 || ds >= 30 { return -1 }
-            local dx: i32 = getBits(b, DIST_EXTRA[ds as usize] as ui32)
+            local dx: i32 = getBits(b, DIST_EXTRA[ds as usize] as u32)
             if dx < 0 { return -1 }
             local d: usize = (DIST_BASE[ds as usize] as usize) + (dx as usize)
             if d > o { return -1 }
@@ -152,7 +152,7 @@ fn codes(b: *Bits, lit: *Huff, dist: *Huff, out: *ui8, olen: usize, cap: usize) 
 
 /// Inflates one raw DEFLATE stream from the bit reader `b` into `out`; returns the output length or -1 on error.
 /// Writes the bit reader position back through `b`.
-fn inflateRaw(b: *Bits, out: *ui8, cap: usize) -> isize {
+fn inflateRaw(b: *Bits, out: *u8, cap: usize) -> isize {
     local olen: usize = 0
     local last: i32 = 0
     while last == 0 {
@@ -181,7 +181,7 @@ fn inflateRaw(b: *Bits, out: *ui8, cap: usize) -> isize {
         } else if btype == 1 {
             local lit: Huff
             local dist: Huff
-            local lens: [ui16; 288]
+            local lens: [u16; 288]
             local i: usize = 0
             while i < 288 {
                 if i < 144 {
@@ -196,7 +196,7 @@ fn inflateRaw(b: *Bits, out: *ui8, cap: usize) -> isize {
                 i = i + 1
             }
             buildHuff(&lit, &lens[0], 288)
-            local dl: [ui16; 30]
+            local dl: [u16; 30]
             i = 0
             while i < 30 {
                 dl[i] = 5
@@ -215,8 +215,8 @@ fn inflateRaw(b: *Bits, out: *ui8, cap: usize) -> isize {
             ndist = ndist + 1
             ncode = ncode + 4
             if nlen > 286 || ndist > 30 { return -1 }
-            local order: [ui16; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
-            local cl: [ui16; 19]
+            local order: [u16; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+            local cl: [u16; 19]
             local i: usize = 0
             while i < 19 {
                 cl[i] = 0
@@ -226,23 +226,23 @@ fn inflateRaw(b: *Bits, out: *ui8, cap: usize) -> isize {
             while (i as i32) < ncode {
                 local v: i32 = getBits(b, 3)
                 if v < 0 { return -1 }
-                cl[order[i]] = v as ui16
+                cl[order[i]] = v as u16
                 i = i + 1
             }
             local clh: Huff
             if !buildHuff(&clh, &cl[0], 19) { return -1 }
-            local lens: [ui16; 320]
+            local lens: [u16; 320]
             local idx: usize = 0
             local total: usize = (nlen + ndist) as usize
             while idx < total {
                 local sym: i32 = decodeSym(b, &clh)
                 if sym < 0 { return -1 }
                 if sym < 16 {
-                    lens[idx] = sym as ui16
+                    lens[idx] = sym as u16
                     idx = idx + 1
                 } else {
                     local rep: i32 = 0
-                    local val: ui16 = 0
+                    local val: u16 = 0
                     if sym == 16 {
                         if idx == 0 { return -1 }
                         val = lens[idx - 1]
@@ -265,7 +265,7 @@ fn inflateRaw(b: *Bits, out: *ui8, cap: usize) -> isize {
             local lit: Huff
             local dist: Huff
             if !buildHuff(&lit, &lens[0], nlen as usize) { return -1 }
-            local dl: [ui16; 32]
+            local dl: [u16; 32]
             i = 0
             while i < (ndist as usize) {
                 dl[i] = lens[(nlen as usize) + i]
@@ -284,7 +284,7 @@ fn inflateRaw(b: *Bits, out: *ui8, cap: usize) -> isize {
 
 /// Inflates a raw DEFLATE stream of `n` bytes at `src` into `out` (`cap` bytes). Returns the output length, or -1 for an
 /// invalid stream or an output that does not fit.
-export fn inflate(src: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
+export fn inflate(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
     local b: Bits
     b.src = src
     b.n = n
@@ -296,10 +296,10 @@ export fn inflate(src: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
 
 /// Decompresses a gzip member (RFC 1952): checks the header (ID1, ID2, method 8), skips the optional fields, inflates, and
 /// checks CRC-32 and ISIZE of the trailer. Returns the output length or -1.
-export fn gunzip(src: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
+export fn gunzip(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
     if n < 18 { return -1 }
     if src[0] != 0x1f || src[1] != 0x8b || src[2] != 8 { return -1 }
-    local flags: ui8 = src[3]
+    local flags: u8 = src[3]
     local pos: usize = 10
     if (flags & 4) != 0 {
         if pos + 2 > n { return -1 }
@@ -324,19 +324,19 @@ export fn gunzip(src: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
     local len: isize = inflateRaw(&b, out, cap)
     if len < 0 { return -1 }
     local t: usize = n - 8
-    local crc: ui32 = (src[t] as ui32) | ((src[t + 1] as ui32) << 8) | ((src[t + 2] as ui32) << 16) | ((src[t + 3] as ui32) << 24)
-    local isize32: ui32 = (src[t + 4] as ui32) | ((src[t + 5] as ui32) << 8) | ((src[t + 6] as ui32) << 16) | ((src[t + 7] as ui32) << 24)
+    local crc: u32 = (src[t] as u32) | ((src[t + 1] as u32) << 8) | ((src[t + 2] as u32) << 16) | ((src[t + 3] as u32) << 24)
+    local isize32: u32 = (src[t + 4] as u32) | ((src[t + 5] as u32) << 8) | ((src[t + 6] as u32) << 16) | ((src[t + 7] as u32) << 24)
     if crc32(out, len as usize) != crc { return -1 }
-    if (len as ui32) != isize32 { return -1 }
+    if (len as u32) != isize32 { return -1 }
     return len
 }
 
 /// Decompresses a zlib stream (RFC 1950): the two-byte header (method 8, window up to 32 KiB, FCHECK), a DEFLATE body, and
 /// the Adler-32 of the output. Returns the output length or -1. A preset dictionary (FDICT) is not supported.
-export fn zlibDecompress(src: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
+export fn zlibDecompress(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
     if n < 6 { return -1 }
-    local cmf: ui32 = src[0] as ui32
-    local flg: ui32 = src[1] as ui32
+    local cmf: u32 = src[0] as u32
+    local flg: u32 = src[1] as u32
     if (cmf & 0x0f) != 8 || (cmf >> 4) > 7 { return -1 }
     if ((cmf << 8) | flg) % 31 != 0 { return -1 }
     if (flg & 0x20) != 0 { return -1 }
@@ -349,7 +349,7 @@ export fn zlibDecompress(src: *ui8, n: usize, out: *ui8, cap: usize) -> isize {
     local len: isize = inflateRaw(&b, out, cap)
     if len < 0 { return -1 }
     local t: usize = n - 4
-    local want: ui32 = ((src[t] as ui32) << 24) | ((src[t + 1] as ui32) << 16) | ((src[t + 2] as ui32) << 8) | (src[t + 3] as ui32)
+    local want: u32 = ((src[t] as u32) << 24) | ((src[t + 1] as u32) << 16) | ((src[t + 2] as u32) << 8) | (src[t + 3] as u32)
     if adler32(out, len as usize) != want { return -1 }
     return len
 }

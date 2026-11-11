@@ -9,7 +9,7 @@ from "../../mem/mem" import currentAllocator
 /// The largest digest block (SHA-384 and SHA-512 family) in bytes.
 define HMAC_MAX_BLOCK = 128
 
-fn copyBytes(dst: *ui8, src: *ui8, n: usize) {
+fn copyBytes(dst: *u8, src: *u8, n: usize) {
     local i: usize = 0
     while i < n {
         dst[i] = src[i]
@@ -19,11 +19,11 @@ fn copyBytes(dst: *ui8, src: *ui8, n: usize) {
 
 /// `out[0..digestLen(alg))` = HMAC-alg(key[0..klen), msg[0..mlen)). False when `alg` is unknown.
 /// Keys of any length are accepted (RFC 2104 section 3 allows any length; longer keys are hashed first).
-export fn hmac(alg: i32, key: *ui8, klen: usize, msg: *ui8, mlen: usize, out: *ui8) -> bool {
+export fn hmac(alg: i32, key: *u8, klen: usize, msg: *u8, mlen: usize, out: *u8) -> bool {
     local bs: usize = digestBlockLen(alg)
     if bs == 0 { return false }
     local ol: usize = digestLen(alg)
-    local k: [ui8; 128]
+    local k: [u8; 128]
     local i: usize = 0
     while i < HMAC_MAX_BLOCK {
         k[i] = 0
@@ -34,7 +34,7 @@ export fn hmac(alg: i32, key: *ui8, klen: usize, msg: *ui8, mlen: usize, out: *u
     } else {
         copyBytes(&k[0], key, klen)
     }
-    local inner: *ui8 = currentAllocator.alloc(bs + mlen, 1) as *ui8
+    local inner: *u8 = currentAllocator.alloc(bs + mlen, 1) as *u8
     if inner == nil {
         panic("hmac: out of memory")
     }
@@ -44,10 +44,10 @@ export fn hmac(alg: i32, key: *ui8, klen: usize, msg: *ui8, mlen: usize, out: *u
         i = i + 1
     }
     copyBytes(&inner[bs], msg, mlen)
-    local ih: [ui8; 64]
+    local ih: [u8; 64]
     digest(alg, inner, bs + mlen, &ih[0])
     currentAllocator.free(inner as *void)
-    local outer: [ui8; 192]
+    local outer: [u8; 192]
     i = 0
     while i < bs {
         outer[i] = k[i] ^ 0x5c

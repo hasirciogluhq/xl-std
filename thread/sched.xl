@@ -25,8 +25,8 @@ struct Task {
     sp: usize                      // saved stack pointer while not running
     entry: fn(*void)
     arg: *void
-    state: ui32
-    wantPark: ui32
+    state: u32
+    wantPark: u32
     next: *Task
     worker: *Worker
     mapBase: *void
@@ -47,16 +47,16 @@ struct Worker {
 }
 
 struct Scheduler {
-    started: ui32                  // 0 = not started, 1 = starting, 2 = running
+    started: u32                  // 0 = not started, 1 = starting, 2 = running
     count: i32
     workers: *Worker
     shared: Queue
-    pending: ui32                  // tasks not finished yet
-    idle: ui32                     // futex word idle workers sleep on
-    nextWorker: ui32
+    pending: u32                  // tasks not finished yet
+    idle: u32                     // futex word idle workers sleep on
+    nextWorker: u32
     inlineMode: bool               // no OS threads available: tasks run on the thread in `waitAll`
     pollFd: i32                    // readiness poll set (epoll/kqueue), 0 = not created yet
-    pollStarted: ui32
+    pollStarted: u32
 }
 
 global sched: Scheduler
@@ -193,7 +193,7 @@ fn pollReady(timeoutMs: i32) -> i32 {
     local i: i32 = 0
     while i < n {
         local t: *Task = tokens[i as usize] as *Task
-        local old: ui32 = __builtin_atomicXchg(&t.state, WOKEN, MemoryOrder.acqRel)
+        local old: u32 = __builtin_atomicXchg(&t.state, WOKEN, MemoryOrder.acqRel)
         if old == PARKED {
             makeReady(t, nil)
         }
@@ -227,7 +227,7 @@ fn ensurePoller() {
 fn workerMain(p: *void) {
     local w: *Worker = p as *Worker
     while true {
-        local seen: ui32 = __builtin_atomicLoad(&sched.idle, MemoryOrder.acquire)
+        local seen: u32 = __builtin_atomicLoad(&sched.idle, MemoryOrder.acquire)
         local t: *Task = findWork(w)
         if t != nil {
             runTask(w, t)
@@ -315,7 +315,7 @@ export fn waitAll() {
         }
         return
     }
-    local v: ui32 = __builtin_atomicLoad(&sched.pending, MemoryOrder.acquire)
+    local v: u32 = __builtin_atomicLoad(&sched.pending, MemoryOrder.acquire)
     while v != 0 {
         sysWait(&sched.pending, v)
         v = __builtin_atomicLoad(&sched.pending, MemoryOrder.acquire)
@@ -351,7 +351,7 @@ export fn park() {
 export fn wake(w: Waiter) {
     local t: *Task = w.task
     if t == nil { return }
-    local old: ui32 = __builtin_atomicXchg(&t.state, WOKEN, MemoryOrder.acqRel)
+    local old: u32 = __builtin_atomicXchg(&t.state, WOKEN, MemoryOrder.acqRel)
     if old == PARKED {
         makeReady(t, nil)
     }
@@ -374,13 +374,13 @@ fn waitFd(fd: i32, write: bool) {
 }
 
 /// Reads from `fd`; inside a task the task parks until `fd` is readable instead of blocking a worker.
-export fn ioRead(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn ioRead(fd: i32, buf: *u8, n: usize) -> isize {
     waitFd(fd, false)
     return sysRead(fd, buf, n)
 }
 
 /// Writes to `fd`; inside a task the task parks until `fd` is writable.
-export fn ioWrite(fd: i32, buf: *ui8, n: usize) -> isize {
+export fn ioWrite(fd: i32, buf: *u8, n: usize) -> isize {
     waitFd(fd, true)
     return sysWrite(fd, buf, n)
 }
