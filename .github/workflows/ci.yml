@@ -70,6 +70,10 @@ jobs:
       - name: Linker (macOS)
         if: runner.os == 'macOS'
         run: brew install lld
+      # The container legs link the other CPU's executables on the host: only LLVM's `ld.lld` links every CPU.
+      - name: Linker (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lld
       - name: Emulation for the foreign-architecture container legs
         if: runner.os == 'Linux'
         uses: docker/setup-qemu-action@v3

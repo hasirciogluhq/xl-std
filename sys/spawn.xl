@@ -15,7 +15,7 @@
 // macOS (libSystem, the documented interface): `posix_spawn` with file actions and the attribute POSIX_SPAWN_CLOEXEC_DEFAULT, which
 //   closes every descriptor the file actions do not name, so a pipe end of this process never leaks into a child.
 //   https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/posix_spawn.3.html
-//   Numbers and constants read from https://github.com/apple-oss-distributions/xnu: bsd/kern/syscalls.master (fcntl 92, pipe 42),
+//   Numbers and constants read from https://github.com/apple-oss-distributions/xnu: bsd/kern/syscalls.master (fcntl 92),
 //   bsd/sys/fcntl.h, bsd/sys/spawn.h, bsd/sys/poll.h, bsd/sys/wait.h.
 // Windows (kernel32 and advapi32, checked against Microsoft Learn): `CreateProcessW` with a STARTUPINFOEXW whose
 //   PROC_THREAD_ATTRIBUTE_HANDLE_LIST names exactly the handles the child inherits, so no other inheritable handle of this process
