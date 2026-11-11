@@ -1,0 +1,10 @@
+// std/compress/error: why a stream could not be decoded.
+
+/// The ways decoding DEFLATE, zlib, gzip and tar data fails.
+export enum CompressError: i32 {
+    Truncated      // the input ends inside the stream
+    Invalid        // not a valid stream: a bad header, block, code, distance or field
+    Checksum       // the CRC-32, Adler-32, length or header checksum does not match
+    Limit          // the output would be larger than the limit the caller gave
+    Unsupported    // a valid feature this implementation does not read (a zlib preset dictionary)
+}

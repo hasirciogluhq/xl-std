@@ -6,6 +6,7 @@
 // A file "fd" is the kernel handle's low 32 bits (kernel handle values are 32-bit safe). Socket fds are
 // told apart by `isSocket` in `sock.xl`, so `sysRead`/`sysWrite`/`sysClose` need no table.
 from "sock" import isSocket, socketOf, sockSend, sockRecv, sockClose
+from "../encoding/utf16" import fromUtf8, toUtf8, utf8LenOf
 
 define CURRENT_PROCESS = -1
 define STATUS_PENDING = 0x103
@@ -303,18 +304,63 @@ export fn sysPipe(fds: *i32, nonblocking: bool) -> i32 {
 
 // ---- files ---------------------------------------------------------------------------------------
 
-/// UTF-8 (ASCII-oriented: bytes >= 0x80 are widened as Latin-1) -> UTF-16, `/` becomes `\`. false if too long.
+/// UTF-8 -> UTF-16 (an invalid byte becomes U+FFFD), `/` becomes `\`. false if it does not fit in `cap` units with its NUL
+/// (a UTF-8 byte never needs more than one unit, so `cap > bytes` always fits).
 fn widen(path: *u8, out: *u16, cap: usize) -> bool {
-    local i: usize = 0
-    while path[i] != 0 {
-        if i + 1 >= cap { return false }
-        local c: u16 = path[i] as u16
-        if c == 47 { c = 92 }
-        out[i] = c
-        i = i + 1
+    local n: usize = 0
+    while path[n] != 0 { n = n + 1 }
+    if n + 1 > cap { return false }
+    local units: usize = fromUtf8(path, n, out, cap, true)
+    for i in 0..units {
+        if out[i] == 47 { out[i] = 92 }
     }
-    out[i] = 0
     return true
+}
+
+// Directories and the console, through kernel32 (the NT file calls above have no simple directory create or rename).
+@library("kernel32") declare fn CreateDirectoryW(path: *u16, security: *void) -> i32
+@library("kernel32") declare fn RemoveDirectoryW(path: *u16) -> i32
+@library("kernel32") declare fn MoveFileExW(src: *u16, dst: *u16, flags: u32) -> i32
+@library("kernel32") declare fn GetCurrentDirectoryW(cap: u32, buf: *u16) -> u32
+@library("kernel32") declare fn GetConsoleMode(h: i64, mode: *u32) -> i32
+
+/// Creates a directory; 0 on success, -1 on failure (also when it exists).
+export fn sysMkdir(path: *u8) -> i32 {
+    local wide: [u16; 520]
+    if !widen(path, &wide[0], 520) { return -1 }
+    return CreateDirectoryW(&wide[0], nil) != 0 ? 0 : -1
+}
+
+/// Removes an empty directory; 0 on success.
+export fn sysRmdir(path: *u8) -> i32 {
+    local wide: [u16; 520]
+    if !widen(path, &wide[0], 520) { return -1 }
+    return RemoveDirectoryW(&wide[0]) != 0 ? 0 : -1
+}
+
+/// Renames `src` to `dst`, replacing an existing file (`MOVEFILE_REPLACE_EXISTING`); 0 on success.
+export fn sysRename(src: *u8, dst: *u8) -> i32 {
+    local a: [u16; 520]
+    local b: [u16; 520]
+    if !widen(src, &a[0], 520) || !widen(dst, &b[0], 520) { return -1 }
+    return MoveFileExW(&a[0], &b[0], 1) != 0 ? 0 : -1
+}
+
+/// Writes the current directory as UTF-8 (NUL terminated) into `buf` and returns its length without the NUL, or -1 when `cap` is too small.
+export fn sysGetcwd(buf: *u8, cap: usize) -> i64 {
+    local wide: [u16; 520]
+    local units: u32 = GetCurrentDirectoryW(520, &wide[0])
+    if units == 0 || units >= 520 { return -1 }
+    // The conversion keeps a NUL slot: it stops short when the UTF-8 form does not fit, which is the failure case.
+    local need: usize = utf8LenOf(&wide[0], units as usize, 3 * 520, false)
+    if need + 1 > cap { return -1 }
+    return toUtf8(&wide[0], units as usize, buf, cap, true) as i64
+}
+
+/// True when descriptor `fd` is a console (`GetConsoleMode` succeeds on a console handle, fails on a file or pipe).
+export fn sysIsTerminal(fd: i32) -> bool {
+    local mode: u32 = 0
+    return GetConsoleMode(sysStdHandle(fd), &mode) != 0
 }
 
 /// NtCreateFile on a DOS path. `access`/`disposition`/`options` as in the NT API; -1 on failure.

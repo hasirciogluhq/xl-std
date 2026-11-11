@@ -1,14 +1,31 @@
-// std/compress/inflate: DEFLATE decompression (RFC 1951, https://www.rfc-editor.org/rfc/rfc1951), with the gzip (RFC 1952)
-// and zlib (RFC 1950) wrappers. Stored, fixed-Huffman and dynamic-Huffman blocks are supported. Huffman codes are
-// canonical (RFC 1951 section 3.2.2) and decoded bit by bit against the per-length counts (the method of Mark Adler's
-// "puff" reference decoder, which is the specification's own example). Bits are read least significant first.
+// std/compress/inflate: DEFLATE decompression (RFC 1951, https://www.rfc-editor.org/rfc/rfc1951). Stored, fixed-Huffman and
+// dynamic-Huffman blocks are read. Huffman codes are canonical (section 3.2.2) and decoded against the per-length counts, the method of
+// Mark Adler's "puff" reference decoder, which is the specification's own example. Bits are read least significant first (3.1.1).
 //
-// Output goes into a caller buffer of `cap` bytes; a stream that would produce more is an error (-1), so the caller
-// sizes the buffer for the expected output. The gzip trailer CRC-32 and ISIZE are checked; the zlib Adler-32 is checked.
-from "../checksum/crc" import crc32
-from "../checksum/adler" import adler32
+// The input is a String and the output grows in a String, up to the `limit` the caller gives: a stream that would produce more is the
+// error `Limit`, so a hostile "zip bomb" cannot use more memory than the caller allowed. The gzip (RFC 1952) and zlib (RFC 1950)
+// wrappers are in `gzip.xl` and `zlib.xl`; they call `inflateAt`.
+from "../str/string" import String
+from "../collections/result" import Result
+from "../mem/memory" import memcpy
+from "error" import CompressError
 
-define INFL_MAXBITS = 15
+/// The status codes of the decoder; `inflateAt` returns one of them and `failure` maps a non-zero one to the public error.
+export define STATUS_OK = 0
+export define STATUS_TRUNCATED = 1
+export define STATUS_INVALID = 2
+export define STATUS_LIMIT = 3
+
+/// The public error of a non-zero status.
+export fn failure(status: i32) -> CompressError {
+    switch status {
+        case STATUS_TRUNCATED { return CompressError.Truncated }
+        case STATUS_LIMIT { return CompressError.Limit }
+        default { return CompressError.Invalid }
+    }
+}
+
+define MAX_BITS = 15
 
 /// A canonical Huffman code: the number of codes of each length and the symbols in code order.
 struct Huff {
@@ -16,340 +33,248 @@ struct Huff {
     symbol: [u16; 320]
 }
 
-/// The input bit reader.
+/// The input bit reader. `acc` holds `cnt` not yet consumed bits, the next one in the lowest position.
 struct Bits {
     src: *u8
     n: usize
     pos: usize
-    buf: u32
+    acc: u64
     cnt: u32
 }
 
-fn bitsNeed(b: *Bits, need: u32) -> bool {
+/// Loads bytes until `need` bits (at most 32) are available; false at the end of input.
+fn fill(b: *Bits, need: u32) -> bool {
     while b.cnt < need {
         if b.pos >= b.n { return false }
-        b.buf = b.buf | ((b.src[b.pos] as u32) << b.cnt)
-        b.pos = b.pos + 1
-        b.cnt = b.cnt + 8
+        b.acc |= (b.src[b.pos] as u64) << (b.cnt as u64)
+        b.pos++
+        b.cnt += 8
     }
     return true
 }
 
-/// Reads `need` bits (at most 16) LSB first; returns -1 on end of input.
-fn getBits(b: *Bits, need: u32) -> i32 {
+/// Reads `need` bits (at most 16), least significant first; -1 at the end of input.
+fn bits(b: *Bits, need: u32) -> i32 {
     if need == 0 { return 0 }
-    if !bitsNeed(b, need) { return -1 }
-    local v: u32 = b.buf & ((1 << need) - 1)
-    b.buf = b.buf >> need
-    b.cnt = b.cnt - need
+    if !fill(b, need) { return -1 }
+    local v: u64 = b.acc & ((1 << (need as u64)) - 1)
+    b.acc >>= need as u64
+    b.cnt -= need
     return v as i32
 }
 
-/// Builds the canonical code from the code lengths `lengths[0..n)` (RFC 1951 section 3.2.2). False for an
-/// over-subscribed code (more codes than the lengths allow).
-fn buildHuff(h: *Huff, lengths: *u16, n: usize) -> bool {
-    local i: usize = 0
-    while i < 16 {
-        h.count[i] = 0
-        i = i + 1
-    }
-    i = 0
-    while i < n {
-        h.count[lengths[i]] = h.count[lengths[i]] + 1
-        i = i + 1
-    }
+/// Builds the canonical code from the code lengths `lengths[0..n)` (section 3.2.2). False for an over-subscribed code. An incomplete
+/// code is accepted here (a single distance code is legal); the decoder reports a symbol that does not exist.
+fn build(h: *Huff, lengths: *u16, n: usize) -> bool {
+    for len in 0..16 { h.count[len] = 0 }
+    for i in 0..n { h.count[lengths[i]]++ }
     local left: i32 = 1
-    local len: usize = 1
-    while len < 16 {
-        left = left << 1
-        left = left - (h.count[len] as i32)
+    for len in 1..16 {
+        left = (left << 1) - (h.count[len] as i32)
         if left < 0 { return false }
-        len = len + 1
     }
     local offs: [u16; 16]
     offs[1] = 0
-    len = 1
-    while len < 15 {
-        offs[len + 1] = offs[len] + h.count[len]
-        len = len + 1
-    }
-    i = 0
-    while i < n {
+    for len in 1..15 { offs[len + 1] = offs[len] + h.count[len] }
+    for i in 0..n {
         if lengths[i] != 0 {
             h.symbol[offs[lengths[i]]] = i as u16
-            offs[lengths[i]] = offs[lengths[i]] + 1
+            offs[lengths[i]]++
         }
-        i = i + 1
     }
     return true
 }
 
-/// Decodes one symbol with `h`; -1 on error or end of input (the puff method: walk the lengths).
-fn decodeSym(b: *Bits, h: *Huff) -> i32 {
+/// Decodes one symbol with `h`: the puff method, which walks the code lengths 1 to 15. -1 on a bad code or at the end of input.
+fn symbol(b: *Bits, h: *Huff) -> i32 {
     local code: i32 = 0
     local first: i32 = 0
     local index: i32 = 0
-    local len: usize = 1
-    while len < 16 {
-        local bit: i32 = getBits(b, 1)
+    for len in 1..16 {
+        local bit: i32 = bits(b, 1)
         if bit < 0 { return -1 }
-        code = code | bit
+        code |= bit
         local count: i32 = h.count[len] as i32
-        if code - count < first {
-            return h.symbol[index + (code - first)] as i32
-        }
-        index = index + count
-        first = first + count
-        first = first << 1
-        code = code << 1
-        len = len + 1
+        if code - count < first { return h.symbol[index + (code - first)] as i32 }
+        index += count
+        first = (first + count) << 1
+        code <<= 1
     }
     return -1
 }
 
-// The base values and extra bit counts of the length codes 257..285 and the distance codes 0..29 (RFC 1951 3.2.5).
+// The base values and extra bit counts of the length codes 257..285 and the distance codes 0..29 (section 3.2.5).
 global LEN_BASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
 global LEN_EXTRA: [u16; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
 global DIST_BASE: [u16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
 global DIST_EXTRA: [u16; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
 
-/// Decodes the literal/length and distance codes of one block into `out` (length `olen` so far, capacity `cap`).
-/// Returns the new output length, or -1 on error.
-fn codes(b: *Bits, lit: *Huff, dist: *Huff, out: *u8, olen: usize, cap: usize) -> isize {
-    local o: usize = olen
+/// Makes room for `extra` more bytes in `out` without passing `limit`; false when the limit would be passed.
+fn room(out: *String, extra: usize, limit: usize) -> bool {
+    if extra > limit - out.len { return false }
+    out.reserve(out.len + extra)
+    return true
+}
+
+/// Decodes the literal/length and distance codes of one block, appending to `out`. `base` is where this stream began in `out`: a
+/// distance may not reach before it.
+fn codes(b: *Bits, lit: *Huff, dist: *Huff, out: *String, base: usize, limit: usize) -> i32 {
     while true {
-        local sym: i32 = decodeSym(b, lit)
-        if sym < 0 { return -1 }
+        local sym: i32 = symbol(b, lit)
+        if sym < 0 { return b.pos >= b.n ? STATUS_TRUNCATED : STATUS_INVALID }
         if sym < 256 {
-            if o >= cap { return -1 }
-            out[o] = sym as u8
-            o = o + 1
+            if !room(out, 1, limit) { return STATUS_LIMIT }
+            out.ptr[out.len] = sym as u8
+            out.len++
         } else if sym == 256 {
-            return o as isize
+            return STATUS_OK
         } else {
             local li: i32 = sym - 257
-            if li >= 29 { return -1 }
-            local extra: i32 = getBits(b, LEN_EXTRA[li as usize] as u32)
-            if extra < 0 { return -1 }
-            local length: usize = (LEN_BASE[li as usize] as usize) + (extra as usize)
-            local ds: i32 = decodeSym(b, dist)
-            if ds < 0 || ds >= 30 { return -1 }
-            local dx: i32 = getBits(b, DIST_EXTRA[ds as usize] as u32)
-            if dx < 0 { return -1 }
-            local d: usize = (DIST_BASE[ds as usize] as usize) + (dx as usize)
-            if d > o { return -1 }
-            if o + length > cap { return -1 }
-            local k: usize = 0
-            while k < length {
-                out[o + k] = out[o + k - d]
-                k = k + 1
-            }
-            o = o + length
+            if li >= 29 { return STATUS_INVALID }
+            local extra: i32 = bits(b, LEN_EXTRA[li] as u32)
+            if extra < 0 { return STATUS_TRUNCATED }
+            local length: usize = (LEN_BASE[li] as usize) + (extra as usize)
+            local ds: i32 = symbol(b, dist)
+            if ds < 0 || ds >= 30 { return b.pos >= b.n ? STATUS_TRUNCATED : STATUS_INVALID }
+            local dx: i32 = bits(b, DIST_EXTRA[ds] as u32)
+            if dx < 0 { return STATUS_TRUNCATED }
+            local d: usize = (DIST_BASE[ds] as usize) + (dx as usize)
+            if d > out.len - base { return STATUS_INVALID }
+            if !room(out, length, limit) { return STATUS_LIMIT }
+            // The copy may overlap itself (a distance shorter than the length repeats a pattern), so it goes byte by byte.
+            local o: usize = out.len
+            for k in 0..length { out.ptr[o + k] = out.ptr[o + k - d] }
+            out.len += length
         }
     }
-    return -1
+    return STATUS_INVALID
 }
 
-/// Inflates one raw DEFLATE stream from the bit reader `b` into `out`; returns the output length or -1 on error.
-/// Writes the bit reader position back through `b`.
-fn inflateRaw(b: *Bits, out: *u8, cap: usize) -> isize {
-    local olen: usize = 0
+/// Reads the code lengths of a dynamic block (section 3.2.7) and builds its two codes.
+fn dynamic(b: *Bits, lit: *Huff, dist: *Huff) -> i32 {
+    local nlen: i32 = bits(b, 5)
+    local ndist: i32 = bits(b, 5)
+    local ncode: i32 = bits(b, 4)
+    if nlen < 0 || ndist < 0 || ncode < 0 { return STATUS_TRUNCATED }
+    nlen += 257
+    ndist += 1
+    ncode += 4
+    if nlen > 286 || ndist > 30 { return STATUS_INVALID }
+    local order: [u16; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+    local cl: [u16; 19]
+    for i in 0..19 { cl[i] = 0 }
+    for i in 0..ncode as usize {
+        local v: i32 = bits(b, 3)
+        if v < 0 { return STATUS_TRUNCATED }
+        cl[order[i]] = v as u16
+    }
+    local clh: Huff
+    if !build(&clh, &cl[0], 19) { return STATUS_INVALID }
+    local lens: [u16; 320]
+    local idx: usize = 0
+    local total: usize = (nlen + ndist) as usize
+    while idx < total {
+        local sym: i32 = symbol(b, &clh)
+        if sym < 0 { return b.pos >= b.n ? STATUS_TRUNCATED : STATUS_INVALID }
+        if sym < 16 {
+            lens[idx] = sym as u16
+            idx++
+            continue
+        }
+        local rep: i32 = 0
+        local val: u16 = 0
+        if sym == 16 {
+            if idx == 0 { return STATUS_INVALID }
+            val = lens[idx - 1]
+            rep = 3 + bits(b, 2)
+        } else if sym == 17 {
+            rep = 3 + bits(b, 3)
+        } else {
+            rep = 11 + bits(b, 7)
+        }
+        if rep < 3 { return STATUS_TRUNCATED }
+        if idx + (rep as usize) > total { return STATUS_INVALID }
+        for k in 0..rep as usize { lens[idx + k] = val }
+        idx += rep as usize
+    }
+    if lens[256] == 0 { return STATUS_INVALID }          // a block must be able to end
+    if !build(lit, &lens[0], nlen as usize) { return STATUS_INVALID }
+    local dl: [u16; 32]
+    for i in 0..ndist as usize { dl[i] = lens[(nlen as usize) + i] }
+    if !build(dist, &dl[0], ndist as usize) { return STATUS_INVALID }
+    return STATUS_OK
+}
+
+/// The fixed codes of section 3.2.6.
+fn fixed(lit: *Huff, dist: *Huff) {
+    local lens: [u16; 288]
+    for i in 0..288 { lens[i] = i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8 }
+    build(lit, &lens[0], 288)
+    local dl: [u16; 30]
+    for i in 0..30 { dl[i] = 5 }
+    build(dist, &dl[0], 30)
+}
+
+/// Inflates the raw DEFLATE stream that starts at byte `start` of `data`, appending to `out` (which may already hold other output; the
+/// total never passes `limit`). Stores in `end` the offset of the first byte after the stream. Returns a `STATUS_*` code.
+export fn inflateAt(data: *String, start: usize, out: *String, limit: usize, end: *usize) -> i32 {
+    local b: Bits
+    b.src = data.ptr
+    b.n = data.len
+    b.pos = start
+    b.acc = 0
+    b.cnt = 0
+    local base: usize = out.len
     local last: i32 = 0
     while last == 0 {
-        last = getBits(b, 1)
-        if last < 0 { return -1 }
-        local btype: i32 = getBits(b, 2)
-        if btype < 0 { return -1 }
-        if btype == 0 {
-            // stored: skip to a byte boundary, then LEN and NLEN
-            b.buf = 0
+        last = bits(&b, 1)
+        local kind: i32 = bits(&b, 2)
+        if last < 0 || kind < 0 { return STATUS_TRUNCATED }
+        if kind == 0 {
+            // Stored: drop the bits up to the byte boundary, then LEN and its complement NLEN (3.2.4).
+            b.pos -= (b.cnt / 8) as usize
+            b.acc = 0
             b.cnt = 0
-            if b.pos + 4 > b.n { return -1 }
+            if b.pos + 4 > b.n { return STATUS_TRUNCATED }
             local len: usize = (b.src[b.pos] as usize) | ((b.src[b.pos + 1] as usize) << 8)
             local nlen: usize = (b.src[b.pos + 2] as usize) | ((b.src[b.pos + 3] as usize) << 8)
-            if len != (nlen ^ 0xffff) { return -1 }
-            b.pos = b.pos + 4
-            if b.pos + len > b.n { return -1 }
-            if olen + len > cap { return -1 }
-            local k: usize = 0
-            while k < len {
-                out[olen + k] = b.src[b.pos + k]
-                k = k + 1
-            }
-            b.pos = b.pos + len
-            olen = olen + len
-        } else if btype == 1 {
-            local lit: Huff
-            local dist: Huff
-            local lens: [u16; 288]
-            local i: usize = 0
-            while i < 288 {
-                if i < 144 {
-                    lens[i] = 8
-                } else if i < 256 {
-                    lens[i] = 9
-                } else if i < 280 {
-                    lens[i] = 7
-                } else {
-                    lens[i] = 8
-                }
-                i = i + 1
-            }
-            buildHuff(&lit, &lens[0], 288)
-            local dl: [u16; 30]
-            i = 0
-            while i < 30 {
-                dl[i] = 5
-                i = i + 1
-            }
-            buildHuff(&dist, &dl[0], 30)
-            local r: isize = codes(b, &lit, &dist, out, olen, cap)
-            if r < 0 { return -1 }
-            olen = r as usize
-        } else if btype == 2 {
-            local nlen: i32 = getBits(b, 5)
-            local ndist: i32 = getBits(b, 5)
-            local ncode: i32 = getBits(b, 4)
-            if nlen < 0 || ndist < 0 || ncode < 0 { return -1 }
-            nlen = nlen + 257
-            ndist = ndist + 1
-            ncode = ncode + 4
-            if nlen > 286 || ndist > 30 { return -1 }
-            local order: [u16; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
-            local cl: [u16; 19]
-            local i: usize = 0
-            while i < 19 {
-                cl[i] = 0
-                i = i + 1
-            }
-            i = 0
-            while (i as i32) < ncode {
-                local v: i32 = getBits(b, 3)
-                if v < 0 { return -1 }
-                cl[order[i]] = v as u16
-                i = i + 1
-            }
-            local clh: Huff
-            if !buildHuff(&clh, &cl[0], 19) { return -1 }
-            local lens: [u16; 320]
-            local idx: usize = 0
-            local total: usize = (nlen + ndist) as usize
-            while idx < total {
-                local sym: i32 = decodeSym(b, &clh)
-                if sym < 0 { return -1 }
-                if sym < 16 {
-                    lens[idx] = sym as u16
-                    idx = idx + 1
-                } else {
-                    local rep: i32 = 0
-                    local val: u16 = 0
-                    if sym == 16 {
-                        if idx == 0 { return -1 }
-                        val = lens[idx - 1]
-                        rep = 3 + getBits(b, 2)
-                    } else if sym == 17 {
-                        rep = 3 + getBits(b, 3)
-                    } else {
-                        rep = 11 + getBits(b, 7)
-                    }
-                    if rep < 0 { return -1 }
-                    if idx + (rep as usize) > total { return -1 }
-                    local k: i32 = 0
-                    while k < rep {
-                        lens[idx] = val
-                        idx = idx + 1
-                        k = k + 1
-                    }
-                }
-            }
-            local lit: Huff
-            local dist: Huff
-            if !buildHuff(&lit, &lens[0], nlen as usize) { return -1 }
-            local dl: [u16; 32]
-            i = 0
-            while i < (ndist as usize) {
-                dl[i] = lens[(nlen as usize) + i]
-                i = i + 1
-            }
-            if !buildHuff(&dist, &dl[0], ndist as usize) { return -1 }
-            local r: isize = codes(b, &lit, &dist, out, olen, cap)
-            if r < 0 { return -1 }
-            olen = r as usize
+            if len != (nlen ^ 0xffff) { return STATUS_INVALID }
+            b.pos += 4
+            if b.pos + len > b.n { return STATUS_TRUNCATED }
+            if !room(out, len, limit) { return STATUS_LIMIT }
+            if len > 0 { memcpy(&out.ptr[out.len] as *void, &b.src[b.pos] as *void, len) }
+            out.len += len
+            b.pos += len
+        } else if kind == 3 {
+            return STATUS_INVALID
         } else {
-            return -1
+            local lit: Huff
+            local dist: Huff
+            if kind == 1 {
+                fixed(&lit, &dist)
+            } else {
+                local s: i32 = dynamic(&b, &lit, &dist)
+                if s != STATUS_OK { return s }
+            }
+            local s: i32 = codes(&b, &lit, &dist, out, base, limit)
+            if s != STATUS_OK { return s }
         }
     }
-    return olen as isize
+    // Whole bytes the reader loaded but did not use belong to what follows the stream (a gzip trailer, the next member).
+    *end = b.pos - (b.cnt / 8) as usize
+    if out.cap > 0 { out.ptr[out.len] = 0 }
+    return STATUS_OK
 }
 
-/// Inflates a raw DEFLATE stream of `n` bytes at `src` into `out` (`cap` bytes). Returns the output length, or -1 for an
-/// invalid stream or an output that does not fit.
-export fn inflate(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
-    local b: Bits
-    b.src = src
-    b.n = n
-    b.pos = 0
-    b.buf = 0
-    b.cnt = 0
-    return inflateRaw(&b, out, cap)
-}
-
-/// Decompresses a gzip member (RFC 1952): checks the header (ID1, ID2, method 8), skips the optional fields, inflates, and
-/// checks CRC-32 and ISIZE of the trailer. Returns the output length or -1.
-export fn gunzip(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
-    if n < 18 { return -1 }
-    if src[0] != 0x1f || src[1] != 0x8b || src[2] != 8 { return -1 }
-    local flags: u8 = src[3]
-    local pos: usize = 10
-    if (flags & 4) != 0 {
-        if pos + 2 > n { return -1 }
-        pos = pos + 2 + ((src[pos] as usize) | ((src[pos + 1] as usize) << 8))
+/// Decompresses a raw DEFLATE stream. The output may not exceed `limit` bytes. Bytes after the end of the stream are ignored.
+export fn inflate(data: *String, limit: usize) -> Result<String, CompressError> {
+    local out: String = String()
+    local end: usize = 0
+    local s: i32 = inflateAt(data, 0, &out, limit, &end)
+    if s != STATUS_OK {
+        local e: Result<String, CompressError> = Result.Err(failure(s))
+        return e
     }
-    if (flags & 8) != 0 {
-        while pos < n && src[pos] != 0 { pos = pos + 1 }
-        pos = pos + 1
-    }
-    if (flags & 16) != 0 {
-        while pos < n && src[pos] != 0 { pos = pos + 1 }
-        pos = pos + 1
-    }
-    if (flags & 2) != 0 { pos = pos + 2 }
-    if pos + 8 > n { return -1 }
-    local b: Bits
-    b.src = src
-    b.n = n - 8
-    b.pos = pos
-    b.buf = 0
-    b.cnt = 0
-    local len: isize = inflateRaw(&b, out, cap)
-    if len < 0 { return -1 }
-    local t: usize = n - 8
-    local crc: u32 = (src[t] as u32) | ((src[t + 1] as u32) << 8) | ((src[t + 2] as u32) << 16) | ((src[t + 3] as u32) << 24)
-    local isize32: u32 = (src[t + 4] as u32) | ((src[t + 5] as u32) << 8) | ((src[t + 6] as u32) << 16) | ((src[t + 7] as u32) << 24)
-    if crc32(out, len as usize) != crc { return -1 }
-    if (len as u32) != isize32 { return -1 }
-    return len
-}
-
-/// Decompresses a zlib stream (RFC 1950): the two-byte header (method 8, window up to 32 KiB, FCHECK), a DEFLATE body, and
-/// the Adler-32 of the output. Returns the output length or -1. A preset dictionary (FDICT) is not supported.
-export fn zlibDecompress(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
-    if n < 6 { return -1 }
-    local cmf: u32 = src[0] as u32
-    local flg: u32 = src[1] as u32
-    if (cmf & 0x0f) != 8 || (cmf >> 4) > 7 { return -1 }
-    if ((cmf << 8) | flg) % 31 != 0 { return -1 }
-    if (flg & 0x20) != 0 { return -1 }
-    local b: Bits
-    b.src = src
-    b.n = n - 4
-    b.pos = 2
-    b.buf = 0
-    b.cnt = 0
-    local len: isize = inflateRaw(&b, out, cap)
-    if len < 0 { return -1 }
-    local t: usize = n - 4
-    local want: u32 = ((src[t] as u32) << 24) | ((src[t + 1] as u32) << 16) | ((src[t + 2] as u32) << 8) | (src[t + 3] as u32)
-    if adler32(out, len as usize) != want { return -1 }
-    return len
+    local ok: Result<String, CompressError> = Result.Ok(out)
+    return ok
 }

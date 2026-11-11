@@ -1,0 +1,75 @@
+// Unit: os/args — splitting a Windows command line (pure text, so it runs on every OS) and copying argv.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq, expectEqUInt, expectEqStr
+from "std/os/args" import parseCommandLine, fromArgv
+
+fn plain(t: *T) {
+    local a = parseCommandLine("prog.exe one  two\tthree")
+    expectEqUInt(t, a.length(), 4)
+    expectEqStr(t, a.get(0).asStr(), "prog.exe")
+    expectEqStr(t, a.get(3).asStr(), "three")
+}
+
+fn blank(t: *T) {
+    expectEqUInt(t, parseCommandLine("").length(), 0)
+    expectEqUInt(t, parseCommandLine("  \t ").length(), 0)
+}
+
+fn quotedBlanks(t: *T) {
+    local a = parseCommandLine("\"C:\\Program Files\\x.exe\" \"a b\" c")
+    expectEqUInt(t, a.length(), 3)
+    expectEqStr(t, a.get(0).asStr(), "C:\\Program Files\\x.exe")
+    expectEqStr(t, a.get(1).asStr(), "a b")
+}
+
+fn emptyArgument(t: *T) {
+    local a = parseCommandLine("p \"\" x")
+    expectEqUInt(t, a.length(), 3)
+    expectEqUInt(t, a.get(1).length(), 0)
+}
+
+// Microsoft's examples: 2n backslashes + quote -> n backslashes and a toggle; 2n+1 -> n backslashes and a literal quote.
+fn backslashes(t: *T) {
+    local a = parseCommandLine("p \"abc\" d e")
+    expectEqStr(t, a.get(1).asStr(), "abc")
+    local b = parseCommandLine("p a\\\\\\\"b c d")
+    expectEqStr(t, b.get(1).asStr(), "a\\\"b")
+    local c = parseCommandLine("p \"a\\\\b c\" d")
+    expectEqStr(t, c.get(1).asStr(), "a\\\\b c")
+    local d = parseCommandLine("p \"a\\\\\\\\\" d")
+    expectEqStr(t, d.get(1).asStr(), "a\\\\")
+    expectEqUInt(t, d.length(), 3)
+}
+
+fn doubledQuote(t: *T) {
+    local a = parseCommandLine("p \"a \"\"b\"\" c\" d")
+    expectEqStr(t, a.get(1).asStr(), "a \"b\" c")
+    expectEqUInt(t, a.length(), 3)
+}
+
+// The program path has no escapes: a backslash before the closing quote stays.
+fn programPath(t: *T) {
+    local a = parseCommandLine("\"C:\\dir\\\" x")
+    expectEqStr(t, a.get(0).asStr(), "C:\\dir\\")
+    expectEqStr(t, a.get(1).asStr(), "x")
+}
+
+fn argvCopy(t: *T) {
+    local items: [*u8; 3] = ["prog", "-v", "file"]
+    local a = fromArgv(3, &items[0])
+    expectEqUInt(t, a.length(), 3)
+    expectEqStr(t, a.get(2).asStr(), "file")
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "plain", plain)
+    test(&s, "blank", blank)
+    test(&s, "quoted blanks", quotedBlanks)
+    test(&s, "empty argument", emptyArgument)
+    test(&s, "backslashes", backslashes)
+    test(&s, "doubled quote", doubledQuote)
+    test(&s, "program path", programPath)
+    test(&s, "argv copy", argvCopy)
+    return suiteRun(&s)
+}

@@ -1,0 +1,72 @@
+// std/os/args: the program's command-line arguments as a `Vec<String>`.
+//
+// An executable receives them through `@entry fn main(argc: i32, argv: **u8)` on every OS: Linux and macOS pass the vector
+// itself, Windows passes one command-line string that the registered `args` role (runtime/args.xl) splits with
+// `parseCommandLine`. `fromArgv` turns the raw pair into Strings; `argv[0]` is the program path.
+from "../str/string" import String
+from "../str/str" import fromC
+from "../collections/vec" import Vec
+
+/// The `argc` arguments behind `argv` (C strings), each copied into a String.
+export fn fromArgv(argc: i32, argv: **u8) -> Vec<String> {
+    local out: Vec<String> = Vec<String>()
+    for i in 0..argc {
+        out.push(String(fromC(argv[i])))
+    }
+    return out
+}
+
+fn isBlank(c: u8) -> bool {
+    return c == 32 || c == 9
+}
+
+/// Splits a Windows command line the way the C runtime does (UCRT, "Parsing C++ command-line arguments",
+/// https://learn.microsoft.com/cpp/c-language/parsing-c-command-line-arguments):
+/// - arguments are separated by spaces and tabs outside double quotes; a quoted section keeps its blanks;
+/// - 2n backslashes before a `"` give n backslashes and the quote toggles quoting; 2n+1 give n backslashes and a literal `"`;
+///   backslashes not followed by a `"` are literal;
+/// - inside quotes, `""` is a literal `"` and quoting continues;
+/// - the first argument (the program path) has no escapes: quotes only toggle quoting.
+/// An empty or blank line gives no arguments; `""` gives one empty argument.
+export fn parseCommandLine(line: str) -> Vec<String> {
+    local out: Vec<String> = Vec<String>()
+    local i: usize = 0
+    local first: bool = true
+    while true {
+        while i < line.len && isBlank(line[i]) { i++ }
+        if i >= line.len { break }
+        local arg: String = String()
+        local quoted: bool = false
+        while i < line.len && (quoted || !isBlank(line[i])) {
+            local c: u8 = line[i]
+            if c == 92 && !first {
+                local slashes: usize = 0
+                while i < line.len && line[i] == 92 {
+                    slashes++
+                    i++
+                }
+                local quote: bool = i < line.len && line[i] == 34
+                for k in 0..(quote ? slashes / 2 : slashes) { arg.push(92) }
+                // An odd run escapes the quote; an even one leaves it to toggle on the next turn.
+                if quote && slashes % 2 == 1 {
+                    arg.push(34)
+                    i++
+                }
+            } else if c == 34 {
+                if quoted && !first && i + 1 < line.len && line[i + 1] == 34 {
+                    arg.push(34)
+                    i += 2
+                } else {
+                    quoted = !quoted
+                    i++
+                }
+            } else {
+                arg.push(c)
+                i++
+            }
+        }
+        out.push(arg)
+        first = false
+    }
+    return out
+}

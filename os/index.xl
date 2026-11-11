@@ -1,3 +1,5 @@
-// std/os: the operating system as the program sees it. `process` starts and controls child processes, `env` reads the environment.
+// std/os: the operating system as the program sees it. `process` starts and controls child processes, `env` reads the environment,
+// `args` turns the entry's `argc`/`argv` into Strings (and splits a Windows command line).
 export * as process from "process"
 export * as env from "env"
+export * as args from "args"

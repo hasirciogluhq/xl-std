@@ -1,0 +1,163 @@
+// std/io/files: creating, removing and renaming directories and files, the current directory, and the terminal check.
+// Paths are Strings (UTF-8; `/` works on every OS, Windows also takes `\`). The raw calls are in std/sys: Linux syscalls (xlang-docs
+// std/syscalls), libSystem on macOS, kernel32 on Windows; a function returns false (or an empty String) on any failure.
+// Imported as the namespace `files`: `files.makeDirAll(&path)`.
+from "../sys" import sysMkdir, sysRmdir, sysRename, sysGetcwd, sysIsTerminal, sysUnlink
+from "../str/string" import String, split, replaceAll
+from "../collections/vec" import Vec
+from "stat" import fsStat, FILE_MODE_TYPE, FILE_MODE_DIR
+from "dir" import fsListDir, DirEntry
+
+#if os == "windows"
+define SEPARATORS = "/\\"
+#else
+define SEPARATORS = "/"
+#endif
+
+/// True when `path` exists (a file, a directory, or whatever the OS reports metadata for).
+export fn exists(path: *String) -> bool {
+    return fsStat(path.cstr()).ok
+}
+
+/// True when `path` is a directory (symbolic links are followed).
+export fn isDir(path: *String) -> bool {
+    local st = fsStat(path.cstr())
+    return st.ok && (st.mode & FILE_MODE_TYPE) == FILE_MODE_DIR
+}
+
+/// Creates one directory (mode 0755 before the umask on Unix); false when it exists or its parent is missing.
+export fn makeDir(path: *String) -> bool {
+    return path.length() > 0 && sysMkdir(path.cstr()) == 0
+}
+
+/// Creates `path` and every missing parent (`mkdir -p`); true when the directory exists afterwards, also when it already did.
+export fn makeDirAll(path: *String) -> bool {
+    local text: str = path.asStr()
+    for i in 1..text.len + 1 {
+        // A prefix ends at a separator, and the whole path is the last prefix.
+        local atEnd: bool = i == text.len
+        if !atEnd && !isSeparator(text[i]) { continue }
+        if i < text.len && isSeparator(text[i - 1]) { continue }
+        local prefix: String = String(text).slice(0, i)
+        if prefix.length() == 2 && prefix.at(1) == 58 { continue }      // a Windows drive, `C:`
+        if !isDir(&prefix) && !makeDir(&prefix) && !isDir(&prefix) { return false }
+    }
+    return isDir(path)
+}
+
+fn isSeparator(c: u8) -> bool {
+    return c == 47 || (SEPARATORS.len == 2 && c == 92)
+}
+
+/// Removes an empty directory.
+export fn removeDir(path: *String) -> bool {
+    return sysRmdir(path.cstr()) == 0
+}
+
+/// Removes a file.
+export fn removeFile(path: *String) -> bool {
+    return sysUnlink(path.cstr()) == 0
+}
+
+/// Removes `path` and everything under it (`rm -rf`); true when it is gone afterwards, also when it never existed. Symbolic links are
+/// not followed into: a link is removed as a file.
+export fn removeAll(path: *String) -> bool {
+    if !exists(path) { return true }
+    if !isDir(path) { return removeFile(path) }
+    // Entries are removed as they are listed, so each round lists the directory again until it is empty or nothing was removed.
+    local batch: Vec<DirEntry> = Vec<DirEntry>()
+    batch.reserve(64)
+    while true {
+        local n: usize = fsListDir(path.cstr(), batch.data, 64)
+        if n == 0 { break }
+        local removed: usize = 0
+        for i in 0..n {
+            local child: String = String(path.asStr())
+            child.push(47)
+            child.append(fromEntry(&batch.data[i]).asStr())
+            if removeAll(&child) { removed++ }
+        }
+        if removed == 0 { return false }
+    }
+    return removeDir(path)
+}
+
+/// The name of a listing entry as a String.
+fn fromEntry(e: *DirEntry) -> String {
+    local name: String = String()
+    local k: usize = 0
+    while e.name[k] != 0 {
+        name.push(e.name[k])
+        k++
+    }
+    return name
+}
+
+/// Renames `src` to `dst`, replacing an existing file (or empty directory on Unix) at `dst`; both on one file system.
+export fn rename(src: *String, dst: *String) -> bool {
+    return sysRename(src.cstr(), dst.cstr()) == 0
+}
+
+/// The current working directory, or an empty String when it cannot be read.
+export fn currentDir() -> String {
+    local out: String = String()
+    local cap: usize = 4096
+    out.reserve(cap)
+    local n: i64 = sysGetcwd(out.ptr, cap)
+    if n > 0 { out.len = n as usize }
+    return out
+}
+
+fn isAbsolute(p: str) -> bool {
+    if p.len > 0 && isSeparator(p[0]) { return true }
+#if os == "windows"
+    if p.len >= 2 && p[1] == 58 { return true }          // `C:`
+#endif
+    return false
+}
+
+/// `path` made absolute against the current directory with `.` and `..` segments folded away and `/` as the separator. The result is
+/// lexical: symbolic links are not resolved, so `a/link/..` is `a` even when the link points elsewhere. Empty when the current
+/// directory cannot be read.
+export fn absolute(path: *String) -> String {
+    local full: String = String()
+    if isAbsolute(path.asStr()) {
+        full.append(path)
+    } else {
+        local cwd: String = currentDir()
+        if cwd.length() == 0 { return full }
+        full.append(&cwd)
+        full.push(47)
+        full.append(path)
+    }
+    local unified: String = replaceAll(full.asStr(), "\\", "/")
+    local parts: Vec<String> = split(unified.asStr(), "/")
+    local kept: Vec<String> = Vec<String>()
+    local roots: usize = 0
+    for i in 0..parts.length() {
+        local part: *String = parts.get(i)
+        if i == 0 && (part.length() == 0 || part.endsWith(":")) {
+            kept.push(part.clone())
+            roots = 1
+        } else if part.length() == 0 || part.equals(".") {
+            continue
+        } else if part.equals("..") {
+            if kept.length() > roots { kept.pop() }
+        } else {
+            kept.push(part.clone())
+        }
+    }
+    local out: String = String()
+    for i in 0..kept.length() {
+        if i > 0 { out.push(47) }
+        out.append(kept.get(i))
+    }
+    // The root of a Unix path is the empty first part: "/" alone, or "/a/b" once joined.
+    if kept.length() == 1 && kept.get(0).length() == 0 { out.push(47) }
+    return out
+}
+
+/// True when the descriptor (0 stdin, 1 stdout, 2 stderr) is a terminal; false for a file or a pipe.
+export fn isTerminal(fd: i32) -> bool {
+    return sysIsTerminal(fd)
+}

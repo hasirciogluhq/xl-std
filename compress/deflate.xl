@@ -1,224 +1,513 @@
-// std/compress/deflate: DEFLATE compression (RFC 1951, https://www.rfc-editor.org/rfc/rfc1951), with the zlib (RFC 1950,
-// https://www.rfc-editor.org/rfc/rfc1950) and gzip (RFC 1952, https://www.rfc-editor.org/rfc/rfc1952) wrappers. Two block types are
-// written: stored (section 3.2.4, BTYPE 00, up to 65535 bytes per block) and fixed Huffman (section 3.2.6, BTYPE 01, with the fixed
-// code lengths of section 3.2.6 and the length and distance code tables of section 3.2.5). The fixed-Huffman block uses a greedy
-// LZ77 matcher with a 3-byte hash and a 32 KiB window (section 2); it is not the entropy-optimal encoder of zlib, so the output is
-// valid but usually larger than zlib's. Dynamic Huffman blocks are not written (they are read by std/compress/inflate).
-// Bits are packed least significant first (section 3.1.1); Huffman codes are sent most significant bit first (section 3.1.1).
-// Verified with gzip -t, perl's Compress::Zlib, and the inflate module of this library.
-from "../checksum/crc" import crc32
-from "../checksum/adler" import adler32
+// std/compress/deflate: DEFLATE compression (RFC 1951, https://www.rfc-editor.org/rfc/rfc1951).
+//
+// The encoder is LZ77 plus Huffman coding, the design of zlib:
+// - matches are found with 3-byte hash chains over a 32 KiB window (section 2); `level` 1..9 sets how many chain links are followed and
+//   whether a match is compared with the one starting a byte later (lazy matching, levels 4 and up), the table of zlib's `deflate.c`;
+// - the symbols of up to 32768 literals and matches form a block, written with whichever of the three block types is smallest for it:
+//   stored (3.2.4), fixed Huffman (3.2.6) or dynamic Huffman (3.2.7) with code lengths limited to 15 bits (7 for the code-length code);
+// - `level` 0 writes stored blocks only.
+// Bits are packed least significant first (3.1.1); Huffman codes are sent most significant bit first, so each code is reversed once
+// when it is assigned. The output is deterministic for a given input and level. Verified against `gzip -t` and this module's inflate.
+from "../str/string" import String
 from "../mem/mem" import currentAllocator
 
-global DEF_LEN_BASE: [u32; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
-global DEF_LEN_EXTRA: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
-global DEF_DIST_BASE: [u32; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
-global DEF_DIST_EXTRA: [u32; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+define WINDOW = 32768
+define MASK = 32767
+define BLOCK_SYMBOLS = 32768
+define HASH_BITS = 15
+define MIN_MATCH = 3
+define MAX_MATCH = 258
+define TOO_FAR = 4096            // a 3-byte match farther than this costs more than three literals
 
-/// The output state of the bit writer: `ok` is false once the output would exceed `cap`.
-export struct BitOut {
-    out: *u8
-    cap: usize
-    len: usize
+global LEN_BASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+global LEN_EXTRA: [u8; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+global DIST_BASE: [u16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+global DIST_EXTRA: [u8; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+global CL_ORDER: [u8; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+
+// ---- the bit writer ----------------------------------------------------------------------------
+
+struct BitWriter {
+    out: *String
     acc: u64
-    nacc: usize
-    ok: bool
+    n: u32
 }
 
-fn bitsByte(w: *BitOut, b: u8) {
-    if w.len >= w.cap {
-        w.ok = false
-        return
-    }
-    w.out[w.len] = b
-    w.len = w.len + 1
-}
-
-/// Writes the low `n` bits of `v`, least significant first.
-fn bitsPut(w: *BitOut, v: u64, n: usize) {
-    w.acc = w.acc | (v << (w.nacc as u64))
-    w.nacc = w.nacc + n
-    while w.nacc >= 8 {
-        bitsByte(w, (w.acc & 0xff) as u8)
-        w.acc = w.acc >> 8
-        w.nacc = w.nacc - 8
-    }
-}
-
-/// Writes a Huffman code of `len` bits, most significant bit first.
-fn codePut(w: *BitOut, code: u64, len: usize) {
-    local i: usize = len
-    while i > 0 {
-        i = i - 1
-        bitsPut(w, (code >> (i as u64)) & 1, 1)
+/// Writes the low `count` bits of `v`, least significant first.
+fn put(w: *BitWriter, v: u32, count: u32) {
+    w.acc |= (v as u64) << (w.n as u64)
+    w.n += count
+    while w.n >= 8 {
+        w.out.push((w.acc & 0xff) as u8)
+        w.acc >>= 8
+        w.n -= 8
     }
 }
 
 /// Pads with zero bits to a byte boundary.
-fn bitsAlign(w: *BitOut) {
-    if w.nacc > 0 {
-        bitsByte(w, (w.acc & 0xff) as u8)
+fn align(w: *BitWriter) {
+    if w.n > 0 {
+        w.out.push((w.acc & 0xff) as u8)
         w.acc = 0
-        w.nacc = 0
+        w.n = 0
     }
 }
 
-/// A literal or length symbol (0 to 287) in the fixed code of section 3.2.6.
-fn emitSymbol(w: *BitOut, sym: u32) {
-    if sym < 144 {
-        codePut(w, (0x30 + sym) as u64, 8)
-    } else if sym < 256 {
-        codePut(w, (0x190 + sym - 144) as u64, 9)
-    } else if sym < 280 {
-        codePut(w, (sym - 256) as u64, 7)
-    } else {
-        codePut(w, (0xc0 + sym - 280) as u64, 8)
+// ---- Huffman codes -----------------------------------------------------------------------------
+
+/// Code lengths for the symbols with a non-zero frequency in `freq[0..n)`, none longer than `limit` (section 3.2.2 allows 15, and 7 for the
+/// code-length code). The tree is built with the two-queue method over the symbols sorted by frequency; when it is deeper than `limit`
+/// the lengths are clamped and the Kraft sum is restored by lengthening the shortest codes that can take it. Unused symbols get 0.
+fn lengths(freq: *u32, n: usize, limit: usize, lens: *u8) {
+    local sorted: [u16; 320]
+    local m: usize = 0
+    for i in 0..n {
+        lens[i] = 0
+        if freq[i] > 0 { sorted[m++] = i as u16 }
+    }
+    if m == 0 { return }
+    if m == 1 {
+        lens[sorted[0]] = 1
+        return
+    }
+    // Insertion sort by (frequency, symbol): at most 288 symbols, and the order must not depend on anything else.
+    for i in 1..m {
+        local s: u16 = sorted[i]
+        local j: usize = i
+        while j > 0 && (freq[sorted[j - 1]] > freq[s] || (freq[sorted[j - 1]] == freq[s] && sorted[j - 1] > s)) {
+            sorted[j] = sorted[j - 1]
+            j--
+        }
+        sorted[j] = s
+    }
+    // Leaves 0..m-1 in weight order, internal nodes m..2m-2 created in weight order.
+    local weight: [u64; 640]
+    local parent: [u16; 640]
+    for i in 0..m { weight[i] = freq[sorted[i]] as u64 }
+    local leaf: usize = 0
+    local node: usize = m
+    local made: usize = m
+    for created in 0..m - 1 {
+        local pair: [usize; 2]
+        for k in 0..2 {
+            if leaf < m && (node >= made || weight[leaf] <= weight[node]) {
+                pair[k] = leaf++
+            } else {
+                pair[k] = node++
+            }
+        }
+        weight[made] = weight[pair[0]] + weight[pair[1]]
+        parent[pair[0]] = made as u16
+        parent[pair[1]] = made as u16
+        made++
+    }
+    // Depths from the root (the last node) down, then the count of codes per length, clamped to `limit`.
+    local depth: [u16; 640]
+    depth[made - 1] = 0
+    local at: usize = made - 1
+    while at > 0 {
+        at--
+        depth[at] = depth[parent[at]] + 1
+    }
+    local count: [u32; 16]
+    for i in 0..16 { count[i] = 0 }
+    for i in 0..m { count[depth[i] > limit as u16 ? limit : depth[i] as usize]++ }
+    // The Kraft sum of the clamped lengths may exceed 1: lengthen codes until it does not (the repair of miniz and zlib).
+    local total: u64 = 0
+    for len in 1..limit + 1 { total += (count[len] as u64) << ((limit - len) as u64) }
+    while total > (1 << (limit as u64)) {
+        count[limit]--
+        local len: usize = limit - 1
+        while len > 0 && count[len] == 0 { len-- }
+        count[len]--
+        count[len + 1] += 2
+        total--
+    }
+    // The rarest symbols get the longest codes.
+    local next: usize = 0
+    local len: usize = limit
+    while len > 0 {
+        for k in 0..count[len] as usize { lens[sorted[next++]] = len as u8 }
+        len--
     }
 }
 
-/// A match of `len` bytes (3 to 258) at distance `dist` (1 to 32768).
-fn emitMatch(w: *BitOut, len: usize, dist: usize) {
-    local li: usize = 28
-    while (DEF_LEN_BASE[li] as usize) > len { li = li - 1 }
-    emitSymbol(w, (257 + li) as u32)
-    bitsPut(w, (len - (DEF_LEN_BASE[li] as usize)) as u64, DEF_LEN_EXTRA[li] as usize)
-    local di: usize = 29
-    while (DEF_DIST_BASE[di] as usize) > dist { di = di - 1 }
-    codePut(w, di as u64, 5)
-    bitsPut(w, (dist - (DEF_DIST_BASE[di] as usize)) as u64, DEF_DIST_EXTRA[di] as usize)
+/// The canonical codes (section 3.2.2) of `lens[0..n)`, each already bit-reversed for the least-significant-first writer.
+fn codesOf(lens: *u8, n: usize, codes: *u16) {
+    local count: [u32; 16]
+    for i in 0..16 { count[i] = 0 }
+    for i in 0..n { count[lens[i]]++ }
+    count[0] = 0
+    local next: [u32; 16]
+    local code: u32 = 0
+    for len in 1..16 {
+        code = (code + count[len - 1]) << 1
+        next[len] = code
+    }
+    for i in 0..n {
+        local len: u32 = lens[i] as u32
+        if len == 0 {
+            codes[i] = 0
+            continue
+        }
+        local c: u32 = next[len]++
+        local rev: u32 = 0
+        for k in 0..len { rev |= ((c >> k) & 1) << (len - 1 - k) }
+        codes[i] = rev as u16
+    }
+}
+
+// ---- the symbol buffer and block output --------------------------------------------------------
+
+/// A literal or a match: `dist` 0 means the literal byte `len`.
+struct Symbol {
+    len: u16
+    dist: u16
+}
+
+struct Encoder {
+    w: *BitWriter
+    syms: *Symbol
+    count: usize
+    litFreq: [u32; 288]
+    distFreq: [u32; 30]
+}
+
+/// The length code (0..28) of a match length 3..258.
+fn lengthCode(len: usize) -> usize {
+    local c: usize = 28
+    while (LEN_BASE[c] as usize) > len { c-- }
+    return c
+}
+
+/// The distance code (0..29) of a distance 1..32768.
+fn distanceCode(dist: usize) -> usize {
+    local c: usize = 29
+    while (DIST_BASE[c] as usize) > dist { c-- }
+    return c
+}
+
+/// Empties the symbol buffer and its frequency counts for the next block.
+fn reset(e: *Encoder) {
+    e.count = 0
+    for k in 0..288 { e.litFreq[k] = 0 }
+    for k in 0..30 { e.distFreq[k] = 0 }
+}
+
+fn addLiteral(e: *Encoder, b: u8) {
+    e.syms[e.count] = Symbol { len: b as u16, dist: 0 }
+    e.count++
+    e.litFreq[b]++
+}
+
+fn addMatch(e: *Encoder, len: usize, dist: usize) {
+    e.syms[e.count] = Symbol { len: len as u16, dist: dist as u16 }
+    e.count++
+    e.litFreq[257 + lengthCode(len)]++
+    e.distFreq[distanceCode(dist)]++
+}
+
+/// Writes the buffered symbols with the given codes, then the end-of-block symbol.
+fn writeSymbols(e: *Encoder, litLen: *u8, litCode: *u16, distLen: *u8, distCode: *u16) {
+    for i in 0..e.count {
+        local s: Symbol = e.syms[i]
+        if s.dist == 0 {
+            put(e.w, litCode[s.len] as u32, litLen[s.len] as u32)
+            continue
+        }
+        local lc: usize = lengthCode(s.len as usize)
+        put(e.w, litCode[257 + lc] as u32, litLen[257 + lc] as u32)
+        put(e.w, (s.len - LEN_BASE[lc]) as u32, LEN_EXTRA[lc] as u32)
+        local dc: usize = distanceCode(s.dist as usize)
+        put(e.w, distCode[dc] as u32, distLen[dc] as u32)
+        put(e.w, (s.dist - DIST_BASE[dc]) as u32, DIST_EXTRA[dc] as u32)
+    }
+    put(e.w, litCode[256] as u32, litLen[256] as u32)
+}
+
+/// The bits the buffered symbols take with the given code lengths (extra bits included, end-of-block included).
+fn symbolBits(e: *Encoder, litLen: *u8, distLen: *u8) -> u64 {
+    local bitsUsed: u64 = litLen[256] as u64
+    for i in 0..286 { bitsUsed += (e.litFreq[i] as u64) * (litLen[i] as u64) }
+    for i in 257..286 { bitsUsed += (e.litFreq[i] as u64) * (LEN_EXTRA[i - 257] as u64) }
+    for i in 0..30 { bitsUsed += (e.distFreq[i] as u64) * ((distLen[i] as u64) + (DIST_EXTRA[i] as u64)) }
+    return bitsUsed
+}
+
+/// The run-length form of the code lengths (section 3.2.7): symbols 0..15 are a length, 16 repeats the previous length 3..6 times, 17
+/// is 3..10 zeros and 18 is 11..138 zeros. `out` gets (symbol, extra-bit value) pairs; returns how many.
+fn runLength(lens: *u8, n: usize, sym: *u8, extra: *u8) -> usize {
+    local count: usize = 0
+    local i: usize = 0
+    while i < n {
+        local v: u8 = lens[i]
+        local run: usize = 1
+        while i + run < n && lens[i + run] == v { run++ }
+        local left: usize = run
+        if v == 0 {
+            while left >= 11 {
+                local take: usize = left > 138 ? 138 : left
+                sym[count] = 18
+                extra[count++] = (take - 11) as u8
+                left -= take
+            }
+            if left >= 3 {
+                sym[count] = 17
+                extra[count++] = (left - 3) as u8
+                left = 0
+            }
+        } else {
+            // One literal length first, then repeats of 3..6.
+            sym[count] = v
+            extra[count++] = 0
+            left--
+            while left >= 3 {
+                local take: usize = left > 6 ? 6 : left
+                sym[count] = 16
+                extra[count++] = (take - 3) as u8
+                left -= take
+            }
+        }
+        for k in 0..left {
+            sym[count] = v
+            extra[count++] = 0
+        }
+        i += run
+    }
+    return count
+}
+
+/// Writes the buffered symbols as one block, the smallest of stored, fixed and dynamic. `from..to` is the input range the symbols cover.
+fn flush(e: *Encoder, data: *String, from: usize, to: usize, final: bool, onlyStored: bool) {
+    local w: *BitWriter = e.w
+    e.litFreq[256] = 1
+    // Dynamic: code lengths from the frequencies, and the header that transmits them.
+    local litLen: [u8; 288]
+    local distLen: [u8; 30]
+    lengths(&e.litFreq[0], 286, 15, &litLen[0])
+    lengths(&e.distFreq[0], 30, 15, &distLen[0])
+    local nlit: usize = 286
+    while nlit > 257 && litLen[nlit - 1] == 0 { nlit-- }
+    local ndist: usize = 30
+    while ndist > 1 && distLen[ndist - 1] == 0 { ndist-- }
+    local all: [u8; 316]
+    for i in 0..nlit { all[i] = litLen[i] }
+    for i in 0..ndist { all[nlit + i] = distLen[i] }
+    local rsym: [u8; 316]
+    local rextra: [u8; 316]
+    local rn: usize = runLength(&all[0], nlit + ndist, &rsym[0], &rextra[0])
+    local clFreq: [u32; 19]
+    for i in 0..19 { clFreq[i] = 0 }
+    for i in 0..rn { clFreq[rsym[i]]++ }
+    local clLen: [u8; 19]
+    lengths(&clFreq[0], 19, 7, &clLen[0])
+    local ncl: usize = 19
+    while ncl > 4 && clLen[CL_ORDER[ncl - 1]] == 0 { ncl-- }
+    local header: u64 = 14 + 3 * (ncl as u64)
+    for i in 0..rn {
+        local extraBits: u64 = rsym[i] == 16 ? 2 : rsym[i] == 17 ? 3 : rsym[i] == 18 ? 7 : 0
+        header += (clLen[rsym[i]] as u64) + extraBits
+    }
+    local dynamicBits: u64 = 3 + header + symbolBits(e, &litLen[0], &distLen[0])
+    // Fixed: the codes of 3.2.6, with 5-bit distances.
+    local fixedLit: [u8; 288]
+    for i in 0..288 { fixedLit[i] = i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8 }
+    local fixedDist: [u8; 30]
+    for i in 0..30 { fixedDist[i] = 5 }
+    local fixedBits: u64 = 3 + symbolBits(e, &fixedLit[0], &fixedDist[0])
+    // Stored: 5 bytes of framing per 65535 bytes, plus the padding to a byte boundary (at most 7 bits).
+    local span: usize = to - from
+    local storedBits: u64 = ((span as u64) + 5 * (((span as u64) + 65534) / 65535 + (span == 0 ? 1 : 0))) * 8 + 7
+    if onlyStored || (storedBits <= fixedBits && storedBits <= dynamicBits) {
+        local pos: usize = from
+        while true {
+            local take: usize = to - pos > 65535 ? 65535 : to - pos
+            local last: bool = final && pos + take == to
+            put(w, last ? 1 : 0, 1)
+            put(w, 0, 2)
+            align(w)
+            put(w, take as u32, 16)
+            put(w, (~take & 0xffff) as u32, 16)
+            for k in 0..take { w.out.push(data.ptr[pos + k]) }
+            pos += take
+            if pos >= to { break }
+        }
+        return
+    }
+    put(w, final ? 1 : 0, 1)
+    local litCode: [u16; 288]
+    local distCode: [u16; 30]
+    if fixedBits <= dynamicBits {
+        put(w, 1, 2)
+        codesOf(&fixedLit[0], 288, &litCode[0])
+        codesOf(&fixedDist[0], 30, &distCode[0])
+        writeSymbols(e, &fixedLit[0], &litCode[0], &fixedDist[0], &distCode[0])
+        return
+    }
+    put(w, 2, 2)
+    put(w, (nlit - 257) as u32, 5)
+    put(w, (ndist - 1) as u32, 5)
+    put(w, (ncl - 4) as u32, 4)
+    for i in 0..ncl { put(w, clLen[CL_ORDER[i]] as u32, 3) }
+    local clCode: [u16; 19]
+    codesOf(&clLen[0], 19, &clCode[0])
+    for i in 0..rn {
+        local s: u8 = rsym[i]
+        put(w, clCode[s] as u32, clLen[s] as u32)
+        if s == 16 { put(w, rextra[i] as u32, 2) }
+        if s == 17 { put(w, rextra[i] as u32, 3) }
+        if s == 18 { put(w, rextra[i] as u32, 7) }
+    }
+    codesOf(&litLen[0], 288, &litCode[0])
+    codesOf(&distLen[0], 30, &distCode[0])
+    writeSymbols(e, &litLen[0], &litCode[0], &distLen[0], &distCode[0])
+}
+
+// ---- the match finder --------------------------------------------------------------------------
+
+/// The per-level search effort, from zlib's `configuration_table`: how far a match is "good enough" to stop looking, whether to
+/// compare with the next position, the length that ends the search, and the longest hash chain followed.
+struct Effort {
+    lazy: bool
+    nice: usize
+    chain: usize
+    lazyMax: usize
+}
+
+fn effortOf(level: i32) -> Effort {
+    switch level {
+        case 1 { return Effort { lazy: false, nice: 8, chain: 4, lazyMax: 0 } }
+        case 2 { return Effort { lazy: false, nice: 16, chain: 8, lazyMax: 0 } }
+        case 3 { return Effort { lazy: false, nice: 32, chain: 32, lazyMax: 0 } }
+        case 4 { return Effort { lazy: true, nice: 16, chain: 16, lazyMax: 4 } }
+        case 5 { return Effort { lazy: true, nice: 32, chain: 32, lazyMax: 16 } }
+        case 6 { return Effort { lazy: true, nice: 128, chain: 128, lazyMax: 16 } }
+        case 7 { return Effort { lazy: true, nice: 128, chain: 256, lazyMax: 32 } }
+        case 8 { return Effort { lazy: true, nice: 258, chain: 1024, lazyMax: 128 } }
+        default { return Effort { lazy: true, nice: 258, chain: 4096, lazyMax: 258 } }
+    }
+}
+
+struct Finder {
+    data: *u8
+    n: usize
+    head: *i32          // the newest position of each 3-byte hash, -1 when none
+    prev: *i32          // the previous position with the same hash, indexed by position & MASK
+    inserted: usize     // every position below this is in the table
+    effort: Effort
 }
 
 fn hash3(d: *u8, i: usize) -> usize {
-    return ((((d[i] as usize) << 10) ^ ((d[i + 1] as usize) << 5) ^ (d[i + 2] as usize))) & 0x7fff
+    local v: u32 = ((d[i] as u32) << 16) | ((d[i + 1] as u32) << 8) | (d[i + 2] as u32)
+    return ((v * 2654435761) >> (32 - HASH_BITS)) as usize
 }
 
-/// Writes the input as one fixed-Huffman block with greedy matches; `final` sets BFINAL.
-fn fixedBlock(w: *BitOut, src: *u8, n: usize, final: bool) {
-    if final { bitsPut(w, 1, 1) } else { bitsPut(w, 0, 1) }
-    bitsPut(w, 1, 2)
-    local head: *i64 = currentAllocator.alloc(32768 * 8, 8) as *i64
-    if head == nil { panic("deflate: out of memory") }
-    local h: usize = 0
-    while h < 32768 {
-        head[h] = -1
-        h = h + 1
+/// Puts every position below `to` into the hash table.
+fn advance(f: *Finder, to: usize) {
+    while f.inserted < to {
+        if f.inserted + MIN_MATCH <= f.n {
+            local h: usize = hash3(f.data, f.inserted)
+            f.prev[f.inserted & MASK] = f.head[h]
+            f.head[h] = f.inserted as i32
+        }
+        f.inserted++
     }
-    local i: usize = 0
-    while i < n {
-        if i + 2 < n {
-            local hv: usize = hash3(src, i)
-            local cand: i64 = head[hv]
-            head[hv] = i as i64
-            if cand >= 0 && i - (cand as usize) <= 32768 {
-                local c: usize = cand as usize
-                local l: usize = 0
-                while l < 258 && i + l < n && src[c + l] == src[i + l] { l = l + 1 }
-                if l >= 3 {
-                    emitMatch(w, l, i - c)
-                    local k: usize = 1
-                    while k < l {
-                        if i + k + 2 < n { head[hash3(src, i + k)] = (i + k) as i64 }
-                        k = k + 1
-                    }
-                    i = i + l
-                    continue
-                }
+}
+
+/// The longest earlier match for the bytes at `pos` that is longer than `above`, as (length << 16 | distance); 0 when none. All
+/// positions below `pos` must already be in the table.
+fn longest(f: *Finder, pos: usize, above: usize) -> u32 {
+    if pos + MIN_MATCH > f.n { return 0 }
+    local best: usize = above
+    local bestDist: usize = 0
+    local maxLen: usize = f.n - pos > MAX_MATCH ? MAX_MATCH : f.n - pos
+    local cand: i32 = f.head[hash3(f.data, pos)]
+    local chain: usize = f.effort.chain
+    while cand >= 0 && chain > 0 {
+        local c: usize = cand as usize
+        if pos - c > WINDOW { break }
+        if best >= maxLen { break }
+        if f.data[c + best] == f.data[pos + best] {
+            local l: usize = 0
+            while l < maxLen && f.data[c + l] == f.data[pos + l] { l++ }
+            if l > best {
+                best = l
+                bestDist = pos - c
+                if l >= f.effort.nice { break }
             }
         }
-        emitSymbol(w, src[i] as u32)
-        i = i + 1
+        local next: i32 = f.prev[c & MASK]
+        if next >= cand { break }            // a stale link of the ring: the chain ends
+        cand = next
+        chain--
     }
-    emitSymbol(w, 256)
-    currentAllocator.free(head as *void)
+    if bestDist == 0 || (best == MIN_MATCH && bestDist > TOO_FAR) { return 0 }
+    return ((best as u32) << 16) | (bestDist as u32)
 }
 
-/// Raw DEFLATE (no wrapper) of `src[0..n)` with fixed Huffman blocks. Returns the byte count, or -1 when `cap` is too small.
-export fn deflateFixed(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
-    local w: BitOut
-    w.out = out
-    w.cap = cap
-    w.ok = true
-    fixedBlock(&w, src, n, true)
-    bitsAlign(&w)
-    if !w.ok { return -1 }
-    return w.len as isize
-}
-
-/// Raw DEFLATE with stored blocks (section 3.2.4): no compression, the output is the input plus 5 bytes per 65535 bytes.
-export fn deflateStored(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
-    local w: BitOut
-    w.out = out
-    w.cap = cap
-    w.ok = true
-    local pos: usize = 0
-    while true {
-        local len: usize = n - pos
-        if len > 65535 { len = 65535 }
-        local final: bool = pos + len == n
-        if final { bitsPut(&w, 1, 1) } else { bitsPut(&w, 0, 1) }
-        bitsPut(&w, 0, 2)
-        bitsAlign(&w)
-        bitsByte(&w, (len & 0xff) as u8)
-        bitsByte(&w, ((len >> 8) & 0xff) as u8)
-        bitsByte(&w, ((~len) & 0xff) as u8)
-        bitsByte(&w, ((~len >> 8) & 0xff) as u8)
-        local k: usize = 0
-        while k < len {
-            bitsByte(&w, src[pos + k])
-            k = k + 1
+/// Compresses `data` into a raw DEFLATE stream. `level` is 0 (stored blocks only) to 9 (the most search); other values are clamped.
+export fn deflate(data: *String, level: i32) -> String {
+    local out: String = String()
+    local w: BitWriter = BitWriter { out: &out, acc: 0, n: 0 }
+    local lvl: i32 = level < 0 ? 0 : level > 9 ? 9 : level
+    local n: usize = data.len
+    local e: Encoder
+    e.w = &w
+    e.count = 0
+    e.syms = currentAllocator.alloc(BLOCK_SYMBOLS * sizeOf(Symbol), alignOf(Symbol)) as *Symbol
+    local f: Finder
+    f.data = data.ptr
+    f.n = n
+    f.inserted = 0
+    f.effort = effortOf(lvl)
+    f.head = currentAllocator.alloc((1 << HASH_BITS) * 4, 4) as *i32
+    f.prev = currentAllocator.alloc(WINDOW * 4, 4) as *i32
+    defer currentAllocator.free(e.syms as *void)
+    defer currentAllocator.free(f.head as *void)
+    defer currentAllocator.free(f.prev as *void)
+    for i in 0..1 << HASH_BITS { f.head[i] = -1 }
+    for i in 0..WINDOW { f.prev[i] = -1 }
+    local from: usize = 0
+    local i: usize = 0
+    reset(&e)
+    if lvl == 0 {
+        // Stored only: one block per 65535 bytes (an empty input is one empty final block).
+        flush(&e, data, 0, n, true, true)
+        return out
+    }
+    while i < n {
+        advance(&f, i)
+        local m: u32 = longest(&f, i, MIN_MATCH - 1)
+        local len: usize = (m >> 16) as usize
+        if len >= MIN_MATCH && f.effort.lazy && len < f.effort.lazyMax && i + 1 < n {
+            // A longer match one byte later makes this byte a literal.
+            advance(&f, i + 1)
+            local later: u32 = longest(&f, i + 1, len)
+            if later != 0 {
+                addLiteral(&e, data.ptr[i])
+                i++
+                if e.count == BLOCK_SYMBOLS {
+                    flush(&e, data, from, i, false, false)
+                    reset(&e)
+                    from = i
+                }
+                continue
+            }
         }
-        pos = pos + len
-        if final { break }
+        if len >= MIN_MATCH {
+            addMatch(&e, len, (m & 0xffff) as usize)
+            i += len
+        } else {
+            addLiteral(&e, data.ptr[i])
+            i++
+        }
+        if e.count >= BLOCK_SYMBOLS - 1 {
+            flush(&e, data, from, i, false, false)
+            reset(&e)
+            from = i
+        }
     }
-    if !w.ok { return -1 }
-    return w.len as isize
-}
-
-/// A zlib stream (RFC 1950): the header 0x78 0x9c (deflate, 32 KiB window, default level), the fixed-Huffman DEFLATE data, and the
-/// Adler-32 of the input in big-endian order.
-export fn zlibCompress(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
-    if cap < 2 { return -1 }
-    out[0] = 0x78
-    out[1] = 0x9c
-    local body: isize = deflateFixed(src, n, &out[2], cap - 2)
-    if body < 0 { return -1 }
-    local at: usize = 2 + (body as usize)
-    if at + 4 > cap { return -1 }
-    local a: u32 = adler32(src, n)
-    out[at] = (a >> 24) as u8
-    out[at + 1] = ((a >> 16) & 0xff) as u8
-    out[at + 2] = ((a >> 8) & 0xff) as u8
-    out[at + 3] = (a & 0xff) as u8
-    return (at + 4) as isize
-}
-
-/// A gzip member (RFC 1952): the 10-byte header with no name and mtime 0, the fixed-Huffman DEFLATE data, then CRC-32 and ISIZE (the
-/// input length mod 2^32), both little-endian.
-export fn gzipCompress(src: *u8, n: usize, out: *u8, cap: usize) -> isize {
-    if cap < 10 { return -1 }
-    out[0] = 0x1f
-    out[1] = 0x8b
-    out[2] = 8
-    out[3] = 0
-    out[4] = 0
-    out[5] = 0
-    out[6] = 0
-    out[7] = 0
-    out[8] = 0
-    out[9] = 255
-    local body: isize = deflateFixed(src, n, &out[10], cap - 10)
-    if body < 0 { return -1 }
-    local at: usize = 10 + (body as usize)
-    if at + 8 > cap { return -1 }
-    local c: u32 = crc32(src, n)
-    out[at] = (c & 0xff) as u8
-    out[at + 1] = ((c >> 8) & 0xff) as u8
-    out[at + 2] = ((c >> 16) & 0xff) as u8
-    out[at + 3] = ((c >> 24) & 0xff) as u8
-    local sz: u32 = (n & 0xffffffff) as u32
-    out[at + 4] = (sz & 0xff) as u8
-    out[at + 5] = ((sz >> 8) & 0xff) as u8
-    out[at + 6] = ((sz >> 16) & 0xff) as u8
-    out[at + 7] = ((sz >> 24) & 0xff) as u8
-    return (at + 8) as isize
+    flush(&e, data, from, n, true, false)
+    align(&w)
+    return out
 }

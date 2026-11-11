@@ -1,0 +1,45 @@
+// files: directories and renames on the real file system (mkdir -p, rename, rm -rf, the current directory, the console check).
+// The work directory is created under the current directory and removed at the end.
+from "std" import String, print, fsWrite, fsExists, fsReadAllString
+from "std/io/files" import makeDir, makeDirAll, removeAll, rename, currentDir, absolute, exists, isDir, isTerminal
+
+fn fail(msg: str) -> i32 {
+    print("FAIL ")
+    print(msg)
+    print("\n")
+    return 1
+}
+
+@entry fn main() -> i32 {
+    local cwd: String = currentDir()
+    if cwd.length() == 0 { return fail("currentDir") }
+    local root: String = String("xl_files_e2e")
+    removeAll(&root)
+    local deep: String = String("xl_files_e2e/a/b/c")
+    if !makeDirAll(&deep) { return fail("makeDirAll") }
+    if !makeDirAll(&deep) { return fail("makeDirAll twice") }
+    if !isDir(&deep) { return fail("isDir") }
+    local single: String = String("xl_files_e2e/a/d")
+    if !makeDir(&single) { return fail("makeDir") }
+    if makeDir(&single) { return fail("makeDir on an existing directory") }
+
+    local file: String = String("xl_files_e2e/a/b/c/f.txt")
+    if !fsWrite(file.cstr(), "hello") { return fail("write") }
+    local moved: String = String("xl_files_e2e/a/d/g.txt")
+    if !rename(&file, &moved) { return fail("rename") }
+    if exists(&file) { return fail("source still there") }
+    local back: String = fsReadAllString(moved.cstr())
+    if !back.equals("hello") { return fail("content after rename") }
+
+    local abs: String = absolute(&moved)
+    if abs.length() <= moved.length() { return fail("absolute") }
+    if !abs.endsWith("xl_files_e2e/a/d/g.txt") { return fail("absolute tail") }
+
+    if !removeAll(&root) { return fail("removeAll") }
+    if exists(&root) { return fail("removeAll left the root") }
+    if !removeAll(&root) { return fail("removeAll of a missing path") }
+    // The result is not asserted: a terminal or not depends on how the runner starts the program.
+    isTerminal(1)
+    print("files ok\n")
+    return 0
+}

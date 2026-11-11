@@ -65,12 +65,22 @@ define SYS_OPEN = 2
 define SYS_CLOSE = 3
 define SYS_LSEEK = 8
 define SYS_UNLINK = 87
+define SYS_MKDIR = 83
+define SYS_RMDIR = 84
+define SYS_RENAME = 82
+define SYS_GETCWD = 79
 #elif arch == "aarch64"
 define SYS_OPENAT = 56
 define SYS_CLOSE = 57
 define SYS_LSEEK = 62
 define SYS_UNLINKAT = 35
+define SYS_MKDIRAT = 34
+define SYS_RENAMEAT = 38
+define SYS_GETCWD = 17
 #endif
+define AT_REMOVEDIR = 512          // 0x200: unlinkat removes a directory (include/uapi/linux/fcntl.h)
+define TCGETS = 21505              // 0x5401 (include/uapi/asm-generic/ioctls.h)
+define MODE_DIR = 493              // 0755
 define AT_FDCWD = -100
 define O_RDONLY = 0
 define O_WRONLY_CREAT_TRUNC = 577      // O_WRONLY | O_CREAT | O_TRUNC
@@ -239,6 +249,46 @@ export fn sysUnlink(path: *u8) -> i32 {
 #else
     return syscall(SYS_UNLINKAT, AT_FDCWD, path, 0) as i32
 #endif
+}
+
+/// Creates a directory (mode 0755 before the umask); 0 on success, negative errno on failure (-17 EEXIST when it exists).
+export fn sysMkdir(path: *u8) -> i32 {
+#if arch == "x86_64"
+    return syscall(SYS_MKDIR, path, MODE_DIR) as i32
+#else
+    return syscall(SYS_MKDIRAT, AT_FDCWD, path, MODE_DIR) as i32
+#endif
+}
+
+/// Removes an empty directory; 0 on success.
+export fn sysRmdir(path: *u8) -> i32 {
+#if arch == "x86_64"
+    return syscall(SYS_RMDIR, path) as i32
+#else
+    return syscall(SYS_UNLINKAT, AT_FDCWD, path, AT_REMOVEDIR) as i32
+#endif
+}
+
+/// Renames `src` to `dst`, replacing an existing file or empty directory; 0 on success.
+export fn sysRename(src: *u8, dst: *u8) -> i32 {
+#if arch == "x86_64"
+    return syscall(SYS_RENAME, src, dst) as i32
+#else
+    return syscall(SYS_RENAMEAT, AT_FDCWD, src, AT_FDCWD, dst) as i32
+#endif
+}
+
+/// Writes the current directory (NUL terminated) into `buf` and returns its length without the NUL, or -1 when `cap` is too small.
+/// The kernel's `getcwd` returns the length including the NUL.
+export fn sysGetcwd(buf: *u8, cap: usize) -> i64 {
+    local n: i64 = syscall(SYS_GETCWD, buf, cap)
+    return n > 0 ? n - 1 : -1
+}
+
+/// True when `fd` is a terminal: `ioctl(fd, TCGETS, &termios)` succeeds (a `struct termios` fits 64 bytes).
+export fn sysIsTerminal(fd: i32) -> bool {
+    local termios: [u8; 64]
+    return syscall(SYS_IOCTL, fd, TCGETS, &termios[0]) == 0
 }
 
 /// Size of an open file in bytes (the read position is left at the start); negative on failure.

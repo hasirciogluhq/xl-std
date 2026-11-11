@@ -1,0 +1,39 @@
+// Unit: io/files `absolute` — the lexical folding of `.` and `..` for an absolute path (no OS access: an absolute input never
+// reads the current directory, so the result is the same on every host).
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEqStr
+from "std/io/files" import absolute
+from "std/str/string" import String
+
+fn check(t: *T, input: str, want: str) {
+    local p: String = String(input)
+    expectEqStr(t, absolute(&p).asStr(), want)
+}
+
+fn plain(t: *T) {
+    check(t, "/a/b/c", "/a/b/c")
+}
+
+fn dots(t: *T) {
+    check(t, "/a/./b", "/a/b")
+    check(t, "/a/b/../c", "/a/c")
+    check(t, "/a//b/", "/a/b")
+}
+
+fn aboveRoot(t: *T) {
+    check(t, "/..", "/")
+    check(t, "/a/../..", "/")
+}
+
+fn root(t: *T) {
+    check(t, "/", "/")
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "plain", plain)
+    test(&s, "dots", dots)
+    test(&s, "above root", aboveRoot)
+    test(&s, "root", root)
+    return suiteRun(&s)
+}

@@ -199,6 +199,42 @@ export fn sysUnlink(path: *u8) -> i32 {
     return syscall(SYS_UNLINK, path) as i32
 }
 
+// Directories and terminals through libSystem (mkdir(2), rmdir(2), rename(2), getcwd(3), isatty(3)): `getcwd` has no BSD call of its
+// own on macOS (it is built from fcntl F_GETPATH), and the others keep one interface for both CPUs.
+@library("System") declare fn mkdir(path: *u8, mode: i32) -> i32
+@library("System") declare fn rmdir(path: *u8) -> i32
+@library("System") declare fn rename(src: *u8, dst: *u8) -> i32
+@library("System") declare fn getcwd(buf: *u8, size: usize) -> *u8
+@library("System") declare fn isatty(fd: i32) -> i32
+
+/// Creates a directory (mode 0755 before the umask); 0 on success, -1 on failure.
+export fn sysMkdir(path: *u8) -> i32 {
+    return mkdir(path, 493)
+}
+
+/// Removes an empty directory; 0 on success.
+export fn sysRmdir(path: *u8) -> i32 {
+    return rmdir(path)
+}
+
+/// Renames `src` to `dst`, replacing an existing file or empty directory; 0 on success.
+export fn sysRename(src: *u8, dst: *u8) -> i32 {
+    return rename(src, dst)
+}
+
+/// Writes the current directory (NUL terminated) into `buf` and returns its length without the NUL, or -1 when `cap` is too small.
+export fn sysGetcwd(buf: *u8, cap: usize) -> i64 {
+    if getcwd(buf, cap) == nil { return -1 }
+    local n: i64 = 0
+    while buf[n as usize] != 0 { n = n + 1 }
+    return n
+}
+
+/// True when `fd` is a terminal.
+export fn sysIsTerminal(fd: i32) -> bool {
+    return isatty(fd) == 1
+}
+
 /// Size of an open file in bytes (the read position is left at the start); negative on failure.
 export fn sysFileSize(fd: i32) -> i64 {
     local n: i64 = syscall(SYS_LSEEK, fd, 0, 2)

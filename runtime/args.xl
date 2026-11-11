@@ -1,0 +1,41 @@
+// std/runtime/args: the `register(args)` role for Windows. A Windows process is started with one command-line string, not an argument
+// vector, so an `@entry fn main(argc: i32, argv: **u8)` gets its arguments from this function (the compiler's entry stub calls it after
+// the `@init` functions). It reads `GetCommandLineW`, converts it to UTF-8, splits it with `parseCommandLine` (os/args) and returns a
+// vector laid out like the C one: `argc` pointers and a NULL, followed by the NUL-terminated strings, in one block that lives for the
+// whole process. Linux and macOS receive the vector from the kernel and need no role.
+#if os == "windows"
+from "../os/args" import parseCommandLine
+from "../encoding/utf16" import toUtf8, fromWideC
+from "../mem/mem" import currentAllocator
+from "../mem/memory" import memcpy
+from "../str/string" import String
+
+// https://learn.microsoft.com/windows/win32/api/processenv/nf-processenv-getcommandlinew
+@library("kernel32") declare fn GetCommandLineW() -> *u16
+
+register(args) fn commandLineArgs(argc: *i32) -> **u8 {
+    local wide: *u16 = GetCommandLineW()
+    local units: usize = fromWideC(wide)
+    // Every UTF-16 unit becomes at most 3 UTF-8 bytes (a surrogate pair gives 4 bytes for 2 units).
+    local text: String = String()
+    text.reserve(units * 3)
+    text.len = toUtf8(wide, units, text.ptr, text.cap, false)
+    local parts = parseCommandLine(text.asStr())
+    local count: usize = parts.length()
+    local bytes: usize = (count + 1) * sizeOf(*u8)
+    for i in 0..count { bytes += parts.get(i).length() + 1 }
+    local block: *u8 = currentAllocator.alloc(bytes, alignOf(*u8)) as *u8
+    local vector: **u8 = block as **u8
+    local at: usize = (count + 1) * sizeOf(*u8)
+    for i in 0..count {
+        local part: *String = parts.get(i)
+        vector[i] = &block[at]
+        if part.length() > 0 { memcpy(&block[at] as *void, part.ptr as *void, part.length()) }
+        block[at + part.length()] = 0
+        at += part.length() + 1
+    }
+    vector[count] = nil
+    __builtin_write(argc, count as i32)
+    return vector
+}
+#endif

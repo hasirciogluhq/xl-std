@@ -53,7 +53,7 @@ tests=(
   "router|0|router ok|0|1"
   "stdlib|0|499500|0|1"
   "fsjson|0||0|1"
-  "argv|0|argv ok|0|0"
+  "argv|0|argv ok|0|1"
   "panics|134|before|0|0"
   "vecpanic|134|before|0|0"
   "threads|0|40000|1|0"
