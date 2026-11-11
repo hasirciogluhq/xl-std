@@ -66,6 +66,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: .github/scripts/install-xlc.sh
+      # xlc links Mach-O executables with LLVM's `ld64.lld`, which the macOS runners do not have.
+      - name: Linker (macOS)
+        if: runner.os == 'macOS'
+        run: brew install lld
       - name: Emulation for the foreign-architecture container legs
         if: runner.os == 'Linux'
         uses: docker/setup-qemu-action@v3
