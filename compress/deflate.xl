@@ -63,7 +63,10 @@ fn lengths(freq: *u32, n: usize, limit: usize, lens: *u8) {
     local m: usize = 0
     for i in 0..n {
         lens[i] = 0
-        if freq[i] > 0 { sorted[m++] = i as u16 }
+        if freq[i] > 0 {
+            sorted[m] = i as u16
+            m++
+        }
     }
     if m == 0 { return }
     if m == 1 {
@@ -91,9 +94,11 @@ fn lengths(freq: *u32, n: usize, limit: usize, lens: *u8) {
         local pair: [usize; 2]
         for k in 0..2 {
             if leaf < m && (node >= made || weight[leaf] <= weight[node]) {
-                pair[k] = leaf++
+                pair[k] = leaf
+                leaf++
             } else {
-                pair[k] = node++
+                pair[k] = node
+                node++
             }
         }
         weight[made] = weight[pair[0]] + weight[pair[1]]
@@ -127,7 +132,10 @@ fn lengths(freq: *u32, n: usize, limit: usize, lens: *u8) {
     local next: usize = 0
     local len: usize = limit
     while len > 0 {
-        for k in 0..count[len] as usize { lens[sorted[next++]] = len as u8 }
+        for k in 0..count[len] as usize {
+            lens[sorted[next]] = len as u8
+            next++
+        }
         len--
     }
 }
@@ -150,7 +158,8 @@ fn codesOf(lens: *u8, n: usize, codes: *u16) {
             codes[i] = 0
             continue
         }
-        local c: u32 = next[len]++
+        local c: u32 = next[len]
+        next[len]++
         local rev: u32 = 0
         for k in 0..len { rev |= ((c >> k) & 1) << (len - 1 - k) }
         codes[i] = rev as u16
@@ -245,40 +254,40 @@ fn runLength(lens: *u8, n: usize, sym: *u8, extra: *u8) -> usize {
         while i + run < n && lens[i + run] == v { run++ }
         local left: usize = run
         if v == 0 {
-            while left >= 11 {
+            while left >= 3 {
                 local take: usize = left > 138 ? 138 : left
-                sym[count] = 18
-                extra[count++] = (take - 11) as u8
+                sym[count] = take >= 11 ? 18 : 17
+                extra[count] = (take >= 11 ? take - 11 : take - 3) as u8
+                count++
                 left -= take
             }
-            if left >= 3 {
-                sym[count] = 17
-                extra[count++] = (left - 3) as u8
-                left = 0
-            }
         } else {
-            // One literal length first, then repeats of 3..6.
+            // One length first, then repeats of 3..6 of it.
             sym[count] = v
-            extra[count++] = 0
+            extra[count] = 0
+            count++
             left--
             while left >= 3 {
                 local take: usize = left > 6 ? 6 : left
                 sym[count] = 16
-                extra[count++] = (take - 3) as u8
+                extra[count] = (take - 3) as u8
+                count++
                 left -= take
             }
         }
+        // What is left (fewer than 3) is written as plain lengths.
         for k in 0..left {
             sym[count] = v
-            extra[count++] = 0
+            extra[count] = 0
+            count++
         }
         i += run
     }
     return count
 }
 
-/// Writes the buffered symbols as one block, the smallest of stored, fixed and dynamic. `from..to` is the input range the symbols cover.
-fn flush(e: *Encoder, data: *String, from: usize, to: usize, final: bool, onlyStored: bool) {
+/// Writes the buffered symbols as one block, the smallest of stored, fixed and dynamic. `first..to` is the input range the symbols cover.
+fn flush(e: *Encoder, data: *String, first: usize, to: usize, final: bool, onlyStored: bool) {
     local w: *BitWriter = e.w
     e.litFreq[256] = 1
     // Dynamic: code lengths from the frequencies, and the header that transmits them.
@@ -316,10 +325,10 @@ fn flush(e: *Encoder, data: *String, from: usize, to: usize, final: bool, onlySt
     for i in 0..30 { fixedDist[i] = 5 }
     local fixedBits: u64 = 3 + symbolBits(e, &fixedLit[0], &fixedDist[0])
     // Stored: 5 bytes of framing per 65535 bytes, plus the padding to a byte boundary (at most 7 bits).
-    local span: usize = to - from
+    local span: usize = to - first
     local storedBits: u64 = ((span as u64) + 5 * (((span as u64) + 65534) / 65535 + (span == 0 ? 1 : 0))) * 8 + 7
     if onlyStored || (storedBits <= fixedBits && storedBits <= dynamicBits) {
-        local pos: usize = from
+        local pos: usize = first
         while true {
             local take: usize = to - pos > 65535 ? 65535 : to - pos
             local last: bool = final && pos + take == to
@@ -467,7 +476,7 @@ export fn deflate(data: *String, level: i32) -> String {
     defer currentAllocator.free(f.prev as *void)
     for i in 0..1 << HASH_BITS { f.head[i] = -1 }
     for i in 0..WINDOW { f.prev[i] = -1 }
-    local from: usize = 0
+    local first: usize = 0
     local i: usize = 0
     reset(&e)
     if lvl == 0 {
@@ -487,9 +496,9 @@ export fn deflate(data: *String, level: i32) -> String {
                 addLiteral(&e, data.ptr[i])
                 i++
                 if e.count == BLOCK_SYMBOLS {
-                    flush(&e, data, from, i, false, false)
+                    flush(&e, data, first, i, false, false)
                     reset(&e)
-                    from = i
+                    first = i
                 }
                 continue
             }
@@ -502,12 +511,12 @@ export fn deflate(data: *String, level: i32) -> String {
             i++
         }
         if e.count >= BLOCK_SYMBOLS - 1 {
-            flush(&e, data, from, i, false, false)
+            flush(&e, data, first, i, false, false)
             reset(&e)
-            from = i
+            first = i
         }
     }
-    flush(&e, data, from, n, true, false)
+    flush(&e, data, first, n, true, false)
     align(&w)
     return out
 }

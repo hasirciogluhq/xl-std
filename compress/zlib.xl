@@ -1,0 +1,62 @@
+// std/compress/zlib: the zlib stream format (RFC 1950, https://www.rfc-editor.org/rfc/rfc1950) over DEFLATE: a 2-byte header (method 8,
+// window size, a level hint and a check value that makes the 16-bit header a multiple of 31), the DEFLATE data, and the Adler-32 of the
+// uncompressed data, big-endian. A preset dictionary (FDICT) is `Unsupported`.
+from "../str/string" import String
+from "../collections/result" import Result
+from "../checksum/adler" import adler32
+from "deflate" import deflate
+from "inflate" import inflateAt, failure, STATUS_OK
+from "error" import CompressError
+
+/// `data` as a zlib stream. `level` is as for `deflate`; the header's level hint (FLEVEL) follows zlib: 0 for levels 0 and 1, 1 for 2..5, 2
+/// for 6 and 3 for 7..9.
+export fn zlibCompress(data: *String, level: i32) -> String {
+    local out: String = String()
+    local hint: u32 = level < 2 ? 0 : level < 6 ? 1 : level == 6 ? 2 : 3
+    local header: u32 = (0x78 << 8) | (hint << 6)
+    header += (31 - header % 31) % 31                       // FCHECK: the header is a multiple of 31
+    out.push((header >> 8) as u8)
+    out.push((header & 0xff) as u8)
+    local body: String = deflate(data, level)
+    out.append(&body)
+    local sum: u32 = adler32(data.ptr, data.len)
+    for k in 0..4 as u32 { out.push(((sum >> (24 - 8 * k)) & 0xff) as u8) }
+    return out
+}
+
+/// Decompresses a zlib stream into at most `limit` bytes; the Adler-32 is checked. Data after the trailer is ignored.
+export fn zlibDecompress(data: *String, limit: usize) -> Result<String, CompressError> {
+    local out: String = String()
+    if data.len < 2 {
+        local cut: Result<String, CompressError> = Result.Err(CompressError.Truncated)
+        return cut
+    }
+    local cmf: u32 = data.ptr[0] as u32
+    local flg: u32 = data.ptr[1] as u32
+    if (cmf & 0x0f) != 8 || (cmf >> 4) > 7 || ((cmf << 8) | flg) % 31 != 0 {
+        local bad: Result<String, CompressError> = Result.Err(CompressError.Invalid)
+        return bad
+    }
+    if (flg & 0x20) != 0 {
+        local no: Result<String, CompressError> = Result.Err(CompressError.Unsupported)
+        return no
+    }
+    local end: usize = 0
+    local s: i32 = inflateAt(data, 2, &out, limit, &end)
+    if s != STATUS_OK {
+        local bad: Result<String, CompressError> = Result.Err(failure(s))
+        return bad
+    }
+    if end + 4 > data.len {
+        local cut: Result<String, CompressError> = Result.Err(CompressError.Truncated)
+        return cut
+    }
+    local want: u32 = 0
+    for k in 0..4 as usize { want = (want << 8) | (data.ptr[end + k] as u32) }
+    if adler32(out.ptr, out.len) != want {
+        local bad: Result<String, CompressError> = Result.Err(CompressError.Checksum)
+        return bad
+    }
+    local ok: Result<String, CompressError> = Result.Ok(out)
+    return ok
+}

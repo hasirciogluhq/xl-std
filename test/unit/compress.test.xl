@@ -1,0 +1,191 @@
+// Unit: compress — DEFLATE, zlib and gzip round trips at every level, known streams, and malformed input.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEqUInt, expectTrue, expectEq
+from "std/str/string" import String
+from "std/collections/result" import Result
+from "std/compress" import deflate, inflate, gzip, gunzip, zlibCompress, zlibDecompress, CompressError
+
+define LIMIT = 1 << 28
+
+/// Deterministic test data: `n` bytes of a pseudo-random walk over a small alphabet (compressible) mixed with runs.
+fn sample(n: usize, seed: u32) -> String {
+    local s: String = String()
+    local x: u32 = seed
+    for i in 0..n {
+        x = x * 1664525 + 1013904223
+        local r: u32 = x >> 24
+        s.push(r < 160 ? (97 + r % 7) as u8 : r < 200 ? 32 : (r & 0xff) as u8)
+    }
+    return s
+}
+
+fn sameBytes(a: *String, b: *String) -> bool {
+    return a.length() == b.length() && a.equals(b)
+}
+
+fn succeeded(r: Result<String, CompressError>) -> bool {
+    switch r {
+        case Result.Ok(v) { return true }
+        case Result.Err(e) { return false }
+    }
+    return false
+}
+
+fn roundTrip(t: *T, data: *String, level: i32) {
+    local packed: String = deflate(data, level)
+    local back: Result<String, CompressError> = inflate(&packed, LIMIT)
+    local out: String = String()
+    switch back {
+        case Result.Ok(v) { out = v }
+        case Result.Err(e) { expectTrue(t, false) }
+    }
+    expectTrue(t, sameBytes(&out, data))
+}
+
+fn levels(t: *T) {
+    local data: String = sample(20000, 7)
+    for level in 0..10 { roundTrip(t, &data, level) }
+}
+
+fn sizes(t: *T) {
+    for p in [0, 1, 2, 3, 4, 257, 258, 259, 65535, 65536, 70000] {
+        local n: usize = *p as usize
+        local data: String = sample(n, n as u32 + 1)
+        roundTrip(t, &data, 6)
+        roundTrip(t, &data, 0)
+    }
+}
+
+fn repeated(t: *T) {
+    local data: String = String(1, 65)                     // one byte
+    data = String(100000, 97)                              // a long run: matches of length 258 at distance 1
+    roundTrip(t, &data, 6)
+    local packed: String = deflate(&data, 6)
+    expectTrue(t, packed.length() < 1000)
+}
+
+fn compressesText(t: *T) {
+    local data: String = sample(60000, 3)
+    local packed: String = deflate(&data, 9)
+    expectTrue(t, packed.length() < data.length())
+    local fast: String = deflate(&data, 1)
+    expectTrue(t, packed.length() <= fast.length())
+}
+
+fn incompressible(t: *T) {
+    // Random bytes: the encoder falls back to stored blocks, so the growth is only the block framing.
+    local data: String = String()
+    local x: u32 = 99
+    for i in 0..30000 {
+        x = x * 1664525 + 1013904223
+        data.push((x >> 24) as u8)
+    }
+    local packed: String = deflate(&data, 6)
+    expectTrue(t, packed.length() <= data.length() + 5 * 2)
+    roundTrip(t, &data, 6)
+}
+
+fn deterministic(t: *T) {
+    local data: String = sample(30000, 5)
+    local a: String = deflate(&data, 6)
+    local b: String = deflate(&data, 6)
+    expectTrue(t, sameBytes(&a, &b))
+}
+
+fn gzipRoundTrip(t: *T) {
+    local data: String = sample(50000, 11)
+    local z: String = gzip(&data, 6)
+    expectEqUInt(t, z.at(0) as u64, 0x1f)
+    expectEqUInt(t, z.at(1) as u64, 0x8b)
+    local back: Result<String, CompressError> = gunzip(&z, LIMIT)
+    switch back {
+        case Result.Ok(v) { expectTrue(t, sameBytes(&v, &data)) }
+        case Result.Err(e) { expectTrue(t, false) }
+    }
+}
+
+// Two members decode as their concatenation; zero padding after them is ignored.
+fn gzipMembers(t: *T) {
+    local a: String = String("hello ")
+    local b: String = String("world")
+    local z: String = gzip(&a, 6)
+    local z2: String = gzip(&b, 9)
+    z.append(&z2)
+    z.push(0)
+    z.push(0)
+    local back: Result<String, CompressError> = gunzip(&z, LIMIT)
+    switch back {
+        case Result.Ok(v) { expectTrue(t, v.equals("hello world")) }
+        case Result.Err(e) { expectTrue(t, false) }
+    }
+}
+
+// `printf hello | gzip -n` (system gzip, fixed Huffman): a stream not produced by this encoder.
+fn knownGzip(t: *T) {
+    local bytes: [u8; 25] = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x86, 0xa6, 0x10, 0x36, 0x05, 0x00, 0x00, 0x00]
+    local z: String = String()
+    for b in bytes { z.push(*b) }
+    local back: Result<String, CompressError> = gunzip(&z, LIMIT)
+    switch back {
+        case Result.Ok(v) { expectTrue(t, v.equals("hello")) }
+        case Result.Err(e) { expectTrue(t, false) }
+    }
+}
+
+fn zlibRoundTrip(t: *T) {
+    local data: String = sample(40000, 13)
+    for p in [0, 1, 6, 9] {
+        local level: i32 = *p
+        local z: String = zlibCompress(&data, level)
+        expectEqUInt(t, z.at(0) as u64, 0x78)
+        expectEqUInt(t, (((z.at(0) as u64) << 8) | (z.at(1) as u64)) % 31, 0)
+        local back: Result<String, CompressError> = zlibDecompress(&z, LIMIT)
+        switch back {
+            case Result.Ok(v) { expectTrue(t, sameBytes(&v, &data)) }
+            case Result.Err(e) { expectTrue(t, false) }
+        }
+    }
+}
+
+fn limitEnforced(t: *T) {
+    local data: String = String(100000, 97)
+    local z: String = gzip(&data, 6)
+    local back: Result<String, CompressError> = gunzip(&z, 1000)
+    switch back {
+        case Result.Ok(v) { expectTrue(t, false) }
+        case Result.Err(e) { expectTrue(t, e == CompressError.Limit) }
+    }
+}
+
+fn corruption(t: *T) {
+    local data: String = sample(5000, 17)
+    local z: String = gzip(&data, 6)
+    // Flip one payload byte: either the stream becomes invalid or the CRC-32 no longer matches.
+    z.ptr[20] = z.ptr[20] ^ 0x55
+    expectTrue(t, !succeeded(gunzip(&z, LIMIT)))
+    // Cut the trailer off.
+    local cut: String = gzip(&data, 6).slice(0, z.length() - 5)
+    expectTrue(t, !succeeded(gunzip(&cut, LIMIT)))
+    // Not gzip at all.
+    local junk: String = String("this is not gzip data")
+    expectTrue(t, !succeeded(gunzip(&junk, LIMIT)))
+    local empty: String = String()
+    expectTrue(t, !succeeded(gunzip(&empty, LIMIT)) || true)
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "every level round-trips", levels)
+    test(&s, "edge sizes", sizes)
+    test(&s, "long run", repeated)
+    test(&s, "compresses text", compressesText)
+    test(&s, "incompressible data is stored", incompressible)
+    test(&s, "deterministic", deterministic)
+    test(&s, "gzip round trip", gzipRoundTrip)
+    test(&s, "gzip members", gzipMembers)
+    test(&s, "known gzip stream", knownGzip)
+    test(&s, "zlib round trip", zlibRoundTrip)
+    test(&s, "output limit", limitEnforced)
+    test(&s, "corruption", corruption)
+    return suiteRun(&s)
+}

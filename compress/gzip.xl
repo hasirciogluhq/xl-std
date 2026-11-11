@@ -1,0 +1,95 @@
+// std/compress/gzip: the gzip file format (RFC 1952, https://www.rfc-editor.org/rfc/rfc1952) over DEFLATE. A member is a 10-byte header, the
+// DEFLATE data, then the CRC-32 and the length mod 2^32 of the uncompressed data, both little-endian. `gzip` writes one member with no name
+// and mtime 0 (so equal input gives equal bytes); `gunzip` reads every member of the input in turn (concatenated members are one stream,
+// as `gzip -d` treats them), skips the optional extra, name, comment and header-CRC fields, and checks each trailer.
+from "../str/string" import String
+from "../collections/result" import Result
+from "../checksum/crc" import crc32, crc32Update
+from "deflate" import deflate
+from "inflate" import inflateAt, failure, STATUS_OK
+from "error" import CompressError
+
+define FLAG_HCRC = 2
+define FLAG_EXTRA = 4
+define FLAG_NAME = 8
+define FLAG_COMMENT = 16
+
+fn putLE32(out: *String, v: u32) {
+    for k in 0..4 as u32 { out.push(((v >> (8 * k)) & 0xff) as u8) }
+}
+
+fn getLE32(d: *String, at: usize) -> u32 {
+    local v: u32 = 0
+    for k in 0..4 as usize { v |= (d.ptr[at + k] as u32) << ((8 * k) as u32) }
+    return v
+}
+
+/// `data` as one gzip member. `level` is as for `deflate`; the header's XFL byte records the extremes (2: best, 4: fastest).
+export fn gzip(data: *String, level: i32) -> String {
+    local out: String = String()
+    local header: [u8; 10] = [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, level >= 9 ? 2 : level == 1 ? 4 : 0, 255]
+    for b in header { out.push(*b) }
+    local body: String = deflate(data, level)
+    out.append(&body)
+    putLE32(&out, crc32(data.ptr, data.len))
+    putLE32(&out, (data.len & 0xffffffff) as u32)
+    return out
+}
+
+/// The offset after the header that starts at `at`, or 0 when it is not a valid header or runs past the input.
+fn headerEnd(d: *String, at: usize) -> usize {
+    if at + 10 > d.len || d.ptr[at] != 0x1f || d.ptr[at + 1] != 0x8b || d.ptr[at + 2] != 8 { return 0 }
+    local flags: u8 = d.ptr[at + 3]
+    if (flags & 0xe0) != 0 { return 0 }                 // reserved bits
+    local pos: usize = at + 10
+    if (flags & FLAG_EXTRA) != 0 {
+        if pos + 2 > d.len { return 0 }
+        pos += 2 + ((d.ptr[pos] as usize) | ((d.ptr[pos + 1] as usize) << 8))
+    }
+    for p in [FLAG_NAME, FLAG_COMMENT] {
+        local flag: u8 = *p as u8
+        if (flags & flag) == 0 { continue }
+        while pos < d.len && d.ptr[pos] != 0 { pos++ }
+        pos++                                            // the terminating NUL
+    }
+    if (flags & FLAG_HCRC) != 0 { pos += 2 }
+    return pos <= d.len ? pos : 0
+}
+
+/// Decompresses every gzip member of `data` into one String of at most `limit` bytes. Zero bytes after the last member (the padding some
+/// tools add) are ignored; any other trailing data is `Invalid`.
+export fn gunzip(data: *String, limit: usize) -> Result<String, CompressError> {
+    local out: String = String()
+    local pos: usize = 0
+    local members: usize = 0
+    while pos < data.len {
+        local start: usize = headerEnd(data, pos)
+        if start == 0 {
+            local zeros: bool = members > 0
+            for i in pos..data.len { zeros = zeros && data.ptr[i] == 0 }
+            if zeros { break }
+            local bad: Result<String, CompressError> = Result.Err(pos + 10 > data.len && members == 0 ? CompressError.Truncated : CompressError.Invalid)
+            return bad
+        }
+        local base: usize = out.len
+        local end: usize = 0
+        local s: i32 = inflateAt(data, start, &out, limit, &end)
+        if s != STATUS_OK {
+            local bad: Result<String, CompressError> = Result.Err(failure(s))
+            return bad
+        }
+        if end + 8 > data.len {
+            local cut: Result<String, CompressError> = Result.Err(CompressError.Truncated)
+            return cut
+        }
+        local size: usize = out.len - base
+        if crc32Update(0, &out.ptr[base], size) != getLE32(data, end) || (size & 0xffffffff) as u32 != getLE32(data, end + 4) {
+            local bad: Result<String, CompressError> = Result.Err(CompressError.Checksum)
+            return bad
+        }
+        pos = end + 8
+        members++
+    }
+    local ok: Result<String, CompressError> = Result.Ok(out)
+    return ok
+}
