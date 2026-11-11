@@ -11,8 +11,8 @@ index.xl          re-exports every area (`import "std"` gives all of it)
   <file>.xl       the code; siblings import as "name", parents as "../name"
 sys/              the only place with OS calls (syscalls, libSystem, kernel32/ntdll), one file per area, routed with `#if os`
 test/
-  unit/           `*.test.xl` suites (std/testing); run.sh builds and runs them
-  e2e/            one program per feature; tests.txt is the table, run.sh and runner.xl run it
+  unit/           `*.test.xl` suites (std/testing), platform independent (no OS access); run.sh builds and runs them
+  e2e/            platform-related programs (OS, CPU, network); tests.txt is the table, run.sh and runner.xl run it
 .github/          CI and release workflows, and the script that installs the compiler
 ```
 
