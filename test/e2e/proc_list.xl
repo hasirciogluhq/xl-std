@@ -2,7 +2,7 @@
 // Process32FirstW / Process32NextW / CloseHandle), reached through std/sys `procList`. Each row shows the pid, the
 // parent pid, the thread count and the executable name. On Linux and macOS the same call reads /proc and sysctl.
 //
-// Build:   xlang build test/e2e/proc_list.xl --target x86_64-pc-windows-msvc -o proc_list.exe
+// Build:   xl build test/e2e/proc_list.xl --target x86_64-pc-windows-msvc -o proc_list.exe
 // Run:     proc_list.exe            (Windows: native or under Wine/CrossOver)
 from "std" import println
 from "std/sys" import procList, ProcInfo

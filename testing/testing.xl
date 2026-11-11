@@ -11,8 +11,8 @@
 //         return suiteRun(&s)
 //     }
 //
-// `xlang test` finds `*.test.xl` files, builds and runs each one. The exit code is 0 when every
-// test passed. Output is colored; build with `-D xlTestNoColor` for plain text (`xlang test` does
+// `xl test` finds `*.test.xl` files, builds and runs each one. The exit code is 0 when every
+// test passed. Output is colored; build with `-D xlTestNoColor` for plain text (`xl test` does
 // that itself when stdout is not a terminal). The registry grows on demand: no fixed limits.
 from "../sys" import sysWrite
 from "../mem/memory" import strlen, mapGrow
