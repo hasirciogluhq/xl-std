@@ -135,7 +135,7 @@ fn labeledLoop(t: *T) {
             }
         }
     }
-    expectEq(t, found as i64, 2030)    // 2 * 30
+    expectEq(t, found as i64, 230)    // 2 * 30 = 60: found = 2 * 100 + 30
 }
 
 // `[]mut T` as a parameter: a write through it reaches the caller's array.
