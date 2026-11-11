@@ -17,3 +17,8 @@
 .vscode/
 *.swp
 *~
+
+# Release archives and test leftovers
+dist/
+xlang_e2e.*
+e2e-runner
