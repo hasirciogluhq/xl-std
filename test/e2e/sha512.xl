@@ -2,12 +2,12 @@
 from "std/crypto/hash/sha512" import sha512, sha384
 from "std" import print, strlen
 
-fn hexDigit(v: ui8) -> ui8 {
+fn hexDigit(v: u8) -> u8 {
     if v < 10 { return 48 + v }
     return 87 + v
 }
 
-fn toHex(d: *ui8, n: usize, out: *ui8) {
+fn toHex(d: *u8, n: usize, out: *u8) {
     local i: usize = 0
     while i < n {
         out[i * 2] = hexDigit(d[i] >> 4)
@@ -17,7 +17,7 @@ fn toHex(d: *ui8, n: usize, out: *ui8) {
     out[n * 2] = 0
 }
 
-fn same(a: *ui8, b: *ui8) -> bool {
+fn same(a: *u8, b: *u8) -> bool {
     local i: usize = 0
     while a[i] != 0 || b[i] != 0 {
         if a[i] != b[i] { return false }
@@ -28,7 +28,7 @@ fn same(a: *ui8, b: *ui8) -> bool {
 
 global failures: i32 = 0
 
-fn fail(name: *ui8, got: *ui8) {
+fn fail(name: *u8, got: *u8) {
     failures = failures + 1
     print("FAIL ")
     print(name)
@@ -38,8 +38,8 @@ fn fail(name: *ui8, got: *ui8) {
 }
 
 @entry fn main() -> i32 {
-    local d: [ui8; 64]
-    local hex: [ui8; 129]
+    local d: [u8; 64]
+    local hex: [u8; 129]
     sha512("abc", 3, &d[0])
     toHex(&d[0], 64, &hex[0])
     if !same(&hex[0], "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f") { fail("sha512 abc", &hex[0]) }
@@ -49,7 +49,7 @@ fn fail(name: *ui8, got: *ui8) {
     sha384("abc", 3, &d[0])
     toHex(&d[0], 48, &hex[0])
     if !same(&hex[0], "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7") { fail("sha384 abc", &hex[0]) }
-    local m: *ui8 = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+    local m: *u8 = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
     sha512(m, strlen(m), &d[0])
     toHex(&d[0], 64, &hex[0])
     if !same(&hex[0], "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909") { fail("sha512 two-block", &hex[0]) }

@@ -3,12 +3,12 @@
 from "std/crypto/cipher/aesgcm" import aes128EncryptBlock, aesGcmSeal, aesGcmOpen
 from "std" import print
 
-fn hexVal(c: ui8) -> ui8 {
+fn hexVal(c: u8) -> u8 {
     if c >= 97 { return c - 87 }
     return c - 48
 }
 
-fn unhex(hex: *ui8, out: *ui8) -> usize {
+fn unhex(hex: *u8, out: *u8) -> usize {
     local n: usize = 0
     while hex[n * 2] != 0 {
         out[n] = hexVal(hex[n * 2]) * 16 + hexVal(hex[n * 2 + 1])
@@ -17,7 +17,7 @@ fn unhex(hex: *ui8, out: *ui8) -> usize {
     return n
 }
 
-fn same(a: *ui8, b: *ui8, n: usize) -> bool {
+fn same(a: *u8, b: *u8, n: usize) -> bool {
     local i: usize = 0
     while i < n {
         if a[i] != b[i] { return false }
@@ -28,7 +28,7 @@ fn same(a: *ui8, b: *ui8, n: usize) -> bool {
 
 global failures: i32 = 0
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         print(name)
         print("\n")
@@ -36,24 +36,24 @@ fn check(name: *ui8, ok: bool) {
     }
 }
 
-fn gcm(name: *ui8, key: *ui8, iv: *ui8, aad: *ui8, pt: *ui8, ct: *ui8, tag: *ui8) {
-    local k: [ui8; 16]
-    local n: [ui8; 12]
-    local a: [ui8; 32]
-    local p: [ui8; 64]
-    local c: [ui8; 64]
-    local t: [ui8; 16]
+fn gcm(name: *u8, key: *u8, iv: *u8, aad: *u8, pt: *u8, ct: *u8, tag: *u8) {
+    local k: [u8; 16]
+    local n: [u8; 12]
+    local a: [u8; 32]
+    local p: [u8; 64]
+    local c: [u8; 64]
+    local t: [u8; 16]
     unhex(key, &k[0])
     unhex(iv, &n[0])
     local alen: usize = unhex(aad, &a[0])
     local plen: usize = unhex(pt, &p[0])
     unhex(ct, &c[0])
     unhex(tag, &t[0])
-    local got: [ui8; 64]
-    local gtag: [ui8; 16]
+    local got: [u8; 64]
+    local gtag: [u8; 16]
     aesGcmSeal(&k[0], 16, &n[0], &a[0], alen, &p[0], plen, &got[0], &gtag[0])
     check(name, same(&got[0], &c[0], plen) && same(&gtag[0], &t[0], 16))
-    local back: [ui8; 64]
+    local back: [u8; 64]
     check(name, aesGcmOpen(&k[0], 16, &n[0], &a[0], alen, &got[0], plen, &t[0], &back[0]))
     check(name, same(&back[0], &p[0], plen))
     if plen > 0 {
@@ -63,10 +63,10 @@ fn gcm(name: *ui8, key: *ui8, iv: *ui8, aad: *ui8, pt: *ui8, ct: *ui8, tag: *ui8
 }
 
 @entry fn main() -> i32 {
-    local key: [ui8; 16]
-    local pt: [ui8; 16]
-    local want: [ui8; 16]
-    local out: [ui8; 16]
+    local key: [u8; 16]
+    local pt: [u8; 16]
+    local want: [u8; 16]
+    local out: [u8; 16]
     unhex("000102030405060708090a0b0c0d0e0f", &key[0])
     unhex("00112233445566778899aabbccddeeff", &pt[0])
     unhex("69c4e0d86a7b0430d8cdb78070b4c55a", &want[0])

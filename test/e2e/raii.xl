@@ -40,7 +40,7 @@ class Derived : Base {
     fn drop(self) { order = order * 10 + 8 }
 }
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")

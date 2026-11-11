@@ -31,7 +31,7 @@ impl Allocator for Counting {
     currentAllocator = counting
 }
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")

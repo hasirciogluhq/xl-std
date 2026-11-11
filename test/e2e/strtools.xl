@@ -3,7 +3,7 @@ from "std" import print, format, fmtAppend, String, Vec, find, contains, startsW
 
 global failures: i32 = 0
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")
@@ -36,7 +36,7 @@ fn check(name: *ui8, ok: bool) {
     check("i64 lone sign", !toI64("-", &n))
     check("i64 junk", !toI64("12a", &n))
 
-    local u: ui64 = 0
+    local u: u64 = 0
     check("u64 maximum", toU64("18446744073709551615", &u) && u + 1 == 0)
     check("u64 overflow", !toU64("18446744073709551616", &u))
     check("u64 empty", !toU64("", &u))

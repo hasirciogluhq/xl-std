@@ -8,10 +8,10 @@ from "std/sys" import sysClose
 from "tls/fixture" import rsaCert, rsaKey, ecCert, ecKey
 
 global cred: TlsCredentials
-global req: [ui8; 4096]
-global chunk: [ui8; 4096]
+global req: [u8; 4096]
+global chunk: [u8; 4096]
 
-fn startsWith(s: *ui8, p: *ui8) -> bool {
+fn startsWith(s: *u8, p: *u8) -> bool {
     local i: usize = 0
     while p[i] != 0 {
         if s[i] != p[i] { return false }
@@ -32,7 +32,7 @@ fn startsWith(s: *ui8, p: *ui8) -> bool {
         print("\n")
         return 1
     }
-    local fd: i32 = tlsListen(2130706433, tlsPort as ui16)
+    local fd: i32 = tlsListen(2130706433, tlsPort as u16)
     if fd < 0 {
         print("server: listen\n")
         return 2
@@ -53,7 +53,7 @@ fn startsWith(s: *ui8, p: *ui8) -> bool {
                     // 200000 bytes: enough records to cross the 2^14 boundary many times
                     local i: usize = 0
                     while i < 4096 {
-                        chunk[i] = (65 + (i % 26)) as ui8
+                        chunk[i] = (65 + (i % 26)) as u8
                         i = i + 1
                     }
                     local sent: usize = 0

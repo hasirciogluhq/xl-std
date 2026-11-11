@@ -4,7 +4,7 @@
 // afterwards. Prints "s3 ok" and exits 0 on success; the exit status is the number of failed checks.
 from "std" import print, String, Client, Response, S3Client, S3Result, S3List, s3ProfileGeneric
 
-fn check(name: *ui8, ok: bool) -> i32 {
+fn check(name: *u8, ok: bool) -> i32 {
     if !ok {
         print("FAIL ")
         print(name)

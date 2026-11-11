@@ -6,9 +6,9 @@ from "std" import print, trustSetBundlePem, tlsConnect, tlsRead, tlsWrite, tlsCl
 from "std" import TlsConn, TLS_OK, TLS_ERR_CERT, strlen
 from "tls/fixture" import rsaCert, ecCert
 
-global buf: [ui8; 8192]
+global buf: [u8; 8192]
 
-fn contains(s: *ui8, n: usize, p: *ui8) -> bool {
+fn contains(s: *u8, n: usize, p: *u8) -> bool {
     local pl: usize = strlen(p)
     local i: usize = 0
     while i + pl <= n {
@@ -22,9 +22,9 @@ fn contains(s: *ui8, n: usize, p: *ui8) -> bool {
 
 /// Connects, sends `request`, reads until the server closes. Returns the byte count (or a negative
 /// TLS_ERR from the handshake); the first 8192 bytes of the reply stay in `buf`.
-fn fetch(host: *ui8, request: *ui8) -> isize {
+fn fetch(host: *u8, request: *u8) -> isize {
     local c: TlsConn
-    local e: i32 = tlsConnect(&c, 2130706433, tlsPort as ui16, host)
+    local e: i32 = tlsConnect(&c, 2130706433, tlsPort as u16, host)
     if e != TLS_OK { return e as isize }
     if !tlsWrite(&c, request, strlen(request)) {
         tlsClose(&c)
@@ -46,11 +46,11 @@ fn fetch(host: *ui8, request: *ui8) -> isize {
 
 @entry fn main() -> i32 {
 #ifdef tlsEc
-    local good: *ui8 = ecCert
-    local other: *ui8 = rsaCert
+    local good: *u8 = ecCert
+    local other: *u8 = rsaCert
 #else
-    local good: *ui8 = rsaCert
-    local other: *ui8 = ecCert
+    local good: *u8 = rsaCert
+    local other: *u8 = ecCert
 #endif
     trustSetBundlePem(good, strlen(good))
 

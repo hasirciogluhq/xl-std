@@ -1,8 +1,8 @@
 // M:N scheduler: many tasks, yielding, atomics, waitAll.
 from "std" import print, assert, spawn, waitAll, yield, cpu
 
-global done: ui32 = 0
-global sum: ui64 = 0
+global done: u32 = 0
+global sum: u64 = 0
 
 fn task(arg: *void) {
     local n: usize = arg as usize
@@ -11,7 +11,7 @@ fn task(arg: *void) {
         yield()
         i = i + 1
     }
-    __builtin_atomicAdd(&sum, n as ui64, MemoryOrder.seqCst)
+    __builtin_atomicAdd(&sum, n as u64, MemoryOrder.seqCst)
     __builtin_atomicAdd(&done, 1, MemoryOrder.seqCst)
 }
 

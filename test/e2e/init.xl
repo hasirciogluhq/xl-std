@@ -6,7 +6,7 @@ global booted: bool = false
 global sawDep: bool = false
 global failures: i32 = 0
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")

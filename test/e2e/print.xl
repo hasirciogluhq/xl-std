@@ -5,7 +5,7 @@ from "std" import print, println, printEndl, fprint, fprintln, sprintf, format, 
 
 global failures: i32 = 0
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")
@@ -16,13 +16,13 @@ fn check(name: *ui8, ok: bool) {
 
 @entry fn main() -> i32 {
     print("str\n")
-    local p: *ui8 = "ptr\n"
+    local p: *u8 = "ptr\n"
     print(p)
     print(42)
     print("\n")
     print(-7)
     print("\n")
-    print(3 as ui64)
+    print(3 as u64)
     print("\n")
     print(2.5)
     print("\n")
@@ -41,7 +41,7 @@ fn check(name: *ui8, ok: bool) {
     fprintln(1, "fprintln {}", -1)
     printEndl()
 
-    local buf: [ui8; 4]
+    local buf: [u8; 4]
     local n: usize = snprintf(&buf[0], 4 as usize, "hello")
     check("snprintf returns the full length", n == 5)
     check("snprintf keeps the prefix", buf[0] == 104 && buf[2] == 108)
@@ -52,8 +52,8 @@ fn check(name: *ui8, ok: bool) {
 
     local t: String = toString(-12)
     check("toString i64", t.equals("-12"))
-    local u: String = toString(7 as ui64)
-    check("toString ui64", u.equals("7"))
+    local u: String = toString(7 as u64)
+    check("toString u64", u.equals("7"))
     local v: String = toString(2.5)
     check("toString f64", v.equals("2.500000"))
     local w: String = toString(false)
@@ -61,7 +61,7 @@ fn check(name: *ui8, ok: bool) {
     local x: String = toString("text")
     check("toString str", x.equals("text"))
     local y: String = toString(p)
-    check("toString *ui8", y.equals("ptr\n"))
+    check("toString *u8", y.equals("ptr\n"))
 
     local two: String = sprintf("{}-{}", 1, "b")
     check("sprintf 2 arguments", two.equals("1-b"))

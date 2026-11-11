@@ -16,20 +16,20 @@ fn check(ok: bool, what: str) {
     }
 }
 
-fn opt(m: *String, code: ui8, v: ui64) {
+fn opt(m: *String, code: u8, v: u64) {
     m.push(code)
     m.push(4)
     putBe(m, v, 4)
 }
 
 /// A server message of `kind` for transaction `xid`: yiaddr 10.0.0.5, server 10.0.0.1, lease 100 s.
-fn serverMsg(kind: ui8, xid: ui32) -> String {
+fn serverMsg(kind: u8, xid: u32) -> String {
     local m: String = String()
     m.push(2)
     m.push(1)
     m.push(6)
     m.push(0)
-    putBe(&m, xid as ui64, 4)
+    putBe(&m, xid as u64, 4)
     putZeros(&m, 8)
     putBe(&m, 0x0A000005, 4)
     putZeros(&m, 4 + 4 + 16 + 64 + 128)

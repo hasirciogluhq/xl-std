@@ -2,10 +2,10 @@
 // Exits with the number of failed checks and prints "enums ok" when all pass.
 from "std" import print
 
-// --- value enums: integer, float, bool and *ui8 constants, auto-numbering ------------------------
-enum Level: ui8 { Low, Mid = 5, High }
+// --- value enums: integer, float, bool and *u8 constants, auto-numbering ------------------------
+enum Level: u8 { Low, Mid = 5, High }
 enum Ratio: f64 { Half = 0.5, Quarter = 0.25 }
-enum Name: *ui8 { Admin = "admin", Guest = "guest" }
+enum Name: *u8 { Admin = "admin", Guest = "guest" }
 
 // --- payload enums -------------------------------------------------------------------------------
 struct Point { x: i32, y: i32 }
@@ -16,7 +16,7 @@ enum Value {
     Flag(bool)
     Pair(i32, i32)
     At(Point)
-    Text(*ui8)
+    Text(*u8)
     Nil
 }
 
@@ -31,7 +31,7 @@ enum Light { Red, Green(i32), Off }
 
 global failures: i32 = 0
 
-fn check(name: *ui8, got: i64, want: i64) {
+fn check(name: *u8, got: i64, want: i64) {
     if got != want {
         failures += 1
         print("FAIL ")
@@ -102,7 +102,7 @@ fn id(v: Value) -> Value { return v }
     check("level-mid", Level.Mid as i64, 5)
     check("level-high", Level.High as i64, 6)
     check("ratio", ((Ratio.Quarter as f64) * 4.0) as i64, 1)
-    check("name", (Name.Guest as *ui8)[0] as i64, 103)
+    check("name", (Name.Guest as *u8)[0] as i64, 103)
 
     // construction and matching of every payload shape
     check("int", describe(Value.Int(42)), 42)

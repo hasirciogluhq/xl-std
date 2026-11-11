@@ -25,7 +25,7 @@ impl Allocator for Counting {
     currentAllocator = counting
 }
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")
@@ -36,7 +36,7 @@ fn check(name: *ui8, ok: bool) {
 
 @entry fn main() -> i32 {
     local owned: String = String("owned")
-    local buf: [ui8; 8]
+    local buf: [u8; 8]
 
     local before: i32 = allocs
     print("plain ")

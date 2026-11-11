@@ -6,7 +6,7 @@ from "std" import print, strlen
 global failures: i32 = 0
 
 /// True when the first `n` bytes of `a` and `b` are equal (binary-safe; `b` need not be NUL-terminated).
-fn sameN(a: *ui8, b: *ui8, n: usize) -> bool {
+fn sameN(a: *u8, b: *u8, n: usize) -> bool {
     local i: usize = 0
     while i < n {
         if a[i] != b[i] { return false }
@@ -16,11 +16,11 @@ fn sameN(a: *ui8, b: *ui8, n: usize) -> bool {
 }
 
 /// True when `a[0..n]` equals the NUL-terminated text `b` and `b` ends exactly at `n`.
-fn same(a: *ui8, n: usize, b: *ui8) -> bool {
+fn same(a: *u8, n: usize, b: *u8) -> bool {
     return strlen(b) == n && sameN(a, b, n)
 }
 
-fn fail(what: *ui8, text: *ui8) {
+fn fail(what: *u8, text: *u8) {
     failures = failures + 1
     print("FAIL ")
     print(what)
@@ -30,36 +30,36 @@ fn fail(what: *ui8, text: *ui8) {
 }
 
 /// Encodes `input` with `enc`-style call `encName`, checks the text and the decode back to the input.
-fn checkBase64(input: *ui8, n: usize, want: *ui8) {
-    local out: [ui8; 64]
+fn checkBase64(input: *u8, n: usize, want: *u8) {
+    local out: [u8; 64]
     local len: usize = base64Encode(input, n, &out[0])
     out[len] = 0
     if len != base64EncodedLen(n) || !same(&out[0], len, want) {
         fail("base64Encode", &out[0])
     }
-    local back: [ui8; 16]
+    local back: [u8; 16]
     local got: isize = base64Decode(want, strlen(want), &back[0])
     if got != n as isize || (n > 0 && !sameN(&back[0], input, n)) {
         fail("base64Decode", want)
     }
 }
 
-fn checkBase64Url(input: *ui8, n: usize, want: *ui8) {
-    local out: [ui8; 64]
+fn checkBase64Url(input: *u8, n: usize, want: *u8) {
+    local out: [u8; 64]
     local len: usize = base64UrlEncode(input, n, &out[0])
     out[len] = 0
     if !same(&out[0], len, want) {
         fail("base64UrlEncode", &out[0])
     }
-    local back: [ui8; 16]
+    local back: [u8; 16]
     local got: isize = base64UrlDecode(want, strlen(want), &back[0])
     if got != n as isize || (n > 0 && !sameN(&back[0], input, n)) {
         fail("base64UrlDecode", want)
     }
 }
 
-fn checkHex(input: *ui8, n: usize, lower: *ui8, upper: *ui8) {
-    local out: [ui8; 64]
+fn checkHex(input: *u8, n: usize, lower: *u8, upper: *u8) {
+    local out: [u8; 64]
     local len: usize = hexEncode(input, n, &out[0])
     out[len] = 0
     if len != hexEncodedLen(n) || !same(&out[0], len, lower) {
@@ -70,7 +70,7 @@ fn checkHex(input: *ui8, n: usize, lower: *ui8, upper: *ui8) {
     if !same(&out[0], len, upper) {
         fail("base16Encode", &out[0])
     }
-    local back: [ui8; 16]
+    local back: [u8; 16]
     if hexDecode(lower, strlen(lower), &back[0]) != n as isize || (n > 0 && !sameN(&back[0], input, n)) {
         fail("hexDecode", lower)
     }
@@ -80,7 +80,7 @@ fn checkHex(input: *ui8, n: usize, lower: *ui8, upper: *ui8) {
 }
 
 /// `text` must be rejected by a decoder: returns -1.
-fn rejected(what: *ui8, got: isize, text: *ui8) {
+fn rejected(what: *u8, got: isize, text: *u8) {
     if got != -1 {
         fail(what, text)
     }
@@ -96,7 +96,7 @@ fn rejected(what: *ui8, got: isize, text: *ui8) {
     checkBase64("fooba", 5, "Zm9vYmE=")
     checkBase64("foobar", 6, "Zm9vYmFy")
     // Bytes that produce '+' and '/' in standard base64 and '-' and '_' in base64url.
-    local hard: [ui8; 3] = [251, 255, 191]
+    local hard: [u8; 3] = [251, 255, 191]
     checkBase64(&hard[0], 3, "+/+/")
     checkBase64Url(&hard[0], 3, "-_-_")
     checkBase64Url("f", 1, "Zg==")
@@ -106,11 +106,11 @@ fn rejected(what: *ui8, got: isize, text: *ui8) {
     checkHex("", 0, "", "")
     checkHex("f", 1, "66", "66")
     checkHex("foobar", 6, "666f6f626172", "666F6F626172")
-    local bin: [ui8; 2] = [0, 255]
+    local bin: [u8; 2] = [0, 255]
     checkHex(&bin[0], 2, "00ff", "00FF")
 
     // Strict decoders reject what RFC 4648 forbids.
-    local buf: [ui8; 16]
+    local buf: [u8; 16]
     rejected("base64Decode length", base64Decode("Zm9", 3, &buf[0]), "Zm9")
     rejected("base64Decode pad middle", base64Decode("Zm=v", 4, &buf[0]), "Zm=v")
     rejected("base64Decode pad then data", base64Decode("Zg==Zg==", 8, &buf[0]), "Zg==Zg==")

@@ -9,7 +9,7 @@ global hit: i32 = 0
 global trace: i32 = 0
 global paramOk: bool = false
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures += 1
         print("FAIL ")

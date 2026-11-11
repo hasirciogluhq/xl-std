@@ -16,7 +16,7 @@ fn check(ok: bool, what: str) {
 }
 
 /// A Router Advertisement with prefix 2001:db8:1:2::/64 (flags `flags`, valid 7200 s, preferred 3600 s) and one RDNSS 2001:4860:4860::8888.
-fn ra(flags: ui8) -> String {
+fn ra(flags: u8) -> String {
     local m: String = String()
     m.push(134)
     putZeros(&m, 3)

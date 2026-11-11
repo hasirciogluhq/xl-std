@@ -58,10 +58,10 @@ fn expect(name: str, ok: bool) -> i32 {
     failures += expect("two-level forwarding", forwarded.len == 3 as usize)
     println(&forwarded)
 
-    local mix: String = sprintf("{}|{}|{}|{}|{}|{}", -1 as i8, 2 as ui64, 2.5, true, "str", &owned)
+    local mix: String = sprintf("{}|{}|{}|{}|{}|{}", -1 as i8, 2 as u64, 2.5, true, "str", &owned)
     println(&mix)
 
-    local buf: [ui8; 16]
+    local buf: [u8; 16]
     failures += expect("snprintf length", snprintf(&buf[0], 16 as usize, "{}-{}", 7, 8) == 3 as usize)
     failures += expect("snprintf truncated length", snprintf(&buf[0], 4 as usize, "{}{}", 12345, 6) == 6 as usize)
 

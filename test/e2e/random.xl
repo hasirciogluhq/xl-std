@@ -7,7 +7,7 @@ from "std" import print
 
 global failures: i32 = 0
 
-fn check(ok: bool, what: *ui8) {
+fn check(ok: bool, what: *u8) {
     if !ok {
         failures = failures + 1
         print("FAIL ")
@@ -17,22 +17,22 @@ fn check(ok: bool, what: *ui8) {
 }
 
 /// 64-bit constant from two 32-bit halves.
-fn word(hi: ui32, lo: ui32) -> ui64 {
-    return ((hi as ui64) << 32) | (lo as ui64)
+fn word(hi: u32, lo: u32) -> u64 {
+    return ((hi as u64) << 32) | (lo as u64)
 }
 
 fn chachaRfc8439() {
     // RFC 8439 section 2.3.2: key 00..1f, nonce 00:00:00:09:00:00:00:4a:00:00:00:00, block counter 1.
-    local key: [ui8; 32]
+    local key: [u8; 32]
     local i: usize = 0
     while i < 32 {
-        key[i] = i as ui8
+        key[i] = i as u8
         i = i + 1
     }
-    local nonce: [ui8; 12] = [0, 0, 0, 9, 0, 0, 0, 0x4a, 0, 0, 0, 0]
-    local out: [ui8; 64]
+    local nonce: [u8; 12] = [0, 0, 0, 9, 0, 0, 0, 0x4a, 0, 0, 0, 0]
+    local out: [u8; 64]
     chacha20Block(&key[0], 1, &nonce[0], &out[0])
-    local want: [ui8; 16] = [0x10, 0xf1, 0xe7, 0xe4, 0xd1, 0x3b, 0x59, 0x15, 0x50, 0x0f, 0xdd, 0x1f, 0xa3, 0x20, 0x71, 0xc4]
+    local want: [u8; 16] = [0x10, 0xf1, 0xe7, 0xe4, 0xd1, 0x3b, 0x59, 0x15, 0x50, 0x0f, 0xdd, 0x1f, 0xa3, 0x20, 0x71, 0xc4]
     i = 0
     while i < 16 {
         check(out[i] == want[i], "chacha20Block RFC 8439 2.3.2")
@@ -42,7 +42,7 @@ fn chachaRfc8439() {
 
 fn splitMixVector() {
     // Vigna's splitmix64.c with state 0: the first two outputs.
-    local st: ui64 = 0
+    local st: u64 = 0
     check(splitMix64(&st) == word(0xe220a839, 0x7b1dcdaf), "splitMix64 #1")
     check(splitMix64(&st) == word(0x6e789e6a, 0xa1b965f4), "splitMix64 #2")
 }
@@ -72,9 +72,9 @@ fn seededIsRepeatable() {
     local differs: bool = false
     local i: usize = 0
     while i < 16 {
-        local x: ui64 = a.next()
-        local y: ui64 = b.next()
-        local z: ui64 = c.next()
+        local x: u64 = a.next()
+        local y: u64 = b.next()
+        local z: u64 = c.next()
         if x != y { same = false }
         if x != z { differs = true }
         i = i + 1
@@ -94,7 +94,7 @@ fn boundsAndDistribution() {
     }
     i = 0
     while i < 10000 {
-        local v: ui64 = r.below(10)
+        local v: u64 = r.below(10)
         check(v < 10, "below(10) in range")
         hist[v as usize] = hist[v as usize] + 1
         i = i + 1
@@ -146,8 +146,8 @@ fn shuffleKeepsElements() {
 
 fn csprngBytes() {
     local c: Csprng = Csprng()
-    local a: [ui8; 16384]
-    local b: [ui8; 16384]
+    local a: [u8; 16384]
+    local b: [u8; 16384]
     c.fill(&a[0], 16384)
     c.fill(&b[0], 16384)
     local hist: [usize; 256]
@@ -172,34 +172,34 @@ fn csprngBytes() {
     // Two independent 16 KiB draws agree on about 64 bytes; 1000 would mean the stream repeats.
     check(equal < 1000, "csprng consecutive fills differ")
     check(c.nextU64() != c.nextU64(), "csprng u64 values differ")
-    local seed: [ui8; 16]
+    local seed: [u8; 16]
     randomBytes(&seed[0], 16)
     check(randomU64() != randomU64(), "os entropy u64 values differ")
 }
 
 fn uuidLayout() {
     // RFC 9562: bytes 00..0f give the canonical text form.
-    local raw: [ui8; 16]
+    local raw: [u8; 16]
     local i: usize = 0
     while i < 16 {
-        raw[i] = i as ui8
+        raw[i] = i as u8
         i = i + 1
     }
-    local text: [ui8; 36]
+    local text: [u8; 36]
     uuidString(&raw[0], &text[0])
-    local want: *ui8 = "00010203-0405-0607-0809-0a0b0c0d0e0f"
+    local want: *u8 = "00010203-0405-0607-0809-0a0b0c0d0e0f"
     i = 0
     while i < 36 {
         check(text[i] == want[i], "uuidString canonical form")
         i = i + 1
     }
     // v4: version nibble 4, variant bits 10.
-    local u4: [ui8; 16]
+    local u4: [u8; 16]
     uuidV4(&u4[0])
     check(u4[6] >> 4 == 4, "uuidV4 version 4")
     check(u4[8] >> 6 == 2, "uuidV4 variant 10")
     // v7: the timestamp occupies bytes 0..5 big-endian, version nibble 7, variant 10.
-    local u7: [ui8; 16]
+    local u7: [u8; 16]
     uuidV7(&u7[0], word(0x0123, 0x456789ab))
     check(u7[0] == 0x01 && u7[1] == 0x23 && u7[2] == 0x45 && u7[3] == 0x67 && u7[4] == 0x89 && u7[5] == 0xab, "uuidV7 timestamp bytes")
     check(u7[6] >> 4 == 7, "uuidV7 version 7")

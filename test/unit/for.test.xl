@@ -81,10 +81,10 @@ fn boundEvaluatedOnce(t: *T) {
 
 fn everyIntWidth(t: *T) {
     // The loop variable has the bounds' integer type, so a small width works too.
-    local lo8: ui8 = 0
-    local hi8: ui8 = 3
-    local small: ui64 = 0
-    for i in lo8..hi8 { small += i as ui64 }
+    local lo8: u8 = 0
+    local hi8: u8 = 3
+    local small: u64 = 0
+    for i in lo8..hi8 { small += i as u64 }
     expectEq(t, small as i64, 3)
 
     local wide: i64 = 0

@@ -15,7 +15,7 @@ fn check(ok: bool, what: str) {
 }
 
 @entry fn main() -> i32 {
-    local ts: ui64 = ntpFromUnixNanos(1700000000500000000)             // 2023-11-14T22:13:20.5Z
+    local ts: u64 = ntpFromUnixNanos(1700000000500000000)             // 2023-11-14T22:13:20.5Z
     check((ts >> 32) == 1700000000 + 2208988800, "seconds carry the 1900 offset")
     check((ts & 0xffffffff) == 0x80000000, "half a second is 0x80000000")
     check(ntpToUnixNanos(ts) == 1700000000500000000, "nanoseconds round-trip")
@@ -30,10 +30,10 @@ fn check(ok: bool, what: str) {
 
     // Section 8 example shape: server 1 s ahead, 100 ms each way.
     local one: i64 = 4294967296
-    local t1: ui64 = (10 * one) as ui64
-    local t2: ui64 = (11 * one + one / 10) as ui64
-    local t3: ui64 = t2 + (one / 10) as ui64
-    local t4: ui64 = t1 + (3 * one / 10) as ui64
+    local t1: u64 = (10 * one) as u64
+    local t2: u64 = (11 * one + one / 10) as u64
+    local t3: u64 = t2 + (one / 10) as u64
+    local t4: u64 = t1 + (3 * one / 10) as u64
     local od: NtpOffsetDelay = ntpOffsetDelay(t1, t2, t3, t4)
     check(od.offset > one - one / 100 && od.offset < one + one / 100, "offset is about 1 s")
     check(od.delay > one / 5 - one / 100 && od.delay < one / 5 + one / 100, "delay is about 200 ms")

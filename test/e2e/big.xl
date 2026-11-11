@@ -31,7 +31,7 @@ fn constructCases() {
     assert!(zero.count() == 0)
     assert!(zero.bitLength() == 0)
 
-    // BigInt(v) with a ui64 that needs both limbs: the low half is v & 0xFFFFFFFF, the high half v >> 32.
+    // BigInt(v) with a u64 that needs both limbs: the low half is v & 0xFFFFFFFF, the high half v >> 32.
     local one: BigInt = BigInt(1)
     assert!(!one.isZero() && one.count() == 1 && one.isOne())
     assert!(one.bitLength() == 1)
@@ -156,7 +156,7 @@ fn powerCases() {
     local acc: BigInt = BigInt(1)
     local i: i32 = 2
     while i <= 100 {
-        local f: BigInt = BigInt(i as ui64)
+        local f: BigInt = BigInt(i as u64)
         local next: BigInt = BigInt()
         acc.mul(&f, &next)
         next.copy(&acc)
@@ -295,7 +295,7 @@ fn loopCase() {
     // A sum of 0..50 accumulated inside a `for` loop, a fresh operand built from the loop index each step.
     local acc: BigInt = BigInt()
     for i in 0..51 {
-        local term: BigInt = BigInt(i as ui64)
+        local term: BigInt = BigInt(i as u64)
         local next: BigInt = BigInt()
         acc.add(&term, &next)
         next.copy(&acc)
@@ -315,8 +315,8 @@ fn loopCase() {
     assert!(isText(&total, "54975581388800"))     // 50 * 2^40
 }
 
-// A BigInt built from a `ui64` value that arrives as a variable, so the two limbs go through the constructor.
-fn word(out: *BigInt, v: ui64) {
+// A BigInt built from a `u64` value that arrives as a variable, so the two limbs go through the constructor.
+fn word(out: *BigInt, v: u64) {
     local b: BigInt = BigInt(v)
     b.copy(out)
 }

@@ -4,7 +4,7 @@ from "std" import print, String, Vec, vecClone, fsWrite, fsReadAllString, fsRemo
 
 global failures: i32 = 0
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")
@@ -88,7 +88,7 @@ fn trackedChecks() {
     local empty: String = String()
     check("empty cstr", empty.cstr()[0] == 0)
 
-    local path: *ui8 = "xlang_e2e_collections.tmp"
+    local path: *u8 = "xlang_e2e_collections.tmp"
     check("write", fsWrite(path, "round trip\n\0 bytes"))
     local read: String = fsReadAllString(path)
     check("read back", read.length() == 18 && read.at(17) == 115 && read.at(11) == 0)

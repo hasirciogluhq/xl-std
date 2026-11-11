@@ -4,7 +4,7 @@ from "std" import print
 
 global failures: i32 = 0
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")
@@ -30,7 +30,7 @@ fn twice(x: f64) -> f64 { return x * 2.0 }
 
 fn apply(g: fn(i32) -> i32, x: i32) -> i32 { return g(x) }
 
-type Byte = ui8
+type Byte = u8
 fn twoFoo = foo
 
 class Acc {

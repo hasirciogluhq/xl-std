@@ -17,10 +17,10 @@ fn check(ok: bool, what: str) {
 
 /// A server message of `kind` for `xid` with SERVERID, and an IA_NA holding 2001:db8::5 (preferred 100 s, valid 200 s) unless
 /// `status` is not 0, in which case it carries that status code instead.
-fn serverMsg(kind: ui8, xid: ui32, status: ui16) -> String {
+fn serverMsg(kind: u8, xid: u32, status: u16) -> String {
     local m: String = String()
     m.push(kind)
-    putBe(&m, xid as ui64, 3)
+    putBe(&m, xid as u64, 3)
     putBe(&m, 2, 2)                                     // SERVERID: DUID-LL, hw 1, 6 bytes
     putBe(&m, 10, 2)
     putBe(&m, 0x00030001, 4)
@@ -28,7 +28,7 @@ fn serverMsg(kind: ui8, xid: ui32, status: ui16) -> String {
     if status != 0 {
         putBe(&m, 13, 2)
         putBe(&m, 2, 2)
-        putBe(&m, status as ui64, 2)
+        putBe(&m, status as u64, 2)
         return m
     }
     putBe(&m, 3, 2)                                     // IA_NA: iaid, T1 0, T2 0, IAADDR

@@ -25,5 +25,5 @@ from "tls/fixture" import rsaCert, rsaKey, ecCert, ecKey
         sysExit(0)
     })
     print("server: listening\n")
-    return router.RunTLS(tlsPort as ui16, &cred)
+    return router.RunTLS(tlsPort as u16, &cred)
 }

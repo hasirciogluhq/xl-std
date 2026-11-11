@@ -19,7 +19,7 @@ struct MyErr {
 
 global failures: i32 = 0
 
-fn check(name: *ui8, got: i64, want: i64) {
+fn check(name: *u8, got: i64, want: i64) {
     if got != want {
         failures += 1
         print("FAIL ")

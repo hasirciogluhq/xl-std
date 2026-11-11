@@ -2,7 +2,7 @@
 from "std" import print, assert, Mutex, mutexLock, mutexUnlock, threadStart, threadJoin, Thread, free
 
 global counter: i64 = 0
-global atomicCounter: ui32 = 0
+global atomicCounter: u32 = 0
 global lock: Mutex
 
 fn worker(arg: *void) {

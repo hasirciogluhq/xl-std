@@ -5,9 +5,9 @@ from "std" import print, trustSetBundlePem, tlsConnect, tlsRead, tlsWrite, tlsCl
 from "std" import TlsConn, TLS_OK, strlen
 from "tls/fixture" import rsaCert, ecCert
 
-global buf: [ui8; 8192]
+global buf: [u8; 8192]
 
-fn contains(s: *ui8, n: usize, p: *ui8) -> bool {
+fn contains(s: *u8, n: usize, p: *u8) -> bool {
     local pl: usize = strlen(p)
     local i: usize = 0
     while i + pl <= n {
@@ -20,20 +20,20 @@ fn contains(s: *ui8, n: usize, p: *ui8) -> bool {
 }
 
 /// Sends a GET for `path` and reads the whole reply into `buf`; returns its length or -1.
-fn get(path: *ui8) -> isize {
+fn get(path: *u8) -> isize {
     local c: TlsConn
-    local e: i32 = tlsConnect(&c, 2130706433, tlsPort as ui16, "localhost")
+    local e: i32 = tlsConnect(&c, 2130706433, tlsPort as u16, "localhost")
     if e != TLS_OK {
         print(tlsErrorText(e))
         print("\n")
         return -1
     }
-    local req: [ui8; 128]
+    local req: [u8; 128]
     local n: usize = 0
-    local parts: [*ui8; 3] = ["GET ", path, " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"]
+    local parts: [*u8; 3] = ["GET ", path, " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"]
     local i: usize = 0
     while i < 3 {
-        local s: *ui8 = parts[i]
+        local s: *u8 = parts[i]
         local k: usize = 0
         while s[k] != 0 {
             req[n] = s[k]

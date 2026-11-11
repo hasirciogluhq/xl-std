@@ -6,9 +6,9 @@ global g: str = "xlang"
 
 const GREETING = "hi"
 const LIMIT: i32 = 7
-const TABLE: [ui8; 4] = "abc"
+const TABLE: [u8; 4] = "abc"
 
-fn check(name: *ui8, ok: bool) {
+fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
         print("FAIL ")
@@ -22,7 +22,7 @@ fn check(name: *ui8, ok: bool) {
     local s = "Jo\0nes"
     check("embedded NUL counts", s.len == 6)
     check("embedded NUL byte", s[2] == 0)
-    local b: [ui8; 8] = "Jones"
+    local b: [u8; 8] = "Jones"
     b[0] = 66
     check("array copy is writable", b[0] == 66)
     check("array copy is zero-padded", b[5] == 0)
@@ -30,7 +30,7 @@ fn check(name: *ui8, ok: bool) {
     check("eq different", !eq("abc", "abd"))
     check("slice", slice("hello", 1, 3).equals("ell"))
     check("global str", g.len == 5)
-    local p: *ui8 = "plain"
+    local p: *u8 = "plain"
     check("raw pointer literal", strlen(p) == 5)
     check("fromC", fromC(p).len == 5)
     check("str bytes", s.ptr[0] == 74)
