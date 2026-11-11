@@ -64,6 +64,10 @@ Both scripts take the compiler as the first argument (default `$XLC`, then `xlc`
 
 A release is a version tag: `git tag v1.2.0 && git push origin v1.2.0`. `.github/workflows/release.yml` checks the tag (`vMAJOR.MINOR.PATCH`, a suffix after `-` makes it a pre-release), runs the CI workflow, and attaches `xl-std_<version>.tar.gz` and its checksum to a GitHub release. A tag never moves.
 
-## Rules for changing it
+## Contributing
 
-See `CLAUDE.md` in the [xlang](https://github.com/hasirciogluhq/xlang) repository ("Stdlib style" and "Native OS code"): the library is a pyramid (the compiler owns `str`, slices, arrays and pointers; the library builds `String`, `Vec`, `Option`, `Result` on them), signatures take `*String` and return `String`, OS code stays in `sys/`, and every OS feature is written for Linux, macOS and Windows.
+The library is a pyramid (the compiler owns `str`, slices, arrays and pointers; the library builds `String`, `Vec`, `Option`, `Result` on them), signatures take `*String` and return `String`, OS code stays in `sys/`, and every OS feature is written for Linux, macOS and Windows. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
