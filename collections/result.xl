@@ -35,10 +35,12 @@ export fn resultOrElse<T, E>(r: Result<T, E>, fallback: T) -> T {
 
 /// Whether `r` is an `Ok`.
 export fn resultIsOk<T, E>(r: Result<T, E>) -> bool {
+    local ok: bool = false
     switch r {
-        case Result.Ok(v) { return true }
-        case Result.Err(e) { return false }
+        case Result.Ok(v) { ok = true }
+        case Result.Err(e) { }
     }
+    return ok
 }
 
 /// The success value written through `out`, or `false` when `r` is an `Err`.

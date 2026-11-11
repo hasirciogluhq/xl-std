@@ -32,10 +32,12 @@ export fn optionOrElse<T>(o: Option<T>, fallback: T) -> T {
 
 /// Whether `o` holds a value.
 export fn optionIsSome<T>(o: Option<T>) -> bool {
+    local some: bool = false
     switch o {
-        case Option.Some(v) { return true }
-        case Option.None { return false }
+        case Option.Some(v) { some = true }
+        case Option.None { }
     }
+    return some
 }
 
 /// The value of a `Some` written through `out`, or `false` for a `None`.
