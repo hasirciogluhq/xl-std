@@ -1,0 +1,107 @@
+// Unit: the `?` operator (success value or early return of the failure) and `==` on `str`. Pure logic, the same on every OS.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq, expectEqUInt, expectEqStr
+from "std" import String, Result, Option
+
+global exits: i32 = 0
+
+fn half(n: i32) -> Result<i32, i32> {
+    return n % 2 == 0 ? Result.Ok(n / 2) : Result.Err(n)
+}
+
+fn quarter(n: i32) -> Result<i32, i32> {
+    local h = half(n)?
+    local q = half(h)?
+    return Result.Ok(q)
+}
+
+// Several `?` in one statement, combined with an operator and used in a condition.
+fn total(a: i32, b: i32) -> Result<i32, i32> {
+    if half(a)? == 0 { return Result.Ok(0) }
+    return Result.Ok(half(a)? + half(b)?)
+}
+
+fn positive(n: i32) -> Option<i32> {
+    return n > 0 ? Option.Some(n) : Option.None
+}
+
+fn successor(n: i32) -> Option<i32> {
+    local v = positive(n)?
+    return Option.Some(v + 1)
+}
+
+fn name(ok: bool) -> Result<String, i32> {
+    if ok { return Result.Ok(String("hi")) }
+    return Result.Err(7)
+}
+
+// A droppable value crosses `?` both ways, and the deferred statement runs on the early return too.
+fn greet(ok: bool) -> Result<String, i32> {
+    defer exits += 1
+    local s = name(ok)?
+    return Result.Ok(s)
+}
+
+fn value(r: Result<i32, i32>) -> i32 {
+    switch r {
+        case Result.Ok(v) { return v }
+        case Result.Err(e) { return -e }
+    }
+    return 0
+}
+
+fn quarters(t: *T) {
+    expectEq(t, value(quarter(8)) as i64, 2)
+    expectEq(t, value(quarter(6)) as i64, -3) // the failure of the second step
+    expectEq(t, value(quarter(5)) as i64, -5) // the failure of the first step
+}
+
+fn operators(t: *T) {
+    expectEq(t, value(total(4, 6)) as i64, 5)
+    expectEq(t, value(total(4, 5)) as i64, -5)
+    expectEq(t, value(total(0, 3)) as i64, 0) // `half(a)? == 0` returns before `b` is looked at
+}
+
+fn options(t: *T) {
+    switch successor(5) {
+        case Option.Some(v) { expectEq(t, v as i64, 6) }
+        case Option.None { expectEq(t, 0, 1) }
+    }
+    switch successor(0) {
+        case Option.Some(v) { expectEq(t, v as i64, -1) }
+        case Option.None { }
+    }
+}
+
+fn droppable(t: *T) {
+    exits = 0
+    switch greet(true) {
+        case Result.Ok(s) { expectEqStr(t, s.asStr(), "hi") }
+        case Result.Err(e) { expectEq(t, e as i64, 0) }
+    }
+    switch greet(false) {
+        case Result.Ok(s) { expectEq(t, 0, 1) }
+        case Result.Err(e) { expectEq(t, e as i64, 7) }
+    }
+    expectEq(t, exits as i64, 2)
+}
+
+fn strings(t: *T) {
+    local a: str = "hello"
+    expectEq(t, (a == "hello") as i64, 1)
+    expectEq(t, (a == "hellp") as i64, 0)
+    expectEq(t, (a == "hell") as i64, 0)
+    expectEq(t, (a != "hell") as i64, 1)
+    expectEq(t, (a[1..3] == "el") as i64, 1)
+    expectEq(t, ("" == "") as i64, 1)
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "quarters", quarters)
+    test(&s, "operators", operators)
+    test(&s, "options", options)
+    test(&s, "droppable", droppable)
+    test(&s, "str equality", strings)
+    return suiteRun(&s)
+}
