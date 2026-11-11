@@ -53,6 +53,8 @@ want=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$dest/download/c
 [ -n "$want" ] || { echo "error: checksums.txt has no entry for $asset" >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$dest/download/$asset" | awk '{ print $1 }')
 else got=$(shasum -a 256 "$dest/download/$asset" | awk '{ print $1 }'); fi
+# GNU sha256sum starts the line with `\` when the file name contains a backslash (a Windows path): that is not part of the hash.
+got=${got#\\}
 [ "$got" = "$want" ] || { echo "error: checksum mismatch for $asset (got $got, want $want)" >&2; exit 1; }
 
 if [ "$ext" = zip ]; then unzip -q -o "$dest/download/$asset" -d "$dest/bin"; else tar -xzf "$dest/download/$asset" -C "$dest/bin"; fi
