@@ -3,13 +3,12 @@
 // a slice of a mutable owner is writable.
 from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq, expectEqUInt, expectTrue
 
-// The layout: two words, `ptr` at offset 0 and `len` at offset 8, the same as `str`.
+// The layout: two words (`ptr`, `len`), the same as `str`. `offsetOf` takes only a struct or class.
 fn layout(t: *T) {
-    expectEq(t, sizeOf([]i32), sizeOf(str))
-    expectEqUInt(t, offsetOf([]i32, ptr), 0)
-    expectEqUInt(t, offsetOf([]i32, len), 8)
+    expectEqUInt(t, sizeOf([]i32), sizeOf(str))
+    expectEqUInt(t, sizeOf([]i32), 2 * sizeOf(*i32))
     // `[]T` and `[]mut T` are the same size: the `mut` is a permission, not a different layout.
-    expectEq(t, sizeOf([]mut i32), sizeOf([]i32))
+    expectEqUInt(t, sizeOf([]mut i32), sizeOf([]i32))
 }
 
 // A slice from an array covers the range and reads through it.
