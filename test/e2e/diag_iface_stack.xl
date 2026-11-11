@@ -1,0 +1,23 @@
+// Returning a stack object as an interface: E0760. An interface value is a fat pointer that
+// borrows its object, so one that points into this frame dangles after the return. The fix is
+// `new` (see `fine`), which returns a pointer to heap memory the caller must free.
+interface IProvider { fn id(self) -> i32 }
+
+class CProvider { n: i32 }
+impl IProvider for CProvider { fn id(self) -> i32 { return self.n } }
+
+fn loadProvider(n: i32) -> IProvider {
+    local p := CProvider()
+    p.n = n
+    return p
+}
+
+fn fine(n: i32) -> IProvider {
+    local p := new CProvider()
+    p.n = n
+    return p
+}
+
+@entry fn main() -> i32 {
+    return loadProvider(1).id() + fine(2).id()
+}
