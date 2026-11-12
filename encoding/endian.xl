@@ -1,0 +1,34 @@
+// std/encoding/endian: fixed-width unsigned integers in a byte String, least significant byte first (little-endian: ZIP, PE/COFF,
+// x86 and arm64 memory) or most significant first (big-endian, "network byte order": IP, TLS, DNS, https://www.rfc-editor.org/rfc/rfc1700
+// "Data Notations"). Widths are 1 to 8 bytes; values wider than `n` bytes are truncated on write.
+//
+// Readers check bounds: `None` when `[at, at + n)` does not lie inside the String, so parsers of untrusted formats test once per field
+// instead of comparing offsets by hand.
+from "../str/string" import String
+from "../collections/option" import Option
+
+/// The `n`-byte little-endian value at `at`, or None when it does not fit in `s`.
+export fn readLe(s: *String, at: usize, n: usize) -> Option<u64> {
+    if n > 8 || at > s.length() || s.length() - at < n { return Option.None }
+    local v: u64 = 0
+    for i in 0..n { v |= (s.at(at + i) as u64) << (8 * i) as u64 }
+    return Option.Some(v)
+}
+
+/// The `n`-byte big-endian value at `at`, or None when it does not fit in `s`.
+export fn readBe(s: *String, at: usize, n: usize) -> Option<u64> {
+    if n > 8 || at > s.length() || s.length() - at < n { return Option.None }
+    local v: u64 = 0
+    for i in 0..n { v = v << 8 | s.at(at + i) as u64 }
+    return Option.Some(v)
+}
+
+/// Appends the low `n` bytes of `v` to `out`, least significant first.
+export fn putLe(out: *String, v: u64, n: usize) {
+    for i in 0..n { out.push((v >> (8 * i) as u64) as u8) }
+}
+
+/// Appends the low `n` bytes of `v` to `out`, most significant first.
+export fn putBe(out: *String, v: u64, n: usize) {
+    for i in 0..n { out.push((v >> (8 * (n - 1 - i)) as u64) as u8) }
+}

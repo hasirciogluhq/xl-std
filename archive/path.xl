@@ -1,0 +1,23 @@
+// std/archive/path: entry names checked before extraction, shared by `tar` and `zip`. An archive is untrusted input: a name that is
+// absolute or climbs with `..` would write outside the destination ("zip slip", https://cwe.mitre.org/data/definitions/22.html).
+from "../str/string" import String, split
+from "../collections/vec" import Vec
+
+/// The name made safe to join under a destination: `.` segments and empty ones are dropped. Empty when the name is absolute or has a `..`
+/// segment, a drive letter or a backslash, and also for a name that is only `.`, so the caller tells the two apart with `isRoot`.
+export fn safeName(name: *String) -> String {
+    local clean = String()
+    if name.startsWith("/") || name.contains("\\") || name.contains(":") { return clean }
+    for p in split(name.asStr(), "/") {
+        if p.equals("..") { return String() }
+        if p.length() == 0 || p.equals(".") { continue }
+        if clean.length() > 0 { clean.push(47) }
+        clean.append(p)
+    }
+    return clean
+}
+
+/// True for the archive root (`./`, `.` or an empty name), which `git archive` and `tar -C dir .` write as their first entry.
+export fn isRoot(name: *String) -> bool {
+    return name.equals("./") || name.equals(".") || name.equals("")
+}

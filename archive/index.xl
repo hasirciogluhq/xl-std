@@ -1,2 +1,4 @@
-// std/archive: archive formats. `tar` reads and writes tar archives in memory and extracts them to, or builds them from, a directory.
+// std/archive: archive formats. `tar` reads and writes tar archives in memory and extracts them to, or builds them from, a directory;
+// `zip` reads ZIP archives (stored and deflate, ZIP64) and extracts them.
 export * as tar from "tar"
+export * as zip from "zip"

@@ -1,0 +1,131 @@
+// Unit: archive/zip and encoding/endian — archives made by Info-ZIP `zip -X` (one stored entry; a directory, a deflated and a stored
+// entry), their central directory, contents, CRC-32 check and truncation; entry name safety (archive/path); fixed-width integers.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEqUInt, expectTrue, expectEqStr
+from "std/str/string" import String
+from "std/collections/option" import Option
+from "std/collections/result" import Result
+from "std/encoding/hex" import hexDecode
+from "std/encoding/endian" import readLe, readBe, putLe, putBe
+from "std/archive/zip" import Entry, Error, list, contents
+from "std/archive/path" import safeName
+
+define STORED = "504b03040a000000000057386c5d8b7395ac090000000900000009000000706b672f612e74787468656c6c6f207a6970504b01021e030a000000000057386c5d8b7395ac0900000009000000090000000000000000000000a48100000000706b672f612e747874504b0506000000000100010037000000300000000000"
+define MIXED = "504b03040a000000000057386c5d00000000000000000000000004000000706b672f504b030414000200080057386c5d1875da5a090000003100000009000000706b672f622e7478744b4c4a4e2405710100504b03040a000200000057386c5d8b7395ac090000000900000009000000706b672f612e74787468656c6c6f207a6970504b01021e030a000000000057386c5d000000000000000000000000040000000000000000001000ed4100000000706b672f504b01021e0314000200080057386c5d1875da5a0900000031000000090000000000000001000000a48122000000706b672f622e747874504b01021e030a000200000057386c5d8b7395ac0900000009000000090000000000000001000000a48152000000706b672f612e747874504b05060000000003000300a0000000820000000000"
+
+fn bytes(hex: str) -> String {
+    local out = String(hex.len / 2, 0)
+    hexDecode(hex.ptr, hex.len, out.ptr)
+    return out
+}
+
+fn stored(t: *T) {
+    local archive = bytes(STORED)
+    switch list(&archive) {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) {
+            expectEqUInt(t, entries.length(), 1)
+            local e = entries.get(0)
+            expectEqStr(t, e.name.asStr(), "pkg/a.txt")
+            expectTrue(t, !e.dir)
+            expectEqUInt(t, e.size, 9)
+            expectEqUInt(t, e.mode as u64, 0x81a4)      // regular file, 0644
+            switch contents(&archive, e) {
+                case Result.Ok(data) { expectTrue(t, data.equals("hello zip")) }
+                case Result.Err(err) { expectTrue(t, false) }
+            }
+        }
+    }
+}
+
+fn mixed(t: *T) {
+    local archive = bytes(MIXED)
+    switch list(&archive) {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) {
+            expectEqUInt(t, entries.length(), 3)
+            expectEqStr(t, entries.get(0).name.asStr(), "pkg/")
+            expectTrue(t, entries.get(0).dir)
+            expectEqStr(t, entries.get(1).name.asStr(), "pkg/b.txt")
+            expectEqUInt(t, entries.get(1).method, 8)
+            expectEqUInt(t, entries.get(1).packed, 9)
+            switch contents(&archive, entries.get(1)) {
+                case Result.Ok(data) {
+                    expectEqUInt(t, data.length(), 49)
+                    expectTrue(t, data.startsWith("abcabc") && data.endsWith("abc\n"))
+                }
+                case Result.Err(err) { expectTrue(t, false) }
+            }
+            switch contents(&archive, entries.get(2)) {
+                case Result.Ok(data) { expectTrue(t, data.equals("hello zip")) }
+                case Result.Err(err) { expectTrue(t, false) }
+            }
+        }
+    }
+}
+
+fn damaged(t: *T) {
+    // "hello" -> "jello": the size still fits, the CRC-32 does not.
+    local hex = String(STORED).replace("68656c6c6f", "6a656c6c6f")
+    local archive = bytes(hex.asStr())
+    switch list(&archive) {
+        case Result.Err(e) { expectTrue(t, false) }
+        case Result.Ok(entries) {
+            switch contents(&archive, entries.get(0)) {
+                case Result.Ok(data) { expectTrue(t, false) }
+                case Result.Err(err) { expectTrue(t, err == Error.Checksum) }
+            }
+        }
+    }
+    // Cut inside the central directory: the EOCD is gone.
+    local whole = bytes(STORED)
+    local cut = whole.slice(0, 80)
+    switch list(&cut) {
+        case Result.Ok(entries) { expectTrue(t, false) }
+        case Result.Err(err) { expectTrue(t, err == Error.Truncated || err == Error.Invalid) }
+    }
+}
+
+fn names(t: *T) {
+    local cases = [("pkg/a.txt", "pkg/a.txt"), ("./pkg//a.txt", "pkg/a.txt"), ("../x", ""), ("/etc/passwd", ""), ("a/../../x", ""), ("c:x", ""), ("a\\b", "")]
+    for c in cases {
+        local name = String(c.0)
+        local safe = safeName(&name)
+        expectEqStr(t, safe.asStr(), c.1)
+    }
+}
+
+fn endian(t: *T) {
+    local s = String()
+    putLe(&s, 0x0102030405060708, 8)
+    putBe(&s, 0xa1b2, 2)
+    expectEqUInt(t, s.length(), 10)
+    expectEqUInt(t, s.at(0) as u64, 8)
+    switch readLe(&s, 0, 8) {
+        case Option.Some(v) { expectEqUInt(t, v, 0x0102030405060708) }
+        case Option.None { expectTrue(t, false) }
+    }
+    switch readBe(&s, 8, 2) {
+        case Option.Some(v) { expectEqUInt(t, v, 0xa1b2) }
+        case Option.None { expectTrue(t, false) }
+    }
+    switch readLe(&s, 0, 2) {
+        case Option.Some(v) { expectEqUInt(t, v, 0x0708) }
+        case Option.None { expectTrue(t, false) }
+    }
+    switch readLe(&s, 9, 2) {
+        case Option.Some(v) { expectTrue(t, false) }
+        case Option.None { expectTrue(t, true) }
+    }
+}
+
+@entry
+fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "a stored entry", stored)
+    test(&s, "directory, deflate and stored entries", mixed)
+    test(&s, "a bad CRC-32 and a truncated archive", damaged)
+    test(&s, "entry names that would leave the destination", names)
+    test(&s, "little- and big-endian fields", endian)
+    return suiteRun(&s)
+}

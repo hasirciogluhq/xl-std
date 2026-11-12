@@ -1,0 +1,219 @@
+// std/archive/zip: reading ZIP archives in memory and extracting them to a directory (PKWARE APPNOTE.TXT 6.3.10,
+// https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT).
+//
+// Layout: local file headers each followed by the entry's data, then the central directory (one header per entry, 4.3.12), then the
+// end of central directory record (EOCD, 4.3.16). The EOCD is found by searching backward from the end, since a comment of up to
+// 65535 bytes may follow it. The central directory is authoritative (4.3.6): a local header is read only for the lengths of its name
+// and extra field, which may differ from the central copy. ZIP64 (4.3.14, 4.3.15, 4.5.3) is read: the zip64 EOCD found through its
+// locator just before the EOCD, and the extra field 0x0001 holding the 64-bit sizes and offset whose 32-bit fields are 0xFFFFFFFF.
+//
+// Methods 0 (stored) and 8 (deflate, std/compress) are read and every file's CRC-32 is checked. Encrypted entries (flag bit 0),
+// other methods and archives split over several disks are `Unsupported`. Unix permissions (the high 16 bits of the external
+// attributes when "version made by" names Unix, 4.4.2.2) are listed in `mode` but not applied, as with tar. `extract` refuses a name
+// that could leave the destination (std/archive/path).
+from "../str/string" import String
+from "../collections/vec" import Vec
+from "../collections/option" import Option
+from "../collections/result" import Result
+from "../io/files" import makeDirAll
+from "../io/fs" import fsWrite
+from "../checksum/crc" import crc32
+from "../compress/inflate" import inflateAt, STATUS_OK
+from "../encoding/endian" import readLe
+from "path" import safeName, isRoot
+
+define SIG_LOCAL = 0x04034b50
+define SIG_CENTRAL = 0x02014b50
+define SIG_END = 0x06054b50
+define SIG_END64 = 0x06064b50
+define SIG_LOCATOR64 = 0x07064b50
+define END_SIZE = 22               // EOCD without its comment
+define LOCATOR64_SIZE = 20
+define END64_SIZE = 56             // zip64 EOCD without its extensible data
+define CENTRAL_SIZE = 46           // central header without name, extra and comment
+define LOCAL_SIZE = 30             // local header without name and extra
+define MAX_COMMENT = 65535
+define FULL16 = 0xffff             // "see the zip64 record"
+define FULL32 = 0xffffffff
+define EXTRA_ZIP64 = 1
+define FLAG_ENCRYPTED = 1
+define METHOD_STORED = 0
+define METHOD_DEFLATE = 8
+define HOST_UNIX = 3
+
+/// Why an archive could not be read or extracted.
+export enum Error: i32 {
+    Truncated     // a record or an entry's data runs past the end
+    Invalid       // a signature or a length is wrong
+    Checksum      // the data does not match its CRC-32 or size
+    Unsupported   // encryption, a method other than stored and deflate, several disks
+    UnsafePath    // an entry name would leave the destination directory
+    Io            // a directory or file could not be created or written
+}
+
+/// One entry of an archive as the central directory describes it. The data is read with `contents`.
+export class Entry {
+    name: String
+    dir: bool          // the name ends in `/`
+    method: u64
+    flags: u64
+    crc: u64
+    size: u64          // uncompressed
+    packed: u64        // compressed
+    mode: u32          // Unix permission and type bits; 0 when the archive was not made on Unix
+    header: u64        // offset of the local header
+
+    fn init(self) {
+        self.dir = false
+        self.method = 0
+        self.flags = 0
+        self.crc = 0
+        self.size = 0
+        self.packed = 0
+        self.mode = 0
+        self.header = 0
+    }
+}
+
+/// The `n`-byte field at `at`, or the error `Truncated` when it runs past the end.
+fn field(s: *String, at: usize, n: usize) -> Result<u64, Error> {
+    switch readLe(s, at, n) {
+        case Option.Some(v) { return Result.Ok(v) }
+        case Option.None { return Result.Err(Error.Truncated) }
+    }
+    return Result.Err(Error.Truncated)
+}
+
+/// The offset of the EOCD: the last signature whose comment ends exactly at the end of the archive.
+fn findEnd(s: *String) -> Result<usize, Error> {
+    local n = s.length()
+    if n < END_SIZE { return Result.Err(Error.Truncated) }
+    local lowest = n > END_SIZE + MAX_COMMENT ? n - END_SIZE - MAX_COMMENT : 0
+    for back in 0..=(n - END_SIZE - lowest) {
+        local at = n - END_SIZE - back
+        local signature = field(s, at, 4)?
+        local comment = field(s, at + 20, 2)? as usize
+        if signature == SIG_END && at + END_SIZE + comment == n { return Result.Ok(at) }
+    }
+    return Result.Err(Error.Invalid)
+}
+
+/// (entry count, central directory size, central directory offset), from the EOCD or, when it says so, the zip64 EOCD.
+fn directory(s: *String) -> Result<(u64, u64, u64), Error> {
+    local end = findEnd(s)?
+    local disk = field(s, end + 4, 2)?
+    local directoryDisk = field(s, end + 6, 2)?
+    if disk != 0 || directoryDisk != 0 { return Result.Err(Error.Unsupported) }
+    local count = field(s, end + 10, 2)?
+    local size = field(s, end + 12, 4)?
+    local offset = field(s, end + 16, 4)?
+    if count != FULL16 && size != FULL32 && offset != FULL32 { return Result.Ok((count, size, offset)) }
+    if end < LOCATOR64_SIZE { return Result.Err(Error.Invalid) }
+    if field(s, end - LOCATOR64_SIZE, 4)? != SIG_LOCATOR64 { return Result.Err(Error.Invalid) }
+    local at = field(s, end - LOCATOR64_SIZE + 8, 8)? as usize
+    if field(s, at, 4)? != SIG_END64 { return Result.Err(Error.Invalid) }
+    return Result.Ok((field(s, at + 32, 8)?, field(s, at + 40, 8)?, field(s, at + 48, 8)?))
+}
+
+/// Applies the zip64 extra field (header ID 0x0001) found in the extra block `[at, at + n)`: its 8-byte values replace, in this order,
+/// the uncompressed size, the compressed size and the header offset, each only where the 32-bit field is 0xFFFFFFFF (4.5.3).
+fn applyZip64(s: *String, at: usize, n: usize, e: *Entry) -> Result<bool, Error> {
+    local p = at
+    while p + 4 <= at + n {
+        local id = field(s, p, 2)?
+        local len = field(s, p + 2, 2)? as usize
+        p += 4
+        if p + len > at + n { return Result.Err(Error.Invalid) }
+        if id == EXTRA_ZIP64 {
+            local q = p
+            for slot in [&e.size, &e.packed, &e.header] {
+                if **slot != FULL32 { continue }
+                if q + 8 > p + len { return Result.Err(Error.Invalid) }
+                **slot = field(s, q, 8)?
+                q += 8
+            }
+        }
+        p += len
+    }
+    return Result.Ok(true)
+}
+
+/// The entries of the archive, in central directory order.
+export fn list(archive: *String) -> Result<Vec<Entry>, Error> {
+    local (count, size, offset) = directory(archive)?
+    if offset + size > archive.length() as u64 { return Result.Err(Error.Truncated) }
+    local out: Vec<Entry> = Vec<Entry>()
+    local at = offset as usize
+    for i in 0..count {
+        if field(archive, at, 4)? != SIG_CENTRAL { return Result.Err(Error.Invalid) }
+        local e = Entry()
+        local made = field(archive, at + 4, 2)?
+        e.flags = field(archive, at + 8, 2)?
+        e.method = field(archive, at + 10, 2)?
+        e.crc = field(archive, at + 16, 4)?
+        e.packed = field(archive, at + 20, 4)?
+        e.size = field(archive, at + 24, 4)?
+        local nameLen = field(archive, at + 28, 2)? as usize
+        local extraLen = field(archive, at + 30, 2)? as usize
+        local commentLen = field(archive, at + 32, 2)? as usize
+        local attributes = field(archive, at + 38, 4)?
+        e.header = field(archive, at + 42, 4)?
+        local next = at + CENTRAL_SIZE + nameLen + extraLen + commentLen
+        if next > archive.length() { return Result.Err(Error.Truncated) }
+        e.name = archive.slice(at + CENTRAL_SIZE, nameLen)
+        e.dir = e.name.endsWith("/")
+        e.mode = made >> 8 == HOST_UNIX ? (attributes >> 16) as u32 : 0
+        applyZip64(archive, at + CENTRAL_SIZE + nameLen, extraLen, &e)?
+        out.push(e)
+        at = next
+    }
+    return Result.Ok(out)
+}
+
+/// The uncompressed data of the file entry `e`, checked against its size and CRC-32. The size from the central directory is also the
+/// output limit, so a deflate stream that expands past what the entry promises stops there instead of exhausting memory.
+export fn contents(archive: *String, e: *Entry) -> Result<String, Error> {
+    if e.flags & FLAG_ENCRYPTED != 0 { return Result.Err(Error.Unsupported) }
+    local h = e.header as usize
+    if field(archive, h, 4)? != SIG_LOCAL { return Result.Err(Error.Invalid) }
+    local start = h + LOCAL_SIZE + field(archive, h + 26, 2)? as usize + field(archive, h + 28, 2)? as usize
+    if start as u64 + e.packed > archive.length() as u64 { return Result.Err(Error.Truncated) }
+    local data = String()
+    switch e.method {
+        case METHOD_STORED { data = archive.slice(start, e.packed as usize) }
+        case METHOD_DEFLATE {
+            local end: usize = 0
+            if inflateAt(archive, start, &data, e.size as usize, &end) != STATUS_OK { return Result.Err(Error.Invalid) }
+        }
+        default { return Result.Err(Error.Unsupported) }
+    }
+    if data.length() as u64 != e.size || crc32(data.ptr, data.length()) as u64 != e.crc { return Result.Err(Error.Checksum) }
+    return Result.Ok(data)
+}
+
+/// Extracts every file and directory of `archive` under `dest` (created when missing) and returns how many files were written. Every
+/// name is checked before anything is written, so an archive with one unsafe name (`UnsafePath`) writes nothing.
+export fn extract(archive: *String, dest: *String) -> Result<usize, Error> {
+    local entries = list(archive)?
+    for e in entries {
+        if safeName(&e.name).length() == 0 && !isRoot(&e.name) { return Result.Err(Error.UnsafePath) }
+    }
+    if !makeDirAll(dest) { return Result.Err(Error.Io) }
+    local written: usize = 0
+    for e in entries {
+        local name = safeName(&e.name)
+        if name.length() == 0 { continue }
+        local target = dest.clone()
+        target.push(47)
+        target.append(&name)
+        // A file may come before its directory entry, or without one: its parents are made here.
+        local slash = name.findLast("/")
+        local parent = e.dir ? target.clone() : target.slice(0, dest.length() + 1 + (slash < 0 ? 0 : slash as usize))
+        if (e.dir || slash > 0) && !makeDirAll(&parent) { return Result.Err(Error.Io) }
+        if e.dir { continue }
+        local data = contents(archive, e)?
+        if !fsWrite(target.cstr(), data.asStr()) { return Result.Err(Error.Io) }
+        written++
+    }
+    return Result.Ok(written)
+}
