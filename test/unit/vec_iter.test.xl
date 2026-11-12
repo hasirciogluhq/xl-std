@@ -1,0 +1,54 @@
+// Unit: `for x in vec` and `for x, i in vec` through `Vec.iter` / `VecIter.next`: the element is a `*T` into the Vec's storage
+// (a write reaches the Vec), the index is a `usize`, and an empty Vec runs zero times. Also closures capturing a counter.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq
+from "std/collections/vec" import Vec
+
+fn sumAndWrite(t: *T) {
+    local v: Vec<i32> = Vec<i32>()
+    for n in 1..4 { v.push(n) }
+    local sum: i64 = 0
+    for x in v {
+        sum += *x as i64
+        *x += 10                       // writes into the Vec, not a copy
+    }
+    expectEq(t, sum, 6)
+    expectEq(t, *v.get(0) as i64, 11)
+    expectEq(t, *v.get(2) as i64, 13)
+}
+
+fn indexed(t: *T) {
+    local v: Vec<i32> = Vec<i32>()
+    for n in 0..5 { v.push(n * 2) }
+    local acc: i64 = 0
+    for x, i in v {
+        if i == 3 { break }
+        acc += (*x as i64) * (i as i64)
+    }
+    expectEq(t, acc, 0 * 0 + 2 * 1 + 4 * 2)
+}
+
+fn empty(t: *T) {
+    local v: Vec<i32> = Vec<i32>()
+    local rounds: i64 = 0
+    for x in v { rounds++ }
+    expectEq(t, rounds, 0)
+}
+
+fn closureCounts(t: *T) {
+    local v: Vec<i32> = Vec<i32>()
+    for n in 0..4 { v.push(n) }
+    local seen: i64 = 0
+    local visit = |x: *i32| { seen += *x as i64 }
+    for x in v { visit(x) }
+    expectEq(t, seen, 6)
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "for over a Vec, element is a pointer", sumAndWrite)
+    test(&s, "for with an index over a Vec", indexed)
+    test(&s, "empty Vec runs zero times", empty)
+    test(&s, "closure called from a Vec loop", closureCounts)
+    return suiteRun(&s)
+}
