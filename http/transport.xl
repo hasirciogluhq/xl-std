@@ -1,0 +1,168 @@
+// std/http/transport: where the client's bytes go. `Transport` is the interface the client speaks through: `connect` opens a fresh
+// connection for one URL (closing the previous one), then `write` and `read` move bytes and `close` ends it. `NetConn` is the real one
+// (TCP, or TLS 1.3 from std/tls for https); a program can give the client its own (a proxy tunnel, a Unix socket, a scripted test peer)
+// through `Client.sendVia` and `Client.streamVia`. `Wire` is the buffered reader the client parses responses with.
+//
+// Timeouts: `connect` sets the socket receive timeout (SO_RCVTIMEO, https://man7.org/linux/man-pages/man7/socket.7.html; on Windows
+// https://learn.microsoft.com/en-us/windows/win32/winsock/sol-socket-socket-options), so a stalled peer ends a read with an error.
+from "../sys" import sysTcpSocket, sysTcpConnect, sysClose, sysRead, sysWrite, sysSetRecvTimeout
+from "../net/dns" import dnsResolve
+from "../tls/tls" import TlsConn, tlsConnectHost, tlsWrite, tlsRead, tlsClose, TLS_OK, TLS_ERR_DNS, TLS_ERR_IO
+from "../str/str" import fromParts
+from "../str/string" import String
+from "../collections/result" import Result
+from "url" import Url, HttpError
+
+define READ_CHUNK = 16384     // one TLS record of plaintext at most (RFC 8446 section 5.1)
+define MAX_LINE = 65536       // the longest status line, header line or chunk-size line accepted
+
+export interface Transport {
+    /// Opens a connection to `u`'s host and port (closing any open one); the read timeout is `timeoutMs` (0: none).
+    fn connect(self, u: *Url, timeoutMs: i32) -> Result<bool, HttpError>
+    /// Appends what arrives to `into`: the count, 0 at the end of the stream, < 0 on failure or timeout.
+    fn read(self, into: *String) -> isize
+    /// Sends all of `data`; false on failure.
+    fn write(self, data: *String) -> bool
+    /// Closes the connection; safe to call when none is open.
+    fn close(self)
+}
+
+/// TCP for `http://`, TLS 1.3 over TCP for `https://`.
+export class NetConn {
+    fd: i32
+    https: bool
+    tls: TlsConn
+
+    fn init(self) {
+        self.fd = -1
+        self.https = false
+        self.tls.rec = nil
+        self.tls.open = false
+    }
+
+    fn drop(self) {
+        self.shut()
+    }
+
+    fn shut(self) {
+        if self.https {
+            tlsClose(&self.tls)
+        } else if self.fd >= 0 {
+            sysClose(self.fd)
+        }
+        self.fd = -1
+        self.https = false
+    }
+}
+
+impl Transport for NetConn {
+    fn connect(self, u: *Url, timeoutMs: i32) -> Result<bool, HttpError> {
+        self.shut()
+        if u.https {
+            local e = tlsConnectHost(&self.tls, u.host.cstr(), u.port)
+            if e != TLS_OK {
+                tlsClose(&self.tls)
+                // TLS_ERR_IO here is a refused or reset TCP connection, not a certificate problem.
+                return Result.Err(e == TLS_ERR_DNS ? HttpError.Dns : e == TLS_ERR_IO ? HttpError.Connect : HttpError.Tls)
+            }
+            self.https = true
+            self.fd = self.tls.fd
+        } else {
+            local ip: u32 = 0
+            if !dnsResolve(u.host.cstr(), &ip) { return Result.Err(HttpError.Dns) }
+            self.fd = sysTcpSocket()
+            if self.fd < 0 || sysTcpConnect(self.fd, ip, u.port) < 0 {
+                self.shut()
+                return Result.Err(HttpError.Connect)
+            }
+        }
+        if timeoutMs > 0 { sysSetRecvTimeout(self.fd, timeoutMs) }
+        return Result.Ok(true)
+    }
+
+    fn read(self, into: *String) -> isize {
+        if self.fd < 0 { return -1 }
+        local chunk: [u8; READ_CHUNK]
+        local got = self.https ? tlsRead(&self.tls, &chunk[0], READ_CHUNK) : sysRead(self.fd, &chunk[0], READ_CHUNK)
+        if got > 0 { into.append(fromParts(&chunk[0], got as usize)) }
+        return got
+    }
+
+    fn write(self, data: *String) -> bool {
+        if self.fd < 0 { return false }
+        if self.https { return tlsWrite(&self.tls, data.ptr, data.length()) }
+        local done: usize = 0
+        while done < data.length() {
+            local w = sysWrite(self.fd, &data.ptr[done], data.length() - done)
+            if w <= 0 { return false }
+            done += w as usize
+        }
+        return true
+    }
+
+    fn close(self) {
+        self.shut()
+    }
+}
+
+/// A buffered reader over a Transport: lines for the head and chunk sizes, pieces for the body.
+export class Wire {
+    t: Transport
+    buf: String
+    at: usize             // bytes of `buf` already consumed
+
+    fn init(self, t: Transport) {
+        self.t = t
+        self.buf = String()
+        self.at = 0
+    }
+
+    fn reset(self) {
+        self.buf.clear()
+        self.at = 0
+    }
+
+    /// Reads more into the buffer, dropping the consumed part first; false at the end of the stream.
+    fn fill(self) -> Result<bool, HttpError> {
+        if self.at > 0 {
+            self.buf = self.buf.slice(self.at, self.buf.length() - self.at)
+            self.at = 0
+        }
+        local got = self.t.read(&self.buf)
+        if got < 0 { return Result.Err(HttpError.Io) }
+        return Result.Ok(got > 0)
+    }
+
+    /// The next line without its end; CRLF ends a line, a bare LF is accepted too (RFC 9112 section 2.2).
+    fn line(self) -> Result<String, HttpError> {
+        local scan = self.at
+        while true {
+            local s = self.buf.asStr()
+            for i in scan..s.len {
+                if s[i] == b'\n' {
+                    local end = i > self.at && s[i - 1] == b'\r' ? i - 1 : i
+                    local out = self.buf.slice(self.at, end - self.at)
+                    self.at = i + 1
+                    return Result.Ok(out)
+                }
+            }
+            if s.len - self.at > MAX_LINE { return Result.Err(HttpError.TooLarge) }
+            scan = s.len - self.at          // where the scan resumes after `fill` moves the unconsumed bytes to the front
+            if !self.fill()? { return Result.Err(HttpError.Io) }
+        }
+        return Result.Err(HttpError.Io)
+    }
+
+    /// Up to `max` bytes: the buffered ones first, else one read. Empty at the end of the stream.
+    fn next(self, max: usize) -> Result<String, HttpError> {
+        if self.at == self.buf.length() {
+            self.reset()
+            if !self.fill()? { return Result.Ok(String()) }
+        }
+        local n = self.buf.length() - self.at
+        if n > max { n = max }
+        local part = self.buf.slice(self.at, n)
+        self.at += n
+        return Result.Ok(part)
+    }
+}

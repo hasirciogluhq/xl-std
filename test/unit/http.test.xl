@@ -1,0 +1,344 @@
+// Unit tests of the HTTP client without a network: `Peer` is a scripted Transport that answers each connection with one canned reply,
+// a few bytes per read, and records what the client wrote. They cover body framing, interim responses, redirects (relative, cross-origin,
+// 303), retries, malformed and truncated replies, streaming through a closure, URL parsing and resolution, and header lists.
+// Each case returns a Result so that `?` takes responses out (a payload copied out of a `switch` is freed twice, known-limitations).
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEqStr, expectTrue, expectFalse, expectEq, testFail
+from "std/http" import Client, Request, Response, Headers, Url, HttpError, Transport, parseUrl, errorText
+from "std" import String, Vec, Result
+
+class Peer {
+    replies: Vec<String>      // one per connection; an empty one closes before answering
+    next: usize
+    reply: String
+    at: usize
+    step: usize               // bytes per read, to split every line and chunk across reads
+    sent: Vec<String>         // what the client wrote on each connection
+    urls: Vec<String>         // the URL of each connection
+
+    fn init(self, step: usize) {
+        self.replies = Vec<String>()
+        self.next = 0
+        self.reply = String()
+        self.at = 0
+        self.step = step
+        self.sent = Vec<String>()
+        self.urls = Vec<String>()
+    }
+
+    fn answer(self, text: str) {
+        self.replies.push(String(text))
+    }
+}
+
+impl Transport for Peer {
+    fn connect(self, u: *Url, timeoutMs: i32) -> Result<bool, HttpError> {
+        self.urls.push(u.toString())
+        self.sent.push(String())
+        self.reply = self.next < self.replies.length() ? self.replies.get(self.next).clone() : String()
+        self.next++
+        self.at = 0
+        return Result.Ok(true)
+    }
+
+    fn read(self, into: *String) -> isize {
+        local n = self.reply.length() - self.at
+        if n > self.step { n = self.step }
+        into.append(self.reply.slice(self.at, n))
+        self.at += n
+        return n as isize
+    }
+
+    fn write(self, data: *String) -> bool {
+        self.sent.get(self.sent.length() - 1).append(data)
+        return true
+    }
+
+    fn close(self) { }
+}
+
+fn request(method: str, url: str) -> Request {
+    local u = String(url)
+    return Request(method, &u)
+}
+
+fn get(c: *Client, p: *Peer, url: str) -> Result<Response, HttpError> {
+    local r = request("GET", url)
+    return c.sendVia(p, &r)
+}
+
+fn expectOk(t: *T, r: Result<bool, HttpError>) {
+    switch r {
+        case Result.Ok(v) { }
+        case Result.Err(e) {
+            local why = errorText(e)
+            testFail(t, why.cstr())
+        }
+    }
+}
+
+fn expectErr(t: *T, r: Result<Response, HttpError>, want: HttpError) {
+    switch r {
+        case Result.Ok(resp) { testFail(t, "expected an error") }
+        case Result.Err(e) { expectEq(t, e as i64, want as i64) }
+    }
+}
+
+fn contentLength(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(3)
+    p.answer("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nX-Note:  spaced \r\n\r\nhello world")
+    local r = get(&c, &p, "http://a.example/x")?
+    expectEq(t, r.status as i64, 200)
+    expectEqStr(t, r.reason.asStr(), "OK")
+    expectEqStr(t, r.body.asStr(), "hello world")
+    expectEqStr(t, r.header("x-note").asStr(), "spaced")
+    expectEqStr(t, r.url.asStr(), "http://a.example/x")
+    expectTrue(t, p.sent.get(0).startsWith("GET /x HTTP/1.1\r\nHost: a.example\r\n"))
+    return Result.Ok(true)
+}
+
+fn chunked(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(4)
+    p.answer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nhello\r\n6\r\n world\r\n0\r\nTrailer: x\r\n\r\n")
+    local r = get(&c, &p, "http://a.example/")?
+    expectEqStr(t, r.body.asStr(), "hello world")
+    return Result.Ok(true)
+}
+
+fn untilClose(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(5)
+    p.answer("HTTP/1.0 200 OK\nServer: old\n\nall of it")      // bare LF line ends are accepted
+    local r = get(&c, &p, "http://a.example/")?
+    expectEqStr(t, r.body.asStr(), "all of it")
+    expectEqStr(t, r.header("Server").asStr(), "old")
+    return Result.Ok(true)
+}
+
+fn noBody(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(64)
+    p.answer("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+    p.answer("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 204 No Content\r\n\r\n")
+    local req = request("HEAD", "http://a.example/")
+    local r = c.sendVia(&p, &req)?
+    expectEq(t, r.body.length() as i64, 0)
+    local s = get(&c, &p, "http://a.example/")?
+    expectEq(t, s.status as i64, 204)
+    return Result.Ok(true)
+}
+
+fn redirects(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(7)
+    p.answer("HTTP/1.1 302 Found\r\nLocation: next?q=1\r\nContent-Length: 4\r\n\r\nmove")
+    p.answer("HTTP/1.1 301 Moved\r\nLocation: https://b.example/final\r\n\r\n")
+    p.answer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    local req = request("GET", "http://a.example/dir/start")
+    req.headers.set("Authorization", "secret")
+    local r = c.sendVia(&p, &req)?
+    expectEqStr(t, r.body.asStr(), "ok")
+    expectEqStr(t, r.url.asStr(), "https://b.example/final")
+    expectEqStr(t, p.urls.get(1).asStr(), "http://a.example/dir/next?q=1")
+    expectTrue(t, p.sent.get(1).contains("Authorization: secret"))       // same origin keeps credentials
+    expectFalse(t, p.sent.get(2).contains("Authorization"))              // another origin does not get them
+    expectTrue(t, p.sent.get(2).contains("Host: b.example\r\n"))
+    return Result.Ok(true)
+}
+
+fn seeOther(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(16)
+    p.answer("HTTP/1.1 303 See Other\r\nLocation: /done\r\n\r\n")
+    p.answer("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+    local req = request("POST", "http://a.example/form")
+    req.headers.set("Content-Type", "application/x-www-form-urlencoded")
+    req.body = String("a=1")
+    local r = c.sendVia(&p, &req)?
+    expectTrue(t, p.sent.get(0).startsWith("POST /form HTTP/1.1"))
+    expectTrue(t, p.sent.get(0).endsWith("Content-Length: 3\r\n\r\na=1"))
+    expectTrue(t, p.sent.get(1).startsWith("GET /done HTTP/1.1"))
+    expectFalse(t, p.sent.get(1).contains("Content-"))
+    return Result.Ok(true)
+}
+
+fn redirectLimit(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    c.maxRedirects = 2
+    local p = Peer(64)
+    for i in 0..3 { p.answer("HTTP/1.1 307 Again\r\nLocation: /loop\r\n\r\n") }
+    expectErr(t, get(&c, &p, "http://a.example/"), HttpError.Redirect)
+    c.maxRedirects = 0                                                   // 0: the 3xx itself is the answer
+    local q = Peer(64)
+    q.answer("HTTP/1.1 307 Again\r\nLocation: /loop\r\nContent-Length: 0\r\n\r\n")
+    local r = get(&c, &q, "http://a.example/")?
+    expectEq(t, r.status as i64, 307)
+    return Result.Ok(true)
+}
+
+fn retries(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(64)
+    p.answer("")
+    p.answer("")
+    p.answer("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n!")
+    local r = get(&c, &p, "http://a.example/")?
+    expectEqStr(t, r.body.asStr(), "!")
+    expectEq(t, p.urls.length() as i64, 3)
+    c.retries = 0
+    local q = Peer(64)
+    q.answer("")
+    expectErr(t, get(&c, &q, "http://a.example/"), HttpError.Io)
+    c.retries = 2                                                        // POST is not idempotent: one attempt only
+    local s = Peer(64)
+    s.answer("")
+    s.answer("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+    local req = request("POST", "http://a.example/")
+    expectErr(t, c.sendVia(&s, &req), HttpError.Io)
+    expectEq(t, s.urls.length() as i64, 1)
+    return Result.Ok(true)
+}
+
+fn malformed(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(64)
+    p.answer("SMTP ready\r\n\r\n")
+    expectErr(t, get(&c, &p, "http://a.example/"), HttpError.Protocol)
+    local q = Peer(64)
+    q.answer("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort")
+    expectErr(t, get(&c, &q, "http://a.example/"), HttpError.Io)
+    local s = Peer(64)
+    s.answer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n")
+    expectErr(t, get(&c, &s, "http://a.example/"), HttpError.Protocol)
+    return Result.Ok(true)
+}
+
+fn streaming(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(3)
+    p.answer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\n")
+    local req = request("GET", "http://a.example/")
+    local pieces: i64 = 0
+    local text = String()
+    local tp: Transport = &p
+    local r = c.streamVia(tp, &req, |head: *Response, chunk: *String| {
+        pieces++
+        text.append(chunk)
+        return head.status == 200
+    })?
+    expectEqStr(t, text.asStr(), "abcdefg")
+    expectEq(t, r.body.length() as i64, 0)                               // the sink took the body
+    expectTrue(t, pieces >= 2)
+    local q = Peer(64)
+    q.answer("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc")
+    local tq: Transport = &q
+    expectErr(t, c.streamVia(tq, &req, |head: *Response, chunk: *String| false), HttpError.Aborted)
+    return Result.Ok(true)
+}
+
+fn headerInjection(t: *T) -> Result<bool, HttpError> {
+    local c = Client()
+    local p = Peer(64)
+    local req = request("GET", "http://a.example/")
+    req.headers.set("X-Bad", "a\r\nInjected: 1")
+    expectErr(t, c.sendVia(&p, &req), HttpError.Request)
+    expectEq(t, p.urls.length() as i64, 0)                               // refused before connecting
+    return Result.Ok(true)
+}
+
+fn parsed(text: str) -> Result<Url, HttpError> {
+    local s = String(text)
+    return parseUrl(&s)
+}
+
+fn bad(text: str) -> bool {
+    local s = String(text)
+    switch parseUrl(&s) {
+        case Result.Ok(u) { return false }
+        case Result.Err(e) { return e == HttpError.Url }
+    }
+    return false
+}
+
+fn urls(t: *T) -> Result<bool, HttpError> {
+    local u = parsed("HTTPS://user:pw@Example.COM:8443/a/b?c=d#frag")?
+    expectTrue(t, u.https)
+    expectEqStr(t, u.host.asStr(), "example.com")
+    expectEq(t, u.port as i64, 8443)
+    expectEqStr(t, u.target.asStr(), "/a/b?c=d")
+    expectEqStr(t, u.authority().asStr(), "example.com:8443")
+    local bare = parsed("http://h")?
+    expectEqStr(t, bare.target.asStr(), "/")
+    local query = parsed("http://h?x=1")?
+    expectEqStr(t, query.toString().asStr(), "http://h/?x=1")
+    local tls = parsed("https://h:443/")?
+    expectEqStr(t, tls.authority().asStr(), "h")
+    for text in ["ftp://h/", "http://", "http://h:0/", "http://h:99999/", "http://h:x/", "http://[::1]/", "http://h/a b"] {
+        expectTrue(t, bad(*text))
+    }
+    return Result.Ok(true)
+}
+
+fn resolved(base: *Url, ref: str) -> String {
+    local s = String(ref)
+    switch base.resolve(&s) {
+        case Result.Ok(u) { return u.toString() }       // read in place: a new String, the payload stays where it is
+        case Result.Err(e) { }
+    }
+    return String("error")
+}
+
+fn resolution(t: *T) -> Result<bool, HttpError> {
+    local b = parsed("http://h/a/b/c?q")?
+    expectEqStr(t, resolved(&b, "d").asStr(), "http://h/a/b/d")
+    expectEqStr(t, resolved(&b, "../d?x").asStr(), "http://h/a/d?x")
+    expectEqStr(t, resolved(&b, "./").asStr(), "http://h/a/b/")
+    expectEqStr(t, resolved(&b, "../../../../x").asStr(), "http://h/x")
+    expectEqStr(t, resolved(&b, "/x/./y/../z").asStr(), "http://h/x/z")
+    expectEqStr(t, resolved(&b, "?z").asStr(), "http://h/a/b/c?z")
+    expectEqStr(t, resolved(&b, "#f").asStr(), "http://h/a/b/c?q")
+    expectEqStr(t, resolved(&b, "//o.example/p").asStr(), "http://o.example/p")
+    expectEqStr(t, resolved(&b, "HTTPS://o.example:8443").asStr(), "https://o.example:8443/")
+    return Result.Ok(true)
+}
+
+fn headerList(t: *T) -> Result<bool, HttpError> {
+    local h = Headers()
+    h.add("Content-Type", "text/plain")
+    h.add("x-a", "1")
+    h.add("X-A", "2")
+    expectEqStr(t, h.get("content-type").asStr(), "text/plain")
+    expectEqStr(t, h.get("x-a").asStr(), "1")                              // the first value
+    h.set("X-a", "3")
+    expectEq(t, h.length() as i64, 2)
+    expectEqStr(t, h.get("x-A").asStr(), "3")
+    h.remove("CONTENT-TYPE")
+    expectFalse(t, h.has("Content-Type"))
+    expectEqStr(t, h.get("missing").asStr(), "")
+    local out = String()
+    h.writeTo(&out)
+    expectEqStr(t, out.asStr(), "X-a: 3\r\n")
+    expectTrue(t, errorText(HttpError.Io).length() > 0)
+    return Result.Ok(true)
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "Content-Length body across small reads", |t: *T| expectOk(t, contentLength(t)))
+    test(&s, "chunked body with extensions and trailers", |t: *T| expectOk(t, chunked(t)))
+    test(&s, "body until close, bare LF lines", |t: *T| expectOk(t, untilClose(t)))
+    test(&s, "HEAD, 1xx and 204 have no body", |t: *T| expectOk(t, noBody(t)))
+    test(&s, "redirects resolve and drop credentials across origins", |t: *T| expectOk(t, redirects(t)))
+    test(&s, "303 turns a POST into a bodiless GET", |t: *T| expectOk(t, seeOther(t)))
+    test(&s, "redirect limit, and 0 returns the 3xx", |t: *T| expectOk(t, redirectLimit(t)))
+    test(&s, "idempotent requests retry a dropped connection", |t: *T| expectOk(t, retries(t)))
+    test(&s, "malformed and truncated responses", |t: *T| expectOk(t, malformed(t)))
+    test(&s, "streaming to a closure, and aborting", |t: *T| expectOk(t, streaming(t)))
+    test(&s, "a line break in a header is refused", |t: *T| expectOk(t, headerInjection(t)))
+    test(&s, "URL parsing", |t: *T| expectOk(t, urls(t)))
+    test(&s, "reference resolution", |t: *T| expectOk(t, resolution(t)))
+    test(&s, "header list", |t: *T| expectOk(t, headerList(t)))
+    return suiteRun(&s)
+}

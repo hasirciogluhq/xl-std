@@ -123,6 +123,11 @@ export class String {
         self.append(o.asStr())
     }
 
+    /// Appends a String that is given away, such as the result of `format` or `slice`: `s.append(format("{}", n))`.
+    fn append(self, o: String) {
+        self.append(o.asStr())
+    }
+
     fn equals(self, s: str) -> bool {
         return eq(self.asStr(), s)
     }

@@ -1,0 +1,76 @@
+// std/http/headers: an ordered list of header fields (RFC 9110 section 5, https://www.rfc-editor.org/rfc/rfc9110#section-5). Field names
+// compare case-insensitively (section 5.1); a name may repeat, and `get` returns the first value. Names are protocol tokens written as
+// literals, so they are `str`; values are Strings.
+from "../str/string" import String
+from "../collections/vec" import Vec
+
+export class Header {
+    name: String
+    value: String
+
+    fn init(self, name: str, value: *String) {
+        self.name = String(name)
+        self.value = value.clone()
+    }
+}
+
+export class Headers {
+    items: Vec<Header>
+
+    fn init(self) {
+        self.items = Vec<Header>()
+    }
+
+    fn add(self, name: str, value: *String) {
+        self.items.push(Header(name, value))
+    }
+
+    fn add(self, name: str, value: str) {
+        local v = String(value)
+        self.add(name, &v)
+    }
+
+    /// Replaces every value of `name` with `value`.
+    fn set(self, name: str, value: *String) {
+        self.remove(name)
+        self.add(name, value)
+    }
+
+    fn set(self, name: str, value: str) {
+        local v = String(value)
+        self.set(name, &v)
+    }
+
+    fn remove(self, name: str) {
+        self.items.retain(|h: *Header| !h.name.equalsIgnoreCase(name))
+    }
+
+    /// The first value of `name`; empty when the field is absent.
+    fn get(self, name: str) -> String {
+        for h in self.items {
+            if h.name.equalsIgnoreCase(name) { return h.value.clone() }
+        }
+        return String()
+    }
+
+    fn has(self, name: str) -> bool {
+        for h in self.items {
+            if h.name.equalsIgnoreCase(name) { return true }
+        }
+        return false
+    }
+
+    fn length(self) -> usize {
+        return self.items.length()
+    }
+
+    /// Appends the fields as `Name: value` lines, each ended by CRLF (RFC 9112 section 5).
+    fn writeTo(self, out: *String) {
+        for h in self.items {
+            out.append(&h.name)
+            out.append(": ")
+            out.append(&h.value)
+            out.append("\r\n")
+        }
+    }
+}

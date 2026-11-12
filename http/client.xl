@@ -1,569 +1,298 @@
-// std/http/client: an HTTP/1.1 client as classes: Client sends a Request and returns a Response. Requests carry Headers and a body
-// (a String or a streamed Source); a Response has a status, Headers, and a Body that is read to the end (Content-Length, chunked
-// coding RFC 9112 section 7.1, or until the peer closes). Redirects are followed for 301, 302, 303, 307 and 308 (RFC 9110 section
-// 15.4) with the method rules of section 15.4 (303 and 301/302 after a POST become GET). HTTPS uses the TLS 1.3 client of std/tls.
-// Timeouts are receive timeouts in milliseconds. The client keeps no connection between requests (Connection: close).
-from "../sys" import sysTcpSocket, sysTcpConnect, sysClose, sysRead, sysWrite, sysSetRecvTimeout
-from "../net/dns" import dnsResolve
-from "../tls/tls" import TlsConn, tlsConnectHost, tlsWrite, tlsRead, tlsClose
-from "../str/str" import fromParts, eq, fromC
+// std/http/client: an HTTP/1.1 client (RFC 9110 semantics, https://www.rfc-editor.org/rfc/rfc9110, and RFC 9112 messages,
+// https://www.rfc-editor.org/rfc/rfc9112) over a Transport (std/http/transport): TCP for http, TLS 1.3 for https.
+//
+// - `send` returns the whole Response; `stream` hands the body to a sink (a function or closure `(r: *Response, chunk: *String) -> bool`)
+//   piece by piece as it arrives, so a body of any size passes through constant memory. The sink sees the status and the headers in
+//   `r`; returning false stops the transfer with `HttpError.Aborted`.
+// - Body framing follows RFC 9112 section 6.3: no body for HEAD, 1xx, 204 and 304; chunked transfer coding (section 7.1, extensions
+//   and trailer fields are read and ignored); Content-Length; otherwise until the server closes. Interim 1xx responses are skipped.
+// - Redirects 301, 302, 303, 307 and 308 are followed up to `maxRedirects` (0 returns the 3xx response itself). 303, and 301/302 after
+//   a POST, continue as GET without the body or its Content-* fields (RFC 9110 section 15.4). Authorization, Proxy-Authorization and
+//   Cookie go only to the origin of the first URL.
+// - A connection that fails before a response head arrives (refused, reset, closed early, timed out) is retried `retries` times for
+//   the idempotent methods (RFC 9110 section 9.2.2: all but POST and PATCH). Nothing is retried once the head was read.
+// - Every request is sent with `Connection: close` on a fresh connection; no Accept-Encoding is sent, so bodies arrive as they are.
 from "../str/string" import String
-from "../str/fmt" import toString
-from "../collections/vec" import Vec
-from "url" import Url, urlParse
+from "../str/fmt" import format
+from "../collections/result" import Result, resultIsOk
+from "url" import Url, HttpError, parseUrl, decimal
+from "headers" import Headers
+from "transport" import Transport, NetConn, Wire
+from "util" import hexDigit
 
-/// One header field. Names compare case-insensitively (RFC 9110 section 5.1).
-export class Header {
-    name: String
-    value: String
-}
+define BODY_PIECE = 65536     // the largest piece handed to a sink at once
+define MAX_FIELDS = 256       // header fields accepted in one response
 
-/// An ordered list of header fields. Get returns the first value of a name; Add keeps repeats.
-export class Headers {
-    items: Vec<Header>
-
-    fn init(self) {
-        self.items = Vec<Header>()
-    }
-
-    fn Add(self, name: str, value: str) {
-        local h: Header = Header()
-        h.name = String()
-        h.name.append(name)
-        h.value = String()
-        h.value.append(value)
-        self.items.push(h)
-    }
-
-    /// Replaces every value of `name` with `value` (or adds the field when it is absent).
-    fn Set(self, name: str, value: str) {
-        self.Remove(name)
-        self.Add(name, value)
-    }
-
-    fn Remove(self, name: str) {
-        local i: usize = 0
-        while i < self.items.length() {
-            local h: *Header = self.items.get(i)
-            if equalFold(h.name.asStr(), name) {
-                self.items.remove(i)
-            } else {
-                i = i + 1
-            }
-        }
-    }
-
-    /// The first value of `name`, or "" when the field is absent.
-    fn Get(self, name: str) -> str {
-        local i: usize = 0
-        while i < self.items.length() {
-            local h: *Header = self.items.get(i)
-            if equalFold(h.name.asStr(), name) { return h.value.asStr() }
-            i = i + 1
-        }
-        return ""
-    }
-
-    fn Has(self, name: str) -> bool {
-        local i: usize = 0
-        while i < self.items.length() {
-            local h: *Header = self.items.get(i)
-            if equalFold(h.name.asStr(), name) { return true }
-            i = i + 1
-        }
-        return false
-    }
-
-    fn Length(self) -> usize {
-        return self.items.length()
-    }
-
-    /// Writes the fields as "Name: value\r\n" lines into `out`.
-    fn Write(self, out: *String) {
-        local i: usize = 0
-        while i < self.items.length() {
-            local h: *Header = self.items.get(i)
-            out.append(h.name.asStr())
-            out.append(": ")
-            out.append(h.value.asStr())
-            out.append("\r\n")
-            i = i + 1
-        }
-    }
-}
-
-/// A request: method, absolute URL, header fields and a body. Set Body for bytes that are in memory.
+/// A request: method, absolute URL, header fields and a body (empty for none).
 export class Request {
     method: String
     url: String
     headers: Headers
     body: String
 
-    fn init(self, method: str, url: str) {
-        self.method = String()
-        self.method.append(method)
-        self.url = String()
-        self.url.append(url)
+    fn init(self, method: str, url: *String) {
+        self.method = String(method)
+        self.url = url.clone()
         self.headers = Headers()
         self.body = String()
     }
-
-    fn SetBody(self, text: str) {
-        self.body = String()
-        self.body.append(text)
-    }
 }
 
-/// A response: status, reason phrase, header fields, and the body read in full.
+/// A response: status, reason phrase, header fields, the body (filled by `send`, empty after `stream`) and the URL that answered.
 export class Response {
     status: i32
     reason: String
     headers: Headers
     body: String
-    error: i32            // 0 on success; a Client.Do error code otherwise (see clientErrorText)
-    finalUrl: String      // the URL that answered (after redirects)
+    url: String
 
     fn init(self) {
         self.status = 0
         self.reason = String()
         self.headers = Headers()
         self.body = String()
-        self.error = 0
-        self.finalUrl = String()
+        self.url = String()
     }
 
-    fn Header(self, name: str) -> str {
-        return self.headers.Get(name)
+    /// True for a 2xx status.
+    fn ok(self) -> bool {
+        return self.status >= 200 && self.status < 300
     }
 
-    fn Text(self) -> str {
-        return self.body.asStr()
+    fn header(self, name: str) -> String {
+        return self.headers.get(name)
     }
-
-    fn Ok(self) -> bool {
-        return self.error == 0 && self.status >= 200 && self.status < 300
-    }
-}
-
-export define CLIENT_OK = 0
-export define CLIENT_ERR_URL = -1
-export define CLIENT_ERR_DNS = -2
-export define CLIENT_ERR_CONNECT = -3
-export define CLIENT_ERR_TLS = -4
-export define CLIENT_ERR_IO = -5
-export define CLIENT_ERR_PROTOCOL = -6
-export define CLIENT_ERR_REDIRECT = -7
-export define CLIENT_ERR_TIMEOUT = -8
-
-/// The text of a client error code.
-export fn clientErrorText(code: i32) -> str {
-    if code == CLIENT_OK { return "ok" }
-    if code == CLIENT_ERR_URL { return "invalid URL (only http:// and https:// are supported)" }
-    if code == CLIENT_ERR_DNS { return "host name could not be resolved" }
-    if code == CLIENT_ERR_CONNECT { return "could not connect" }
-    if code == CLIENT_ERR_TLS { return "TLS handshake or certificate failed" }
-    if code == CLIENT_ERR_IO { return "write or read failed" }
-    if code == CLIENT_ERR_PROTOCOL { return "malformed response" }
-    if code == CLIENT_ERR_REDIRECT { return "too many redirects or an unusable Location" }
-    if code == CLIENT_ERR_TIMEOUT { return "timed out" }
-    return "unknown error"
 }
 
 export class Client {
-    timeoutMs: i32
+    timeoutMs: i32        // read timeout of each connection; 0 waits forever
     maxRedirects: i32
+    retries: i32          // extra attempts after a connection fails before the response head
     userAgent: String
 
     fn init(self) {
         self.timeoutMs = 30000
         self.maxRedirects = 10
-        self.userAgent = String()
-        self.userAgent.append("xlang-http/0.1")
+        self.retries = 2
+        self.userAgent = String("xlang-http/1.0")
     }
 
-    fn Get(self, url: str) -> Response {
-        local r: Request = Request("GET", url)
-        local out: Response = self.Do(&r)
-        return out
+    fn get(self, url: *String) -> Result<Response, HttpError> {
+        local r = Request("GET", url)
+        return self.send(&r)
     }
 
-    fn Head(self, url: str) -> Response {
-        local r: Request = Request("HEAD", url)
-        local out: Response = self.Do(&r)
-        return out
+    fn head(self, url: *String) -> Result<Response, HttpError> {
+        local r = Request("HEAD", url)
+        return self.send(&r)
     }
 
-    fn Delete(self, url: str) -> Response {
-        local r: Request = Request("DELETE", url)
-        local out: Response = self.Do(&r)
-        return out
+    fn post(self, url: *String, contentType: str, body: *String) -> Result<Response, HttpError> {
+        return self.sendBody("POST", url, contentType, body)
     }
 
-    fn Post(self, url: str, contentType: str, body: str) -> Response {
-        local r: Request = Request("POST", url)
-        r.headers.Set("Content-Type", contentType)
-        r.SetBody(body)
-        local out: Response = self.Do(&r)
-        return out
+    fn put(self, url: *String, contentType: str, body: *String) -> Result<Response, HttpError> {
+        return self.sendBody("PUT", url, contentType, body)
     }
 
-    fn Put(self, url: str, contentType: str, body: str) -> Response {
-        local r: Request = Request("PUT", url)
-        r.headers.Set("Content-Type", contentType)
-        r.SetBody(body)
-        local out: Response = self.Do(&r)
-        return out
+    fn sendBody(self, method: str, url: *String, contentType: str, body: *String) -> Result<Response, HttpError> {
+        local r = Request(method, url)
+        r.headers.set("Content-Type", contentType)
+        r.body = body.clone()
+        return self.send(&r)
     }
 
-    /// Sends the request and reads the whole response, following redirects.
-    fn Do(self, req: *Request) -> Response {
-        local out: Response = Response()
-        local current: String = String()
-        current.append(req.url.asStr())
-        local method: String = String()
-        method.append(req.method.asStr())
-        local body: String = String()
-        body.append(req.body.asStr())
-        local hops: i32 = 0
-        while true {
-            local u: Url
-            if !urlParse(current.cstr(), &u) {
-                out.error = CLIENT_ERR_URL
-                break
+    /// Sends `req` and reads the whole response body into `Response.body`.
+    fn send(self, req: *Request) -> Result<Response, HttpError> {
+        local net = NetConn()
+        return self.sendVia(&net, req)
+    }
+
+    /// `send` over the transport `t`.
+    fn sendVia(self, t: Transport, req: *Request) -> Result<Response, HttpError> {
+        return self.streamVia(t, req, keepBody)
+    }
+
+    /// Sends `req` and hands the body to `sink(r, chunk)` as it arrives; the returned Response has an empty body.
+    fn stream<F>(self, req: *Request, sink: F) -> Result<Response, HttpError> {
+        local net = NetConn()
+        local t: Transport = &net         // known-limitations: a generic call cannot also convert an argument to an interface
+        return self.streamVia(t, req, sink)
+    }
+
+    /// `stream` over the transport `t`, which is closed when the call returns.
+    fn streamVia<F>(self, t: Transport, req: *Request, sink: F) -> Result<Response, HttpError> {
+        defer t.close()
+        local url = parseUrl(&req.url)?
+        local first = url.origin()
+        local method = req.method.toUpperAscii()
+        local body = req.body.clone()
+        local plain = false               // true once a redirect turned the request into a bodiless GET
+        local wire = Wire(t)
+        for hop in 0..self.maxRedirects + 1 {
+            local origin = url.origin()
+            local head = requestHead(self, &url, &method, req, &body, origin.equals(&first), plain)?
+            local out = Response()
+            self.open(&wire, &url, &head, &body, idempotent(&method), &out)?
+            local location = out.header("Location")
+            if self.maxRedirects > 0 && isRedirect(out.status) && location.length() > 0 {
+                // Only `?` moves a droppable payload out of a Result (known-limitations), so check first, then take it.
+                if hop == self.maxRedirects || !resultIsOk(url.resolve(&location)) { return Result.Err(HttpError.Redirect) }
+                url = url.resolve(&location)?
+                if (out.status == 303 && !method.equals("HEAD")) || (out.status <= 302 && method.equals("POST")) {
+                    method = String("GET")
+                    body.clear()
+                    plain = true
+                }
+                continue
             }
-            local code: i32 = exchange(self, &u, method.asStr(), req, body.asStr(), &out)
-            if code != CLIENT_OK {
-                out.error = code
-                break
-            }
-            if !isRedirect(out.status) || !self.followRedirects(out.status) {
-                break
-            }
-            if hops >= self.maxRedirects {
-                out.error = CLIENT_ERR_REDIRECT
-                break
-            }
-            hops = hops + 1
-            local location: str = out.headers.Get("Location")
-            if location.len == 0 {
-                out.error = CLIENT_ERR_REDIRECT
-                break
-            }
-            local next: String = resolveLocation(&u, location)
-            if out.status == 303 || ((out.status == 301 || out.status == 302) && eq(method.asStr(), "POST")) {
-                method = String()
-                method.append("GET")
-                body = String()
-            }
-            current = next
-            out = Response()
+            readBody(&wire, &method, &out, sink)?
+            out.url = url.toString()
+            return Result.Ok(out)
         }
-        out.finalUrl = String()
-        out.finalUrl.append(current.asStr())
-        return out
+        return Result.Err(HttpError.Redirect)
     }
 
-    fn followRedirects(self, status: i32) -> bool {
-        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+    /// Connects, sends the request and reads the response head, retrying an idempotent request whose connection fails first.
+    fn open(self, w: *Wire, u: *Url, head: *String, body: *String, retry: bool, out: *Response) -> Result<bool, HttpError> {
+        local attempts = retry ? self.retries + 1 : 1
+        local last = HttpError.Io
+        for i in 0..attempts {
+            w.reset()
+            switch exchange(w, u, self.timeoutMs, head, body, out) {
+                case Result.Ok(done) { return Result.Ok(true) }
+                case Result.Err(e) {
+                    if e != HttpError.Connect && e != HttpError.Io { return Result.Err(e) }
+                    last = e
+                }
+            }
+        }
+        return Result.Err(last)
     }
+}
+
+fn keepBody(r: *Response, chunk: *String) -> bool {
+    r.body.append(chunk)
+    return true
 }
 
 fn isRedirect(status: i32) -> bool {
     return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
 }
 
-/// One request/response exchange on a fresh connection. Fills `out` on success.
-fn exchange(c: *Client, u: *Url, method: str, req: *Request, body: str, out: *Response) -> i32 {
-    local hostBuf: [u8; 256] = [0; 256]
-    local host: str = fromC(&u.host[0])
-    local fd: i32 = -1
-    local tls: TlsConn
-    if u.https {
-        local e: i32 = tlsConnectHost(&tls, &u.host[0], u.port)
-        if e != 0 {
-            if e == -1 { return CLIENT_ERR_DNS }
-            return CLIENT_ERR_TLS
+fn idempotent(method: *String) -> bool {
+    return !method.equals("POST") && !method.equals("PATCH")
+}
+
+/// One attempt: connect, write the head and the body, read the response head.
+fn exchange(w: *Wire, u: *Url, timeoutMs: i32, head: *String, body: *String, out: *Response) -> Result<bool, HttpError> {
+    w.t.connect(u, timeoutMs)?
+    if !w.t.write(head) || (body.length() > 0 && !w.t.write(body)) { return Result.Err(HttpError.Io) }
+    return readHead(w, out)
+}
+
+/// The request line and header block (RFC 9112 sections 3 and 5). Host, Connection and Content-Length are the client's own; a
+/// field holding CR or LF would split the message, so it is refused (request smuggling, RFC 9112 section 11.2).
+fn requestHead(c: *Client, u: *Url, method: *String, req: *Request, body: *String, trusted: bool, plain: bool) -> Result<String, HttpError> {
+    local auth = u.authority()
+    local head = format("{} {} HTTP/1.1\r\nHost: {}\r\n", method, &u.target, &auth)
+    if !req.headers.has("User-Agent") { head.append(format("User-Agent: {}\r\n", &c.userAgent)) }
+    for h in req.headers.items {
+        local name = h.name.toLowerAscii()
+        if name.equals("host") || name.equals("connection") || name.equals("content-length") { continue }
+        if !trusted && (name.equals("authorization") || name.equals("proxy-authorization") || name.equals("cookie")) { continue }
+        if plain && name.startsWith("content-") { continue }
+        if name.contains(":") || name.contains("\r") || name.contains("\n") || h.value.contains("\r") || h.value.contains("\n") {
+            return Result.Err(HttpError.Request)
         }
-        fd = tls.fd
-    } else {
-        local ip: u32 = 0
-        if !dnsResolve(&u.host[0], &ip) { return CLIENT_ERR_DNS }
-        fd = sysTcpSocket()
-        if fd < 0 { return CLIENT_ERR_CONNECT }
-        if sysTcpConnect(fd, ip, u.port) < 0 {
-            sysClose(fd)
-            return CLIENT_ERR_CONNECT
-        }
+        head.append(format("{}: {}\r\n", &h.name, &h.value))
     }
-    if c.timeoutMs > 0 && !u.https { sysSetRecvTimeout(fd, c.timeoutMs) }
-    // the request head
-    local head: String = String()
-    head.append(method)
-    head.append(" ")
-    head.append(fromC(&u.path[0]))
-    head.append(" HTTP/1.1\r\nHost: ")
-    head.append(host)
-    if (!u.https && u.port != 80) || (u.https && u.port != 443) {
-        head.append(":")
-        head.append(toString(u.port as u64).asStr())
-    }
-    head.append("\r\nUser-Agent: ")
-    head.append(c.userAgent.asStr())
-    head.append("\r\nConnection: close\r\n")
-    if req.headers.Length() > 0 { req.headers.Write(&head) }
-    if body.len > 0 || eq(method, "POST") || eq(method, "PUT") {
-        if !req.headers.Has("Content-Length") {
-            head.append("Content-Length: ")
-            head.append(toString(body.len as u64).asStr())
-            head.append("\r\n")
-        }
+    head.append("Connection: close\r\n")
+    if body.length() > 0 || method.equals("POST") || method.equals("PUT") || method.equals("PATCH") {
+        head.append(format("Content-Length: {}\r\n", body.length() as u64))
     }
     head.append("\r\n")
-    if !send(u.https, &tls, fd, head.cstr(), head.length()) {
-        closeConn(u.https, &tls, fd)
-        return CLIENT_ERR_IO
-    }
-    if body.len > 0 && !send(u.https, &tls, fd, body.ptr, body.len) {
-        closeConn(u.https, &tls, fd)
-        return CLIENT_ERR_IO
-    }
-    local code: i32 = readResponse(u.https, &tls, fd, method, out)
-    closeConn(u.https, &tls, fd)
-    return code
+    return Result.Ok(head)
 }
 
-fn send(https: bool, tls: *TlsConn, fd: i32, data: *u8, n: usize) -> bool {
-    if https { return tlsWrite(tls, data, n) }
-    local done: usize = 0
-    while done < n {
-        local w: isize = sysWrite(fd, &data[done], n - done)
-        if w <= 0 { return false }
-        done = done + (w as usize)
-    }
-    return true
-}
-
-fn recvSome(https: bool, tls: *TlsConn, fd: i32, buf: *u8, n: usize) -> isize {
-    if https { return tlsRead(tls, buf, n) }
-    return sysRead(fd, buf, n)
-}
-
-fn closeConn(https: bool, tls: *TlsConn, fd: i32) {
-    if https {
-        tlsClose(tls)
-    } else {
-        sysClose(fd)
-    }
-}
-
-/// Reads the status line and the header fields, then the body by the framing of the response.
-fn readResponse(https: bool, tls: *TlsConn, fd: i32, method: str, out: *Response) -> i32 {
-    local raw: String = String()
-    local chunk: [u8; 4096]
-    local headEnd: isize = -1
-    while headEnd < 0 {
-        local got: isize = recvSome(https, tls, fd, &chunk[0], 4096)
-        if got <= 0 {
-            return CLIENT_ERR_IO
-        }
-        raw.append(fromParts(&chunk[0], got as usize))
-        headEnd = findCrlfCrlf(raw.asStr())
-        if raw.length() > 1048576 {
-            return CLIENT_ERR_PROTOCOL
-        }
-    }
-    local head: str = fromParts(raw.cstr(), headEnd as usize)
-    if !parseHead(head, out) {
-        return CLIENT_ERR_PROTOCOL
-    }
-    local rest: str = fromParts(&raw.cstr()[headEnd as usize + 4], raw.length() - (headEnd as usize) - 4)
-    local noBody: bool = eq(method, "HEAD") || out.status == 204 || out.status == 304 || (out.status >= 100 && out.status < 200)
-    local code: i32 = CLIENT_OK
-    if noBody {
-        return CLIENT_OK
-    }
-    if eq(headerLower(out.headers.Get("Transfer-Encoding")), "chunked") {
-        code = readChunked(https, tls, fd, rest, out)
-    } else if out.headers.Has("Content-Length") {
-        local want: usize = parseSize(out.headers.Get("Content-Length"))
-        out.body.append(rest)
-        while out.body.length() < want {
-            local got: isize = recvSome(https, tls, fd, &chunk[0], 4096)
-            if got <= 0 {
-                code = CLIENT_ERR_IO
-                break
-            }
-            out.body.append(fromParts(&chunk[0], got as usize))
-        }
-        if out.body.length() > want { out.body = trimTo(out.body.asStr(), want) }
-    } else {
-        out.body.append(rest)
-        while true {
-            local got: isize = recvSome(https, tls, fd, &chunk[0], 4096)
-            if got <= 0 { break }
-            out.body.append(fromParts(&chunk[0], got as usize))
-        }
-    }
-    return code
-}
-
-fn trimTo(s: str, n: usize) -> String {
-    local r: String = String()
-    r.append(fromParts(s.ptr, n))
-    return r
-}
-
-/// Reads a chunked body (RFC 9112 section 7.1): size lines in hex, the data, and a last chunk with optional trailers.
-fn readChunked(https: bool, tls: *TlsConn, fd: i32, first: str, out: *Response) -> i32 {
-    local buf: String = String()
-    buf.append(first)
-    local chunk: [u8; 4096]
+/// Reads the status line and the header fields into `out`, skipping interim 1xx responses (RFC 9110 section 15.2; 101 is final).
+fn readHead(w: *Wire, out: *Response) -> Result<bool, HttpError> {
     while true {
-        local line: isize = findCrlf(buf.asStr(), 0)
-        while line < 0 {
-            local got: isize = recvSome(https, tls, fd, &chunk[0], 4096)
-            if got <= 0 {
-                return CLIENT_ERR_IO
-            }
-            buf.append(fromParts(&chunk[0], got as usize))
-            line = findCrlf(buf.asStr(), 0)
+        local line = w.line()?
+        // `HTTP/1.x SSS reason` (RFC 9112 section 4); the reason phrase may be empty.
+        if line.length() < 12 || !line.startsWith("HTTP/1.") || line.at(8) != b' ' { return Result.Err(HttpError.Protocol) }
+        local status = decimal(&line.slice(9, 3))
+        if status < 100 || (line.length() > 12 && line.at(12) != b' ') { return Result.Err(HttpError.Protocol) }
+        out.status = status as i32
+        out.reason = line.length() > 13 ? line.slice(13, line.length() - 13) : String()
+        out.headers = Headers()
+        while true {
+            local field = w.line()?
+            if field.length() == 0 { break }
+            if out.headers.length() >= MAX_FIELDS { return Result.Err(HttpError.TooLarge) }
+            local colon = field.find(":")
+            if colon <= 0 { return Result.Err(HttpError.Protocol) }
+            local name = field.slice(0, colon as usize)
+            if name.endsWith(" ") || name.endsWith("\t") { return Result.Err(HttpError.Protocol) }      // section 5.1
+            local value = field.slice(colon as usize + 1, field.length() - (colon as usize) - 1).trimStart().trimEnd()
+            out.headers.add(name.asStr(), &value)
         }
-        local sizeText: str = fromParts(buf.cstr(), line as usize)
-        local size: usize = 0
-        local i: usize = 0
-        while i < sizeText.len && hexOf(sizeText[i]) >= 0 {
-            size = size * 16 + (hexOf(sizeText[i]) as usize)
-            i = i + 1
+        if out.status >= 200 || out.status == 101 { return Result.Ok(true) }
+    }
+    return Result.Err(HttpError.Protocol)
+}
+
+fn readBody<F>(w: *Wire, method: *String, out: *Response, sink: F) -> Result<bool, HttpError> {
+    if method.equals("HEAD") || out.status < 200 || out.status == 204 || out.status == 304 { return Result.Ok(true) }
+    local coding = out.header("Transfer-Encoding").toLowerAscii()
+    if coding.endsWith("chunked") { return readChunked(w, out, sink) }
+    if coding.length() == 0 && out.headers.has("Content-Length") {
+        local n = decimal(&out.header("Content-Length").trimStart().trimEnd())
+        if n < 0 { return Result.Err(HttpError.Protocol) }
+        return readLength(w, out, n as u64, sink)
+    }
+    // No length: the body ends when the server closes the connection (RFC 9112 section 6.3 rule 8).
+    while true {
+        local part = w.next(BODY_PIECE)?
+        if part.length() == 0 { return Result.Ok(true) }
+        if !sink(out, &part) { return Result.Err(HttpError.Aborted) }
+    }
+    return Result.Ok(true)
+}
+
+/// Exactly `n` bytes of body; fewer before the stream ends is a truncated response.
+fn readLength<F>(w: *Wire, out: *Response, n: u64, sink: F) -> Result<bool, HttpError> {
+    local left = n
+    while left > 0 {
+        local part = w.next(left > BODY_PIECE ? BODY_PIECE : left as usize)?
+        if part.length() == 0 { return Result.Err(HttpError.Io) }
+        left -= part.length() as u64
+        if !sink(out, &part) { return Result.Err(HttpError.Aborted) }
+    }
+    return Result.Ok(true)
+}
+
+/// The chunked coding (RFC 9112 section 7.1): `size-in-hex[;ext]` CRLF, the data, CRLF; a zero size ends it, then trailer lines
+/// up to an empty one.
+fn readChunked<F>(w: *Wire, out: *Response, sink: F) -> Result<bool, HttpError> {
+    while true {
+        local line = w.line()?
+        local size: u64 = 0
+        local digits: usize = 0
+        for c in line.asStr() {
+            local d = hexDigit(c)
+            if d < 0 { break }
+            if size >> 56 != 0 { return Result.Err(HttpError.Protocol) }
+            size = size * 16 + d as u64
+            digits++
         }
-        if i == 0 {
-            return CLIENT_ERR_PROTOCOL
-        }
-        local dataStart: usize = (line as usize) + 2
-        while buf.length() < dataStart + size + 2 {
-            local got: isize = recvSome(https, tls, fd, &chunk[0], 4096)
-            if got <= 0 {
-                return CLIENT_ERR_IO
-            }
-            buf.append(fromParts(&chunk[0], got as usize))
-        }
+        if digits == 0 { return Result.Err(HttpError.Protocol) }
         if size == 0 {
-            return CLIENT_OK
+            while w.line()?.length() > 0 { }
+            return Result.Ok(true)
         }
-        out.body.append(fromParts(&buf.cstr()[dataStart], size))
-        local rest: str = fromParts(&buf.cstr()[dataStart + size + 2], buf.length() - dataStart - size - 2)
-        buf = String()
-        buf.append(rest)
+        readLength(w, out, size, sink)?
+        if w.line()?.length() != 0 { return Result.Err(HttpError.Protocol) }
     }
-    return CLIENT_OK
-}
-
-fn hexOf(c: u8) -> i32 {
-    if c >= 48 && c <= 57 { return (c - 48) as i32 }
-    if c >= 65 && c <= 70 { return (c - 55) as i32 }
-    if c >= 97 && c <= 102 { return (c - 87) as i32 }
-    return -1
-}
-
-/// Parses "HTTP/1.x status reason" and the header lines of `head`.
-fn parseHead(head: str, out: *Response) -> bool {
-    local eol: usize = findCrlf(head, 0) as usize
-    if findCrlf(head, 0) < 0 { eol = head.len }
-    local line: str = fromParts(head.ptr, eol)
-    if line.len < 12 || !eq(fromParts(line.ptr, 5), "HTTP/") { return false }
-    local sp: usize = 0
-    while sp < line.len && line[sp] != 32 { sp = sp + 1 }
-    if sp + 4 > line.len { return false }
-    local status: i32 = 0
-    local k: usize = sp + 1
-    while k < line.len && k < sp + 4 {
-        if line[k] < 48 || line[k] > 57 { return false }
-        status = status * 10 + ((line[k] - 48) as i32)
-        k = k + 1
-    }
-    out.status = status
-    out.reason = String()
-    if sp + 5 <= line.len { out.reason.append(fromParts(&line.ptr[sp + 5], line.len - sp - 5)) }
-    local p: usize = eol + 2
-    while p < head.len {
-        local e: isize = findCrlf(head, p)
-        local end: usize = head.len
-        if e >= 0 { end = e as usize }
-        local ln: str = fromParts(&head.ptr[p], end - p)
-        local colon: usize = 0
-        while colon < ln.len && ln[colon] != 58 { colon = colon + 1 }
-        if colon < ln.len {
-            local v: usize = colon + 1
-            while v < ln.len && (ln[v] == 32 || ln[v] == 9) { v = v + 1 }
-            local ve: usize = ln.len
-            while ve > v && (ln[ve - 1] == 32 || ln[ve - 1] == 9) { ve = ve - 1 }
-            out.headers.Add(fromParts(ln.ptr, colon), fromParts(&ln.ptr[v], ve - v))
-        }
-        if e < 0 { break }
-        p = end + 2
-    }
-    return true
-}
-
-fn findCrlf(s: str, begin: usize) -> isize {
-    local i: usize = begin
-    while i + 1 < s.len {
-        if s[i] == 13 && s[i + 1] == 10 { return i as isize }
-        i = i + 1
-    }
-    return -1
-}
-
-fn findCrlfCrlf(s: str) -> isize {
-    local i: usize = 0
-    while i + 3 < s.len {
-        if s[i] == 13 && s[i + 1] == 10 && s[i + 2] == 13 && s[i + 3] == 10 { return i as isize }
-        i = i + 1
-    }
-    return -1
-}
-
-fn parseSize(v: str) -> usize {
-    local n: usize = 0
-    local i: usize = 0
-    while i < v.len && v[i] >= 48 && v[i] <= 57 {
-        n = n * 10 + ((v[i] - 48) as usize)
-        i = i + 1
-    }
-    return n
-}
-
-fn headerLower(v: str) -> str {
-    return v
-}
-
-fn equalFold(a: str, b: str) -> bool {
-    if a.len != b.len { return false }
-    local i: usize = 0
-    while i < a.len {
-        local x: u8 = a[i]
-        local y: u8 = b[i]
-        if x >= 65 && x <= 90 { x = x + 32 }
-        if y >= 65 && y <= 90 { y = y + 32 }
-        if x != y { return false }
-        i = i + 1
-    }
-    return true
-}
-
-/// The location of a redirect target: an absolute URL as it is, or a path resolved against the current URL.
-fn resolveLocation(u: *Url, location: str) -> String {
-    local out: String = String()
-    if location.len > 7 && (eq(fromParts(location.ptr, 7), "http://") || eq(fromParts(location.ptr, 8), "https://")) {
-        out.append(location)
-        return out
-    }
-    if u.https { out.append("https://") } else { out.append("http://") }
-    out.append(fromC(&u.host[0]))
-    if location.len > 0 && location[0] == 47 {
-        out.append(location)
-    } else {
-        out.append("/")
-        out.append(location)
-    }
-    return out
+    return Result.Ok(true)
 }

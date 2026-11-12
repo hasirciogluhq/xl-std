@@ -2,7 +2,7 @@
 // starts SeaweedFS there when XLANG_E2E_S3=1 (see run.sh). Covers bucket creation, PutObject, GetObject, HeadObject, ListObjectsV2,
 // a presigned GET fetched with the HTTP client, a two-part multipart upload (5 MiB first part), DeleteObject, and the NoSuchKey answer
 // afterwards. Prints "s3 ok" and exits 0 on success; the exit status is the number of failed checks.
-from "std" import print, String, Client, Response, S3Client, S3Result, S3List, s3ProfileGeneric
+from "std" import print, String, Result, Client, S3Client, S3Result, S3List, s3ProfileGeneric
 
 fn check(name: *u8, ok: bool) -> i32 {
     if !ok {
@@ -46,9 +46,11 @@ fn fill(s: *String, piece: str, times: usize) {
     failures += check("list has the object", list.result.ok && list.objects.length() == 1)
 
     local url: String = s3.PresignGet(bucket, "hello.txt", 300)
-    local client: Client = Client()
-    local viaUrl: Response = client.Get(url.asStr())
-    failures += check("presigned get", viaUrl.error == 0 && viaUrl.status == 200 && viaUrl.body.asStr().len == 8)
+    local client = Client()
+    switch client.get(&url) {
+        case Result.Ok(r) { failures += check("presigned get", r.status == 200 && r.body.length() == 8) }
+        case Result.Err(e) { failures += check("presigned get", false) }
+    }
 
     // Multipart: 5 MiB first part (the minimum for every part but the last), then a 4-byte last part.
     local block: String = String()

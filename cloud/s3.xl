@@ -11,7 +11,10 @@
 // Operations: PutObject, GetObject, HeadObject, DeleteObject, ListObjectsV2 (with continuation), multipart upload (create, upload part,
 // complete, abort) and presigned GET URLs (query-string signing with UNSIGNED-PAYLOAD). Bodies are in memory; streaming request bodies
 // use the multipart calls for large objects.
-from "../http/client" import Client, Request, Response, Headers, CLIENT_OK, clientErrorText
+from "../http/client" import Client, Request
+from "../http/url" import HttpError, errorText
+from "../collections/result" import Result
+from "../collections/option" import Option
 from "../crypto/hash/sha256" import sha256
 from "../encoding/hex" import hexEncode
 from "../auth/sigv4" import sigv4Signature, sigv4StringToSign
@@ -112,7 +115,7 @@ export class S3Result {
     body: String
     etag: String
     contentType: String
-    clientError: i32
+    clientError: Option<HttpError>    // the HTTP client's error when the request got no complete response
 
     fn init(self) {
         self.ok = false
@@ -122,7 +125,7 @@ export class S3Result {
         self.body = String()
         self.etag = String()
         self.contentType = String()
-        self.clientError = 0
+        self.clientError = Option.None
     }
 
     /// The UploadId of a CreateMultipartUpload answer (the `<UploadId>` element of the XML body, see
@@ -420,26 +423,29 @@ export class S3Client {
             url.append("?")
             url.append(canonicalQuery.asStr())
         }
-        local req: Request = Request(method, url.asStr())
-        req.headers.Set("Authorization", authorization.asStr())
-        req.headers.Set("x-amz-date", amzDate.asStr())
-        req.headers.Set("x-amz-content-sha256", payloadHash.asStr())
-        if contentType.len > 0 { req.headers.Set("Content-Type", contentType) }
-        if sendToken { req.headers.Set("x-amz-security-token", self.sessionToken.asStr()) }
-        req.SetBody(body)
-        local resp: Response = self.http.Do(&req)
-        out.clientError = resp.error
-        out.status = resp.status
-        out.ok = resp.error == CLIENT_OK && resp.status >= 200 && resp.status < 300
-        out.body.append(resp.body.asStr())
-        out.etag.append(resp.Header("ETag"))
-        out.contentType.append(resp.Header("Content-Type"))
-        if !out.ok && resp.error == CLIENT_OK {
-            out.code.append(xmlTag(resp.body.asStr(), "Code"))
-            out.message.append(xmlTag(resp.body.asStr(), "Message"))
-        }
-        if resp.error != CLIENT_OK {
-            out.message.append(clientErrorText(resp.error))
+        local req = Request(method, &url)
+        req.headers.set("Authorization", &authorization)
+        req.headers.set("x-amz-date", &amzDate)
+        req.headers.set("x-amz-content-sha256", &payloadHash)
+        if contentType.len > 0 { req.headers.set("Content-Type", contentType) }
+        if sendToken { req.headers.set("x-amz-security-token", &self.sessionToken) }
+        req.body = String(body)
+        switch self.http.send(&req) {
+            case Result.Err(e) {
+                out.clientError = Option.Some(e)
+                out.message.append(errorText(e))
+            }
+            case Result.Ok(resp) {
+                out.status = resp.status
+                out.ok = resp.ok()
+                out.body.append(&resp.body)
+                out.etag.append(resp.header("ETag"))
+                out.contentType.append(resp.header("Content-Type"))
+                if !out.ok {
+                    out.code.append(xmlTag(resp.body.asStr(), "Code"))
+                    out.message.append(xmlTag(resp.body.asStr(), "Message"))
+                }
+            }
         }
         return out
     }

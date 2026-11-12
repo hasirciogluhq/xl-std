@@ -1,19 +1,54 @@
-// HTTPS client smoke test: DNS + TLS 1.3 + OS root store against a public server, plus the certificate rejection path (an IP address
-// is not a name on the certificate). Needs network access; exits 0 on success. Uses the std HTTP client.
-from "std" import print, Client, Response, CLIENT_ERR_TLS
+// HTTPS client smoke test against public servers: DNS + TLS 1.3 + the OS root store, a redirect to another host (a GitHub release
+// asset answers 302 with a Location on release-assets.githubusercontent.com), a streamed body, and the certificate rejection path (an
+// IP address is not a name on the certificate). Needs network access; exits 0 on success.
+from "std" import String, Result, Client, Request, Response, HttpError, Transport, errorText, println
+
+fn run() -> Result<bool, HttpError> {
+    local c = Client()
+    local example = String("https://example.com/")
+    local ok = c.get(&example)?
+    if ok.status != 200 || !ok.body.contains("Example Domain") {
+        println("FAIL: https GET")
+        return Result.Ok(false)
+    }
+    // checksums.txt of a release: a small file behind a cross-host redirect.
+    local asset = String("https://github.com/hasirciogluhq/xlc/releases/download/v1.0.0-rc.7/checksums.txt")
+    local req = Request("GET", &asset)
+    local bytes: u64 = 0
+    local got = c.stream(&req, |head: *Response, chunk: *String| {
+        bytes += chunk.length() as u64
+        return true
+    })?
+    if got.status != 200 || bytes == 0 || !got.url.contains("githubusercontent.com") {
+        println("FAIL: redirected stream")
+        return Result.Ok(false)
+    }
+    local ip = String("https://1.1.1.1/")
+    switch c.get(&ip) {
+        case Result.Ok(r) {
+            println("FAIL: certificate for another name was accepted")
+            return Result.Ok(false)
+        }
+        case Result.Err(e) {
+            if e != HttpError.Tls {
+                println(errorText(e).asStr())
+                return Result.Ok(false)
+            }
+        }
+    }
+    return Result.Ok(true)
+}
 
 @entry fn main() -> i32 {
-    local c: Client = Client()
-    local ok: Response = c.Get("https://example.com/")
-    if ok.error != 0 || ok.status != 200 {
-        print("FAIL: https GET\n")
-        return 1
+    switch run() {
+        case Result.Ok(passed) {
+            if !passed { return 1 }
+        }
+        case Result.Err(e) {
+            println(errorText(e).asStr())
+            return 2
+        }
     }
-    local bad: Response = c.Get("https://1.1.1.1/")
-    if bad.error != CLIENT_ERR_TLS {
-        print("FAIL: certificate for another name was accepted\n")
-        return 2
-    }
-    print("https ok\n")
+    println("https ok")
     return 0
 }

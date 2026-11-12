@@ -1,108 +1,189 @@
-// std/http/url: URL parsing, request options and the error codes of the HTTP client.
-from "util" import startsCI
+// std/http/url: `http://` and `https://` URLs for the client (RFC 3986, https://www.rfc-editor.org/rfc/rfc3986, with the HTTP schemes of
+// RFC 9110 section 4.2, https://www.rfc-editor.org/rfc/rfc9110#section-4.2) and the client's error kinds.
+//
+// A Url keeps what a request needs: the scheme, the host (lowercased, RFC 3986 section 3.2.2), the port (80 or 443 when absent) and the
+// request target (path and query, RFC 9112 section 3.2 origin-form). User info and the fragment are dropped: the client never sends them.
+// IPv6 literals (`[::1]`) are not supported (the resolver is IPv4 only).
+from "../str/string" import String, split
+from "../str/fmt" import format, toString
+from "../collections/vec" import Vec
+from "../collections/result" import Result
 
-export define FETCH_OK = 0
-export define FETCH_ERR_URL = -1          // not an http:// or https:// URL, or too long / malformed
-export define FETCH_ERR_DNS = -2
-export define FETCH_ERR_CONNECT = -3
-export define FETCH_ERR_TLS = -4          // handshake or certificate failure (`HttpStream.tlsError`)
-export define FETCH_ERR_IO = -5           // write failed, or the connection ended before the headers
-export define FETCH_ERR_TOO_LARGE = -6    // headers or body do not fit the caller's buffer
-export define FETCH_ERR_REDIRECT = -7     // too many redirects or a Location that cannot be followed
-export define FETCH_ERR_BODY = -8         // malformed response or a body cut short
-
-export fn fetchErrorText(code: i32) -> *u8 {
-    if code == FETCH_OK { return "ok" }
-    if code == FETCH_ERR_URL { return "invalid URL" }
-    if code == FETCH_ERR_DNS { return "host name could not be resolved" }
-    if code == FETCH_ERR_CONNECT { return "could not connect" }
-    if code == FETCH_ERR_TLS { return "TLS handshake or certificate validation failed" }
-    if code == FETCH_ERR_IO { return "network I/O error" }
-    if code == FETCH_ERR_TOO_LARGE { return "response does not fit the buffer" }
-    if code == FETCH_ERR_REDIRECT { return "too many redirects or unusable Location" }
-    if code == FETCH_ERR_BODY { return "malformed or truncated response" }
-    return "unknown error"
+/// Why a request failed before a complete response arrived.
+export enum HttpError: i32 {
+    Url           // not an http:// or https:// URL, or a malformed one
+    Dns           // the host name could not be resolved
+    Connect       // the TCP connection could not be made
+    Tls           // the TLS handshake or the certificate check failed
+    Io            // a write failed, or the connection ended or stalled past the timeout before the response was complete
+    Protocol      // the response is not valid HTTP/1.1
+    TooLarge      // a response line or the header block is over its limit
+    Redirect      // too many redirects, or a Location that is not a usable URL
+    Request       // a header name or value of the request holds a line break or a colon
+    Aborted       // the body sink returned false
 }
 
-/// A parsed `http://` or `https://` URL.
-export struct Url {
+/// The text of an error, for messages.
+export fn errorText(e: HttpError) -> String {
+    switch e {
+        case HttpError.Url { return String("invalid URL (only http:// and https:// are supported)") }
+        case HttpError.Dns { return String("host name could not be resolved") }
+        case HttpError.Connect { return String("could not connect") }
+        case HttpError.Tls { return String("TLS handshake or certificate check failed") }
+        case HttpError.Io { return String("connection failed, closed or timed out") }
+        case HttpError.Protocol { return String("malformed response") }
+        case HttpError.TooLarge { return String("response header too large") }
+        case HttpError.Redirect { return String("too many redirects or an unusable Location") }
+        case HttpError.Request { return String("a request header holds a line break") }
+        case HttpError.Aborted { return String("stopped by the body sink") }
+    }
+    return String("unknown error")
+}
+
+export class Url {
     https: bool
+    host: String
     port: u16
-    host: [u8; 256]
-    path: [u8; 2048]     // path and query, always starts with `/`
+    target: String        // path and query; always starts with `/`
+
+    fn init(self) {
+        self.https = false
+        self.host = String()
+        self.port = 80
+        self.target = String("/")
+    }
+
+    /// `host`, plus `:port` when it is not the scheme's default: the value of the Host field (RFC 9110 section 7.2).
+    fn authority(self) -> String {
+        local out = self.host.clone()
+        if self.port != (self.https ? 443 : 80) { out.append(format(":{}", self.port as u64)) }
+        return out
+    }
+
+    /// `scheme://authority`: two URLs with the same origin may share credentials (RFC 6454 section 4).
+    fn origin(self) -> String {
+        local auth = self.authority()
+        return format("{}://{}", self.https ? "https" : "http", &auth)
+    }
+
+    fn toString(self) -> String {
+        local out = self.origin()
+        out.append(&self.target)
+        return out
+    }
+
+    /// The target without its query.
+    fn path(self) -> String {
+        local q = self.target.find("?")
+        return q < 0 ? self.target.clone() : self.target.slice(0, q as usize)
+    }
+
+    /// The URL that the reference `ref` names relative to this one (RFC 3986 section 5.2): absolute URLs, `//authority/path`,
+    /// `/path`, `?query` and relative paths (with `.` and `..` segments removed, section 5.2.4). Used for a redirect's Location.
+    fn resolve(self, ref: *String) -> Result<Url, HttpError> {
+        local lower = ref.toLowerAscii()
+        if lower.startsWith("http://") || lower.startsWith("https://") { return parseUrl(ref) }
+        if ref.startsWith("//") {
+            local full = format("{}:{}", self.https ? "https" : "http", ref)
+            return parseUrl(&full)
+        }
+        local cut = ref.find("#")
+        local rel = cut < 0 ? ref.clone() : ref.slice(0, cut as usize)
+        local path = self.path()
+        local full = self.origin()
+        if rel.length() == 0 {
+            full.append(&self.target)
+        } else if rel.startsWith("?") {
+            full.append(&path)
+            full.append(&rel)
+        } else {
+            local q = rel.find("?")
+            local relPath = q < 0 ? rel.clone() : rel.slice(0, q as usize)
+            // A relative path replaces the last segment of the base path (section 5.2.3).
+            local merged = String()
+            if !relPath.startsWith("/") { merged.append(path.slice(0, path.findLast("/") as usize + 1)) }
+            merged.append(&relPath)
+            local clean = removeDots(&merged)
+            full.append(&clean)
+            if q >= 0 { full.append(rel.slice(q as usize, rel.length() - (q as usize))) }
+        }
+        return parseUrl(&full)
+    }
 }
 
-/// Parses the path part starting at `s[begin]` (the fragment is dropped, a missing path becomes `/`).
-export fn urlParsePath(u: *Url, s: *u8, begin: usize) -> bool {
-    local p: usize = begin
-    local o: usize = 0
-    if s[p] != 47 {
-        u.path[0] = 47
-        o = 1
-    }
-    while s[p] != 0 && s[p] != 35 {
-        local c: u8 = s[p]
-        if c <= 32 || c == 127 { return false }
-        if o + 1 >= 2048 { return false }
-        u.path[o] = c
-        o = o + 1
-        p = p + 1
-    }
-    u.path[o] = 0
-    return true
-}
-
-/// Parses `http://[user@]host[:port][/path][?query][#fragment]` (and `https://`). IPv6 literals are
-/// not supported. The user info is dropped.
-export fn urlParse(s: *u8, u: *Url) -> bool {
-    local i: usize = 0
-    if startsCI(s, "https://") {
+/// Parses `http[s]://[user@]host[:port][/path][?query][#fragment]`; the scheme is case-insensitive.
+export fn parseUrl(text: *String) -> Result<Url, HttpError> {
+    local u = Url()
+    local lower = text.toLowerAscii()
+    local s = text.asStr()
+    local at: usize = 0
+    if lower.startsWith("https://") {
         u.https = true
         u.port = 443
-        i = 8
+        at = 8
+    } else if lower.startsWith("http://") {
+        at = 7
     } else {
-        if startsCI(s, "http://") {
-            u.https = false
-            u.port = 80
-            i = 7
-        } else {
-            return false
+        return Result.Err(HttpError.Url)
+    }
+    // The authority runs to the first `/`, `?` or `#`; user info ends at its last `@` (section 3.2.1).
+    local end = at
+    while end < s.len && s[end] != b'/' && s[end] != b'?' && s[end] != b'#' { end++ }
+    for i in at..end {
+        if s[i] == b'@' { at = i + 1 }
+    }
+    local colon = at
+    while colon < end && s[colon] != b':' { colon++ }
+    if colon == at || s[at] == b'[' { return Result.Err(HttpError.Url) }
+    u.host = lower.slice(at, colon - at)
+    for i in at..colon {
+        if s[i] <= b' ' || s[i] >= 127 { return Result.Err(HttpError.Url) }
+    }
+    if colon < end {
+        local port = decimal(&text.slice(colon + 1, end - colon - 1))
+        if port <= 0 || port > 65535 { return Result.Err(HttpError.Url) }
+        u.port = port as u16
+    }
+    // The target: up to the fragment, with `/` in front when the path is empty (RFC 9112 section 3.2.1).
+    local stop = end
+    while stop < s.len && s[stop] != b'#' {
+        if s[stop] <= b' ' || s[stop] == 127 { return Result.Err(HttpError.Url) }
+        stop++
+    }
+    u.target = text.slice(end, stop - end)
+    if !u.target.startsWith("/") { u.target = format("/{}", &u.target) }
+    return Result.Ok(u)
+}
+
+/// `path` with its `.` and `..` segments applied (RFC 3986 section 5.2.4); a `..` above the root stays at the root.
+fn removeDots(path: *String) -> String {
+    local kept: Vec<String> = Vec<String>()
+    local parts = split(path.asStr(), "/")
+    for part, i in parts {
+        local last = i + 1 == parts.length()
+        if part.equals(".") || part.equals("..") {
+            if part.equals("..") && kept.length() > 1 { kept.pop() }
+            if last { kept.push(String()) }          // `a/.` and `a/..` keep the trailing slash
+        } else if i == 0 || part.length() > 0 || last {
+            kept.push(part.clone())
         }
     }
-    local aStart: usize = i
-    local aEnd: usize = i
-    while s[aEnd] != 0 && s[aEnd] != 47 && s[aEnd] != 63 && s[aEnd] != 35 { aEnd = aEnd + 1 }
-    local k: usize = aStart
-    while k < aEnd {
-        if s[k] == 64 { aStart = k + 1 }
-        k = k + 1
+    local out = String()
+    for part, i in kept {
+        if i > 0 { out.append("/") }
+        out.append(part)
     }
-    if aStart >= aEnd || s[aStart] == 91 { return false }
-    local h: usize = aStart
-    while h < aEnd && s[h] != 58 { h = h + 1 }
-    local hostLen: usize = h - aStart
-    if hostLen == 0 || hostLen >= 256 { return false }
-    k = 0
-    while k < hostLen {
-        local c: u8 = s[aStart + k]
-        if c <= 32 || c >= 127 { return false }
-        u.host[k] = c
-        k = k + 1
+    if !out.startsWith("/") { out = format("/{}", &out) }
+    return out
+}
+
+/// The value of a run of ASCII digits, or -1 when `s` is empty, holds another byte or is over 18 digits.
+export fn decimal(s: *String) -> i64 {
+    if s.length() == 0 || s.length() > 18 { return -1 }
+    local v: i64 = 0
+    for c in s.asStr() {
+        if c < b'0' || c > b'9' { return -1 }
+        v = v * 10 + (c - b'0') as i64
     }
-    u.host[hostLen] = 0
-    if h < aEnd {
-        h = h + 1
-        if h == aEnd { return false }
-        local v: usize = 0
-        while h < aEnd {
-            local d: u8 = s[h]
-            if d < 48 || d > 57 { return false }
-            v = v * 10 + ((d - 48) as usize)
-            if v > 65535 { return false }
-            h = h + 1
-        }
-        if v == 0 { return false }
-        u.port = v as u16
-    }
-    return urlParsePath(u, s, aEnd)
+    return v
 }
