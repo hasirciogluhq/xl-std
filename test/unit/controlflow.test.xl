@@ -1,4 +1,5 @@
-// Control-flow syntax: break, labels, for, do-while, switch, defer, ?:, compound assignment, ++/--.
+// Control-flow syntax: break, labels, for, do-while, switch (also without a subject), defer, ?:, compound assignment, ++/--,
+// octal literals, `[T; N].len` and `&temp()`.
 from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq
 
 enum Color { Red, Green, Blue }
@@ -124,6 +125,49 @@ fn switches(t: *T) {
     expectEq(t, colorCode(Color.Blue) as i64, 3)
 }
 
+fn sign(v: i32) -> i32 {
+    switch {
+        case v < 0 { return -1 }
+        case v == 0, v == 100 { return 0 }
+        default { }
+    }
+    return 1
+}
+
+fn conditionSwitch(t: *T) {
+    expectEq(t, sign(-4) as i64, -1)
+    expectEq(t, sign(0) as i64, 0)
+    expectEq(t, sign(100) as i64, 0)
+    expectEq(t, sign(7) as i64, 1)
+}
+
+struct Pair { a: i64, b: i64 }
+
+fn makePair(a: i64, b: i64) -> Pair {
+    return Pair { a: a, b: b }
+}
+
+fn sum(p: *Pair) -> i64 {
+    return p.a + p.b
+}
+
+// Octal literals, the constant length of an array, and the address of a temporary.
+fn literalsAndPlaces(t: *T) {
+    expectEq(t, 0o755, 493)
+    expectEq(t, 0o17 + 0, 15)
+    expectEq(t, 0755, 755)                          // a leading 0 alone stays decimal
+    local arr: [i64; 4] = [1, 2, 3, 4]
+    local total: i64 = 0
+    for i in 0..arr.len { total += arr[i] }
+    expectEq(t, total, 10)
+    local p = &arr
+    expectEq(t, p.len as i64, 4)
+    expectEq(t, sum(&makePair(3, 4)), 7)
+    counter = 0
+    expectEq(t, sum(&makePair(bump(), bump())), 1)  // the temporary is built once
+    expectEq(t, counter, 2)
+}
+
 fn ternary(t: *T) {
     local i: i64 = 5
     local a: i64 = i > 2 ? 100 : 200
@@ -149,6 +193,8 @@ fn defers(t: *T) {
     test(&s, "compound target evaluated once", targetEvaluatedOnce)
     test(&s, "do-while", doWhile)
     test(&s, "switch", switches)
+    test(&s, "subject-less switch", conditionSwitch)
+    test(&s, "octal, array length, address of a temporary", literalsAndPlaces)
     test(&s, "ternary", ternary)
     test(&s, "defer", defers)
     return suiteRun(&s)

@@ -1,6 +1,6 @@
 // Collections: the owned, growable String (std/str/string), the growable Vec<T> (std/collections/vec) and the file
 // round trip through String.
-from "std" import print, String, Vec, vecClone, fsWrite, fsReadAllString, fsRemove
+from "std" import print, String, Vec, fsWrite, fsReadAllString, fsRemove
 
 global failures: i32 = 0
 
@@ -113,13 +113,16 @@ fn trackedChecks() {
     check("reserve grows once", nums.capacity() == 20 && nums.length() == 2)
     nums.truncate(1)
     check("truncate keeps prefix", nums.length() == 1 && *nums.get(0) == 40)
-    local copyNums: Vec<i32> = vecClone(&nums)
+    local copyNums: Vec<i32> = nums.clone()
     nums.clear()
-    check("vecClone is independent", copyNums.length() == 1 && *copyNums.get(0) == 40 && nums.isEmpty())
+    check("clone is independent", copyNums.length() == 1 && *copyNums.get(0) == 40 && nums.isEmpty())
 
     local strs: Vec<String> = Vec<String>()
     strs.push(String("one"))
     strs.push(String("two"))
+    local copyStrs: Vec<String> = strs.clone()
+    copyStrs.get(0).append("!")
+    check("clone copies droppable elements", copyStrs.get(0).equals("one!") && strs.get(0).equals("one"))
     local taken: String = strs.pop()
     check("Vec of String moves out", taken.equals("two") && strs.length() == 1)
     strs.push(String("three"))

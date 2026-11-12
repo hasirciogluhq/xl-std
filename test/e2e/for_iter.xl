@@ -69,14 +69,14 @@ fn loopSlice() {
     check("head", head.len == 2 && head[1] == 4)
 }
 
-// `str` walks bytes.
+// `str` walks bytes: the loop variable is the `u8` itself.
 fn loopStr() {
     local s: str = "abc"
     local sum: i64 = 0
     local count: usize = 0
     for b in s {
-        sum = sum + (*b as i64)
-        count = count + 1
+        sum += b as i64
+        count++
     }
     check("str bytes", sum == (97 + 98 + 99) && count == 3)
     check("str unchanged", eq(s, "abc"))

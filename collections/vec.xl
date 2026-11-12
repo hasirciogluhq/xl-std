@@ -165,6 +165,23 @@ export class Vec<T> {
         self.truncate(0)
     }
 
+    /// A copy with the same elements in the same order. An element type that needs drop is copied with its own `clone`
+    /// method (`Vec<String>`), so it must have one; any other element is copied bitwise.
+    fn clone(self) -> Vec<T> {
+        local out: Vec<T> = Vec<T>()
+        out.reserve(self.len)
+        for i in 0..self.len {
+            // Only the branch that fits T is compiled: an `i32` has no `clone`, a `String` must not be copied bitwise.
+            if __builtin_needsDrop<T>() {
+                __builtin_write(out.slot(i), self.slot(i).clone())
+            } else {
+                __builtin_write(out.slot(i), __builtin_read(self.slot(i)))
+            }
+        }
+        out.len = self.len
+        return out
+    }
+
     /// The iterator of `for x in v` / `for x, i in v`: each round yields a pointer to the next element.
     fn iter(self) -> VecIter<T> {
         return VecIter<T> { v: self, i: 0 }
@@ -197,21 +214,4 @@ impl<T> VecIter<T> {
         self.i++
         return Option.Some(self.v.slot(self.i - 1))
     }
-}
-
-/// A copy of `v` with the same elements in the same order. Only element types that need no drop
-/// can be copied; the bitwise copy of an element that needs drop would drop it twice.
-export fn vecClone<T>(v: *Vec<T>) -> Vec<T> {
-    if __builtin_needsDrop<T>() {
-        panic("vecClone: element type needs drop")
-    }
-    local out: Vec<T> = Vec<T>()
-    out.reserve(v.len)
-    local i: usize = 0
-    while i < v.len {
-        __builtin_write(out.slot(i), __builtin_read(v.slot(i)))
-        i = i + 1
-    }
-    out.len = v.len
-    return out
 }

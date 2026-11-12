@@ -1,4 +1,5 @@
-// Unit: the `?` operator (success value or early return of the failure) and `==` on `str`. Pure logic, the same on every OS.
+// Unit: the `?` operator (success value or early return of the failure), also on paths that may not run (`&&`/`||`, `?:`,
+// loop conditions, a subject-less `switch`), and `==` on `str`. Pure logic, the same on every OS.
 from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq, expectEqUInt, expectEqStr
 from "std" import String, Result, Option
 
@@ -85,6 +86,93 @@ fn droppable(t: *T) {
     expectEq(t, exits as i64, 2)
 }
 
+global calls: i32 = 0
+
+fn counted(n: i32) -> Result<i32, i32> {
+    calls++
+    return half(n)
+}
+
+// `?` on a path that may not run: the right side of `&&`/`||` and a `?:` branch run (and may return) only when reached.
+fn lazyAnd(n: i32) -> Result<i32, i32> {
+    local both = n > 0 && counted(n)? > 1
+    local either = n > 0 || counted(n)? < 0
+    return Result.Ok((both ? 10 : 0) + (either ? 1 : 0))
+}
+
+fn lazyPick(n: i32) -> Result<i32, i32> {
+    return Result.Ok(n > 0 ? counted(n)? : counted(-n)? + 100)
+}
+
+// A loop condition with `?` is tested on every pass, `continue` included.
+fn loops(n: i32) -> Result<i32, i32> {
+    local i = 0
+    while half(n - 2 * i)? > 0 { i++ }
+    local j = 0
+    do { j++ } while half(6 - 2 * j)? > 0
+    local k = 0
+    for local m = 0; m < half(8)?; m++ {
+        if m == 1 { continue }
+        k++
+    }
+    return Result.Ok(i * 100 + j * 10 + k)
+}
+
+// A subject-less `switch` tests its conditions in order; a later one runs only when the earlier ones failed.
+fn firstMatch(n: i32) -> Result<i32, i32> {
+    switch {
+        case n == 1 { return Result.Ok(1) }
+        case counted(n)? == 2 { return Result.Ok(2) }
+        default { }
+    }
+    return Result.Ok(3)
+}
+
+// A droppable value selected by a `?:` branch that hoists.
+fn chosen(ok: bool) -> Result<String, i32> {
+    local s = ok ? name(true)? : String("plain")
+    return Result.Ok(s)
+}
+
+fn lazyPaths(t: *T) {
+    calls = 0
+    expectEq(t, value(lazyAnd(4)) as i64, 11)
+    expectEq(t, calls as i64, 1)                     // `||` was decided by its left side
+    calls = 0
+    expectEq(t, value(lazyAnd(-3)) as i64, 3)        // `&&` skipped, `||` ran and failed
+    expectEq(t, calls as i64, 1)
+    calls = 0
+    expectEq(t, value(lazyPick(8)) as i64, 4)
+    expectEq(t, calls as i64, 1)
+    expectEq(t, value(lazyPick(-4)) as i64, 102)
+    expectEq(t, value(lazyPick(3)) as i64, -3)
+}
+
+fn loopConditions(t: *T) {
+    expectEq(t, value(loops(6)) as i64, 333)
+    expectEq(t, value(loops(5)) as i64, -5)
+}
+
+fn conditionSwitch(t: *T) {
+    calls = 0
+    expectEq(t, value(firstMatch(1)) as i64, 1)
+    expectEq(t, calls as i64, 0)
+    expectEq(t, value(firstMatch(4)) as i64, 2)
+    expectEq(t, value(firstMatch(6)) as i64, 3)
+    expectEq(t, value(firstMatch(7)) as i64, -7)
+}
+
+fn droppableBranch(t: *T) {
+    switch chosen(true) {
+        case Result.Ok(s) { expectEqStr(t, s.asStr(), "hi") }
+        case Result.Err(e) { expectEq(t, e as i64, 0) }
+    }
+    switch chosen(false) {
+        case Result.Ok(s) { expectEqStr(t, s.asStr(), "plain") }
+        case Result.Err(e) { expectEq(t, e as i64, 0) }
+    }
+}
+
 fn strings(t: *T) {
     local a: str = "hello"
     expectEq(t, (a == "hello") as i64, 1)
@@ -102,6 +190,10 @@ fn strings(t: *T) {
     test(&s, "operators", operators)
     test(&s, "options", options)
     test(&s, "droppable", droppable)
+    test(&s, "lazy paths", lazyPaths)
+    test(&s, "loop conditions", loopConditions)
+    test(&s, "condition switch", conditionSwitch)
+    test(&s, "droppable branch", droppableBranch)
     test(&s, "str equality", strings)
     return suiteRun(&s)
 }

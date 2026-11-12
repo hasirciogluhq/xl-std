@@ -95,13 +95,11 @@ fn emptySlice(t: *T) {
     expectEq(t, count, 0)
 }
 
-// `str` walks bytes.
+// `str` walks bytes: the loop variable is the `u8` itself.
 fn loopStr(t: *T) {
     local s: str = "abcd"
     local sum: i64 = 0
-    for b in s {
-        sum = sum + (*b as i64)
-    }
+    for b in s { sum += b as i64 }
     expectEq(t, sum, (97 + 98 + 99 + 100))
 }
 
