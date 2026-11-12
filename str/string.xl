@@ -4,7 +4,7 @@
 from "../mem/mem" import currentAllocator
 from "../mem/memory" import memcpy
 from "../collections/vec" import Vec
-from "str" import fromParts, view, eq, find, contains, startsWith, endsWith
+from "str" import fromParts, view, eq, find, findLast, contains, startsWith, endsWith
 from "compare" import compare, equalIgnoreCase, globMatch, isSpace
 
 export class String {
@@ -159,6 +159,11 @@ export class String {
     /// The byte offset of the first `needle` in the content, or -1 when there is none.
     fn find(self, needle: str) -> i64 {
         return find(self.asStr(), needle)
+    }
+
+    /// Byte index of the last `needle`, or -1.
+    fn findLast(self, needle: str) -> i64 {
+        return findLast(self.asStr(), needle)
     }
 
     fn startsWith(self, prefix: str) -> bool {
