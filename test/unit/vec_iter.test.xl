@@ -1,5 +1,6 @@
 // Unit: `for x in vec` and `for x, i in vec` through `Vec.iter` / `VecIter.next`: the element is a `*T` into the Vec's storage
-// (a write reaches the Vec), the index is a `usize`, and an empty Vec runs zero times. Also closures capturing a counter.
+// (a write reaches the Vec), the index is a `usize`, and an empty Vec runs zero times. Also closures capturing a counter, and
+// `Vec.retain` with a capturing closure.
 from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq
 from "std/collections/vec" import Vec
 
@@ -43,6 +44,17 @@ fn closureCounts(t: *T) {
     expectEq(t, seen, 6)
 }
 
+fn retained(t: *T) {
+    local v: Vec<i32> = Vec<i32>()
+    for n in 0..10 { v.push(n) }
+    local limit = 6
+    v.retain(|x: *i32| *x % 2 == 0 && *x < limit)      // a capturing closure
+    expectEq(t, v.length() as i64, 3)
+    expectEq(t, *v.get(2) as i64, 4)
+    v.retain(|x: *i32| false)
+    expectEq(t, v.length() as i64, 0)
+}
+
 @entry fn main() -> i32 {
     local s: Suite
     suiteInit(&s)
@@ -50,5 +62,6 @@ fn closureCounts(t: *T) {
     test(&s, "for with an index over a Vec", indexed)
     test(&s, "empty Vec runs zero times", empty)
     test(&s, "closure called from a Vec loop", closureCounts)
+    test(&s, "retain keeps the matching elements in order", retained)
     return suiteRun(&s)
 }

@@ -171,6 +171,23 @@ export class Vec<T> {
     }
 }
 
+impl<T> Vec<T> {
+    /// Keeps the elements for which `keep(element)` is true, in their order, and drops the others. `keep` is a function or a
+    /// closure taking `*T`; each element is visited once, front to back.
+    fn retain<F>(self: *Vec<T>, keep: F) {
+        local kept: usize = 0
+        for i in 0..self.len {
+            if keep(self.slot(i)) {
+                if kept != i { __builtin_write(self.slot(kept), __builtin_read(self.slot(i))) }
+                kept++
+            } else {
+                local dropped: T = __builtin_read(self.slot(i))
+            }
+        }
+        self.len = kept
+    }
+}
+
 /// Walks a Vec front to back; `next` is the protocol of the iterating `for`.
 export struct VecIter<T> { v: *Vec<T>, i: usize }
 
