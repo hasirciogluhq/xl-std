@@ -3,6 +3,9 @@
 // std/syscalls), libSystem on macOS, kernel32 on Windows; a function returns false (or an empty String) on any failure.
 // Imported as the namespace `files`: `files.makeDirAll(&path)`.
 from "../sys" import sysMkdir, sysRmdir, sysRename, sysGetcwd, sysIsTerminal, sysUnlink, sysChmod, sysSetTimes, sysSymlink, sysReadlink
+#if os == "windows"
+from "../sys" import sysEnableEscapes
+#endif
 from "../str/string" import String, split, replaceAll
 from "../collections/vec" import Vec
 from "stat" import fsStat, FILE_MODE_TYPE, FILE_MODE_DIR
@@ -193,4 +196,14 @@ export fn absolute(path: *String) -> String {
 /// True when the descriptor (0 stdin, 1 stdout, 2 stderr) is a terminal; false for a file or a pipe.
 export fn isTerminal(fd: i32) -> bool {
     return sysIsTerminal(fd)
+}
+
+/// Makes the terminal at `fd` interpret escape sequences (colors, cursor movement); true when it does, false for a file or a
+/// pipe. Linux and macOS terminals always do; a Windows console needs virtual terminal processing turned on, which this does.
+export fn enableEscapes(fd: i32) -> bool {
+#if os == "windows"
+    return sysEnableEscapes(fd)
+#else
+    return sysIsTerminal(fd)
+#endif
 }

@@ -1,7 +1,7 @@
 // files: directories and renames on the real file system (mkdir -p, rename, rm -rf, the current directory, the console check).
 // The work directory is created under the current directory and removed at the end.
 from "std" import String, print, fsWrite, fsExists, fsReadAllString
-from "std/io/files" import makeDir, makeDirAll, removeAll, rename, currentDir, absolute, exists, isDir, isTerminal
+from "std/io/files" import makeDir, makeDirAll, removeAll, rename, currentDir, absolute, exists, isDir, isTerminal, enableEscapes
 
 fn fail(msg: str) -> i32 {
     print("FAIL ")
@@ -38,8 +38,9 @@ fn fail(msg: str) -> i32 {
     if !removeAll(&root) { return fail("removeAll") }
     if exists(&root) { return fail("removeAll left the root") }
     if !removeAll(&root) { return fail("removeAll of a missing path") }
-    // The result is not asserted: a terminal or not depends on how the runner starts the program.
-    isTerminal(1)
+    // Whether stdout is a terminal depends on how the runner starts the program, but escape sequences can be enabled exactly
+    // when it is one: a pipe or a file has no console mode on Windows and is no terminal anywhere.
+    if enableEscapes(1) != isTerminal(1) { return fail("enableEscapes differs from isTerminal") }
     print("files ok\n")
     return 0
 }

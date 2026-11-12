@@ -323,6 +323,11 @@ fn widen(path: *u8, out: *u16, cap: usize) -> bool {
 @library("kernel32") declare fn MoveFileExW(src: *u16, dst: *u16, flags: u32) -> i32
 @library("kernel32") declare fn GetCurrentDirectoryW(cap: u32, buf: *u16) -> u32
 @library("kernel32") declare fn GetConsoleMode(h: i64, mode: *u32) -> i32
+@library("kernel32") declare fn SetConsoleMode(h: i64, mode: u32) -> i32
+
+// Output console mode flags (https://learn.microsoft.com/windows/console/setconsolemode#parameters).
+define ENABLE_PROCESSED_OUTPUT = 1                  // 0x0001: control characters act; must be on with VT processing
+define ENABLE_VIRTUAL_TERMINAL_PROCESSING = 4       // 0x0004: VT100/ECMA-48 sequences are interpreted, not shown
 
 /// Creates a directory; 0 on success, -1 on failure (also when it exists).
 export fn sysMkdir(path: *u8) -> i32 {
@@ -480,6 +485,17 @@ export fn sysGetcwd(buf: *u8, cap: usize) -> i64 {
 export fn sysIsTerminal(fd: i32) -> bool {
     local mode: u32 = 0
     return GetConsoleMode(sysStdHandle(fd), &mode) != 0
+}
+
+/// Turns on escape sequence processing for the console behind `fd`, keeping its other mode bits; true when it is on. A file or
+/// pipe has no console mode, and a console older than Windows 10 1511 refuses the flag with ERROR_INVALID_PARAMETER: both false
+/// (https://learn.microsoft.com/windows/console/console-virtual-terminal-sequences#example-of-enabling-virtual-terminal-processing).
+export fn sysEnableEscapes(fd: i32) -> bool {
+    local h = sysStdHandle(fd)
+    local mode: u32 = 0
+    if GetConsoleMode(h, &mode) == 0 { return false }
+    local want: u32 = mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    return want == mode || SetConsoleMode(h, want) != 0
 }
 
 /// NtCreateFile on a DOS path. `access`/`disposition`/`options` as in the NT API; -1 on failure.
