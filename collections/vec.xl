@@ -5,6 +5,7 @@
 from "../mem/mem" import currentAllocator
 from "../mem/memory" import memcpy
 from "../str/fmt" import fmtIndexPanic
+from "option" import Option
 
 export class Vec<T> {
     data: *T      // nil when cap == 0
@@ -162,6 +163,22 @@ export class Vec<T> {
 
     fn clear(self) {
         self.truncate(0)
+    }
+
+    /// The iterator of `for x in v` / `for x, i in v`: each round yields a pointer to the next element.
+    fn iter(self) -> VecIter<T> {
+        return VecIter<T> { v: self, i: 0 }
+    }
+}
+
+/// Walks a Vec front to back; `next` is the protocol of the iterating `for`.
+export struct VecIter<T> { v: *Vec<T>, i: usize }
+
+impl<T> VecIter<T> {
+    fn next(self: *VecIter<T>) -> Option<*T> {
+        if self.i >= self.v.len { return Option.None }
+        self.i++
+        return Option.Some(self.v.slot(self.i - 1))
     }
 }
 

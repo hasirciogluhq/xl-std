@@ -97,32 +97,34 @@ export fn removeAll(path: *String) -> bool {
     if !exists(path) { return true }
     if !isDir(path) { return removeFile(path) }
     // Entries are removed as they are listed, so each round lists the directory again until it is empty or nothing was removed.
-    local batch: Vec<DirEntry> = Vec<DirEntry>()
-    batch.reserve(64)
+    local removeChild = |name: *String| {
+        local child: String = String(path.asStr())
+        child.push(47)
+        child.append(name)
+        return removeAll(&child)
+    }
     while true {
-        local n: usize = fsListDir(path.cstr(), batch.data, 64)
-        if n == 0 { break }
+        local names: Vec<String> = listDir(path)
+        if names.isEmpty() { break }
         local removed: usize = 0
-        for i in 0..n {
-            local child: String = String(path.asStr())
-            child.push(47)
-            child.append(fromEntry(&batch.data[i]).asStr())
-            if removeAll(&child) { removed++ }
-        }
+        for name in names { if removeChild(name) { removed++ } }
         if removed == 0 { return false }
     }
     return removeDir(path)
 }
 
-/// The name of a listing entry as a String.
-fn fromEntry(e: *DirEntry) -> String {
-    local name: String = String()
-    local k: usize = 0
-    while e.name[k] != 0 {
-        name.push(e.name[k])
-        k++
+/// The names of up to 64 entries of the directory `path` (without `.` and `..`); empty when it is empty or cannot be read. A longer
+/// directory is listed in rounds: remove what was returned, then list again.
+export fn listDir(path: *String) -> Vec<String> {
+    local batch: Vec<DirEntry> = Vec<DirEntry>()
+    batch.reserve(64)
+    local names: Vec<String> = Vec<String>()
+    for i in 0..fsListDir(path.cstr(), batch.data, 64) {
+        local name: String = String()
+        for c in batch.data[i].name { if *c == 0 { break } name.push(*c) }
+        names.push(name)
     }
-    return name
+    return names
 }
 
 /// Renames `src` to `dst`, replacing an existing file (or empty directory on Unix) at `dst`; both on one file system.
@@ -166,8 +168,7 @@ export fn absolute(path: *String) -> String {
     local parts: Vec<String> = split(unified.asStr(), "/")
     local kept: Vec<String> = Vec<String>()
     local roots: usize = 0
-    for i in 0..parts.length() {
-        local part: *String = parts.get(i)
+    for part, i in parts {
         if i == 0 && (part.length() == 0 || part.endsWith(":")) {
             kept.push(part.clone())
             roots = 1
@@ -180,9 +181,9 @@ export fn absolute(path: *String) -> String {
         }
     }
     local out: String = String()
-    for i in 0..kept.length() {
+    for part, i in kept {
         if i > 0 { out.push(47) }
-        out.append(kept.get(i))
+        out.append(part)
     }
     // The root of a Unix path is the empty first part: "/" alone, or "/a/b" once joined.
     if kept.length() == 1 && kept.get(0).length() == 0 { out.push(47) }
