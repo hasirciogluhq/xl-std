@@ -16,7 +16,6 @@ define STATUS_PIPE_BROKEN = 0xC000014B
 @library("ntdll") declare fn NtWriteFile(h: i64, event: i64, apc: *void, apcCtx: *void, iosb: *i64, buf: *u8, len: u32, offset: *i64, key: *u32) -> i32
 @library("ntdll") declare fn NtReadFile(h: i64, event: i64, apc: *void, apcCtx: *void, iosb: *i64, buf: *u8, len: u32, offset: *i64, key: *u32) -> i32
 @library("ntdll") declare fn NtCreateFile(h: *i64, access: u32, attrs: *u64, iosb: *i64, alloc: *i64, fileAttrs: u32, share: u32, disposition: u32, options: u32, ea: *void, eaLen: u32) -> i32
-@library("ntdll") declare fn NtDeleteFile(attrs: *u64) -> i32
 @library("ntdll") declare fn NtClose(h: i64) -> i32
 @library("ntdll") declare fn NtQueryInformationFile(h: i64, iosb: *i64, info: *void, len: u32, infoClass: u32) -> i32
 @library("ntdll") declare fn NtWaitForSingleObject(h: i64, alertable: u8, timeout: *i64) -> i32
@@ -320,6 +319,7 @@ fn widen(path: *u8, out: *u16, cap: usize) -> bool {
 // Directories and the console, through kernel32 (the NT file calls above have no simple directory create or rename).
 @library("kernel32") declare fn CreateDirectoryW(path: *u16, security: *void) -> i32
 @library("kernel32") declare fn RemoveDirectoryW(path: *u16) -> i32
+@library("kernel32") declare fn DeleteFileW(path: *u16) -> i32
 @library("kernel32") declare fn MoveFileExW(src: *u16, dst: *u16, flags: u32) -> i32
 @library("kernel32") declare fn GetCurrentDirectoryW(cap: u32, buf: *u16) -> u32
 @library("kernel32") declare fn GetConsoleMode(h: i64, mode: *u32) -> i32
@@ -344,6 +344,113 @@ export fn sysRename(src: *u8, dst: *u8) -> i32 {
     local b: [u16; 520]
     if !widen(src, &a[0], 520) || !widen(dst, &b[0], 520) { return -1 }
     return MoveFileExW(&a[0], &b[0], 1) != 0 ? 0 : -1
+}
+
+// Attributes, times and symbolic links through kernel32: Windows has no permission bits, so `sysChmod` maps the write bits to the
+// read-only attribute, and a symbolic link needs a privilege (or Developer Mode, see SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE).
+@library("kernel32") declare fn GetFileAttributesW(path: *u16) -> u32
+@library("kernel32") declare fn SetFileAttributesW(path: *u16, attrs: u32) -> i32
+@library("kernel32") declare fn CreateFileW(path: *u16, access: u32, share: u32, security: *void, disposition: u32, flags: u32, template: i64) -> i64
+@library("kernel32") declare fn SetFileTime(h: i64, created: *u64, accessed: *u64, written: *u64) -> i32
+@library("kernel32") declare fn CreateSymbolicLinkW(link: *u16, target: *u16, flags: u32) -> u8
+@library("kernel32") declare fn DeviceIoControl(h: i64, code: u32, inBuf: *void, inSize: u32, outBuf: *void, outSize: u32, returned: *u32, overlapped: *void) -> i32
+
+define INVALID_ATTRIBUTES = 0xFFFFFFFF
+define ATTRIBUTE_READONLY = 1
+define ATTRIBUTE_DIRECTORY = 16
+define ATTRIBUTE_NORMAL = 128                // valid only alone
+define OPEN_EXISTING = 3
+define SHARE_ALL = 7
+define FILE_FLAGS_REPARSE_BACKUP = 35651584  // FILE_FLAG_OPEN_REPARSE_POINT 0x200000 | FILE_FLAG_BACKUP_SEMANTICS 0x2000000 (opens a link itself, and a directory)
+define TICKS_PER_SECOND = 10000000
+define SECONDS_1601_TO_1970 = 11644473600
+
+/// Sets or clears the read-only attribute: it is set when `mode` has no write bit (0222) and cleared otherwise; the other bits of a
+/// POSIX mode have no meaning here. 0 on success, -1 on failure.
+export fn sysChmod(path: *u8, mode: u32) -> i32 {
+    local wide: [u16; 520]
+    if !widen(path, &wide[0], 520) { return -1 }
+    local attrs: u32 = GetFileAttributesW(&wide[0])
+    if attrs == INVALID_ATTRIBUTES { return -1 }
+    attrs &= INVALID_ATTRIBUTES ^ ATTRIBUTE_NORMAL
+    attrs = (mode & 146) == 0 ? attrs | ATTRIBUTE_READONLY : attrs & (INVALID_ATTRIBUTES ^ ATTRIBUTE_READONLY)
+    return SetFileAttributesW(&wide[0], attrs == 0 ? ATTRIBUTE_NORMAL : attrs) != 0 ? 0 : -1
+}
+
+/// Sets the access and modification times of a file or directory in whole seconds since 1970 (`SetFileTime`; FILETIME counts
+/// 100 ns ticks since 1601); 0 on success, -1 on failure.
+export fn sysSetTimes(path: *u8, accessSec: i64, modifySec: i64) -> i32 {
+    local wide: [u16; 520]
+    if !widen(path, &wide[0], 520) { return -1 }
+    local h: i64 = CreateFileW(&wide[0], 256, SHARE_ALL, nil, OPEN_EXISTING, 33554432, 0)   // FILE_WRITE_ATTRIBUTES, BACKUP_SEMANTICS
+    if h == -1 { return -1 }
+    defer NtClose(h)
+    local accessed: u64 = ((accessSec + SECONDS_1601_TO_1970) as u64) * TICKS_PER_SECOND
+    local written: u64 = ((modifySec + SECONDS_1601_TO_1970) as u64) * TICKS_PER_SECOND
+    return SetFileTime(h, nil, &accessed, &written) != 0 ? 0 : -1
+}
+
+/// True when the link target `target` (relative to the link's directory unless absolute) names a directory: the kind of a symbolic
+/// link on Windows is fixed when it is created.
+fn pointsToDirectory(target: *u16, link: *u16) -> bool {
+    local full: [u16; 1040]
+    local at: i32 = 0
+    if target[0] != 92 && !(target[0] != 0 && target[1] == 58) {
+        for i in 0..520 {
+            if link[i] == 0 { break }
+            if link[i] == 92 { at = i + 1 }
+        }
+        for i in 0..at { full[i] = link[i] }
+    }
+    for i in 0..520 {
+        full[at + i] = target[i]
+        if target[i] == 0 { break }
+    }
+    local attrs: u32 = GetFileAttributesW(&full[0])
+    return attrs != INVALID_ATTRIBUTES && (attrs & ATTRIBUTE_DIRECTORY) != 0
+}
+
+/// Creates the symbolic link `linkPath` to `target` (a file link, or a directory link when the target is a directory now);
+/// 0 on success, -1 on failure, which includes a missing privilege (ERROR_PRIVILEGE_NOT_HELD).
+export fn sysSymlink(target: *u8, linkPath: *u8) -> i32 {
+    local to: [u16; 520]
+    local link: [u16; 520]
+    if !widen(target, &to[0], 520) || !widen(linkPath, &link[0], 520) { return -1 }
+    // SYMBOLIC_LINK_FLAG_DIRECTORY 1, SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 2
+    local flags: u32 = pointsToDirectory(&to[0], &link[0]) ? 3 : 2
+    return CreateSymbolicLinkW(&link[0], &to[0], flags) != 0 ? 0 : -1
+}
+
+fn le16(p: *u8, at: usize) -> usize {
+    return (p[at] as usize) | (p[at + 1] as usize) << 8
+}
+
+/// Writes the target text of the symbolic link `path` as UTF-8 (not NUL terminated) into `buf` and returns its length; -1 when `path`
+/// is not a symbolic link or the text does not fit in `cap`. The text keeps the `\` separators Windows stores.
+/// `FSCTL_GET_REPARSE_POINT` fills a REPARSE_DATA_BUFFER (MS-FSCC 2.1.2.4): ReparseTag u32 at 0 (IO_REPARSE_TAG_SYMLINK 0xA000000C),
+/// then SubstituteNameOffset/Length u16 at 8/10, PrintNameOffset/Length u16 at 12/14, Flags u32 at 16, and the UTF-16 PathBuffer at 20.
+export fn sysReadlink(path: *u8, buf: *u8, cap: usize) -> i64 {
+    local wide: [u16; 520]
+    if !widen(path, &wide[0], 520) { return -1 }
+    local h: i64 = CreateFileW(&wide[0], 128, SHARE_ALL, nil, OPEN_EXISTING, FILE_FLAGS_REPARSE_BACKUP, 0)   // FILE_READ_ATTRIBUTES
+    if h == -1 { return -1 }
+    defer NtClose(h)
+    local data: [u8; 4096]
+    local got: u32 = 0
+    if DeviceIoControl(h, 589992, nil, 0, &data[0] as *void, 4096, &got, nil) == 0 { return -1 }   // FSCTL_GET_REPARSE_POINT 0x900A8
+    if data[3] != 0xA0 || data[0] != 0x0C || data[1] != 0 || data[2] != 0 { return -1 }
+    // The print name is the user-facing text; some links only have the substitute name, whose `\??\` prefix is dropped.
+    local printLen: usize = le16(&data[0], 14)
+    local start: usize = 20 + le16(&data[0], printLen > 0 ? 12 : 8)
+    local units: usize = (printLen > 0 ? printLen : le16(&data[0], 10)) / 2
+    if printLen == 0 && units >= 4 && le16(&data[0], start) == 92 && le16(&data[0], start + 2) == 63 {
+        start += 8
+        units -= 4
+    }
+    if units == 0 || units > 520 || start + 2 * units > 4096 { return -1 }
+    for i in 0..units { wide[i] = le16(&data[0], start + 2 * i) as u16 }
+    if utf8LenOf(&wide[0], units, 3 * 520, false) + 1 > cap { return -1 }
+    return toUtf8(&wide[0], units, buf, cap, true) as i64
 }
 
 /// Writes the current directory as UTF-8 (NUL terminated) into `buf` and returns its length without the NUL, or -1 when `cap` is too small.
@@ -408,22 +515,12 @@ export fn sysClose(fd: i32) -> i32 {
     return 0
 }
 
+/// Deletes a file, or a symbolic link itself: `DeleteFileW` never follows a link (a link to a directory is not a file, so it fails
+/// and `sysRmdir` removes it). `NtDeleteFile` would follow the link and delete the target.
 export fn sysUnlink(path: *u8) -> i32 {
     local wide: [u16; 520]
     if !widen(path, &wide[0], 520) { return -1 }
-    local name: [u64; 2]
-    if RtlDosPathNameToNtPathName_U(&wide[0], &name[0], nil, nil) == 0 { return -1 }
-    local oa: [u64; 6]
-    oa[0] = 48
-    oa[1] = 0
-    oa[2] = &name[0] as u64
-    oa[3] = 64
-    oa[4] = 0
-    oa[5] = 0
-    local st: i32 = NtDeleteFile(&oa[0])
-    RtlFreeUnicodeString(&name[0])
-    if st < 0 { return -1 }
-    return 0
+    return DeleteFileW(&wide[0]) != 0 ? 0 : -1
 }
 
 /// Metadata of `path` (a file or a directory) into `out[0..3]`: FileAttributes, EndOfFile in bytes, LastWriteTime in 100 ns ticks

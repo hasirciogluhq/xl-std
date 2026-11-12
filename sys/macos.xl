@@ -206,6 +206,13 @@ export fn sysUnlink(path: *u8) -> i32 {
 @library("System") declare fn rename(src: *u8, dst: *u8) -> i32
 @library("System") declare fn getcwd(buf: *u8, size: usize) -> *u8
 @library("System") declare fn isatty(fd: i32) -> i32
+// Permissions, times and symbolic links (chmod(2), utimensat(2), symlink(2), readlink(2)); `mode_t` is 16 bits and the register is
+// wider, so the argument is passed as `u32`. `AT_FDCWD` is -2 in <sys/fcntl.h> (-100 on Linux).
+@library("System") declare fn chmod(path: *u8, mode: u32) -> i32
+@library("System") declare fn utimensat(fd: i32, path: *u8, times: *void, flag: i32) -> i32
+@library("System") declare fn symlink(target: *u8, link: *u8) -> i32
+@library("System") declare fn readlink(path: *u8, buf: *u8, size: usize) -> i64
+define AT_FDCWD = -2
 
 /// Creates a directory (mode 0755 before the umask); 0 on success, -1 on failure.
 export fn sysMkdir(path: *u8) -> i32 {
@@ -220,6 +227,34 @@ export fn sysRmdir(path: *u8) -> i32 {
 /// Renames `src` to `dst`, replacing an existing file or empty directory; 0 on success.
 export fn sysRename(src: *u8, dst: *u8) -> i32 {
     return rename(src, dst)
+}
+
+/// Sets the permission bits of `path` (the low 12 bits of `mode`), following symbolic links; 0 on success, -1 on failure.
+export fn sysChmod(path: *u8, mode: u32) -> i32 {
+    return chmod(path, mode & 4095)
+}
+
+/// Sets the access and modification times of `path` in whole seconds since 1970, following symbolic links; 0 on success, -1 on
+/// failure. `times` is two `struct timespec`, each seconds then nanoseconds as `i64`.
+export fn sysSetTimes(path: *u8, accessSec: i64, modifySec: i64) -> i32 {
+    local times: [i64; 4]
+    times[0] = accessSec
+    times[1] = 0
+    times[2] = modifySec
+    times[3] = 0
+    return utimensat(AT_FDCWD, path, &times[0] as *void, 0)
+}
+
+/// Creates the symbolic link `linkPath` holding the text `target` (the target need not exist); 0 on success, -1 on failure.
+export fn sysSymlink(target: *u8, linkPath: *u8) -> i32 {
+    return symlink(target, linkPath)
+}
+
+/// Writes the target text of the symbolic link `path` (not NUL terminated) into `buf` and returns its length; -1 when `path` is not a
+/// symbolic link or the text does not fit in `cap` (the call truncates silently, so a full buffer is taken as not fitting).
+export fn sysReadlink(path: *u8, buf: *u8, cap: usize) -> i64 {
+    local n: i64 = readlink(path, buf, cap)
+    return n >= 0 && n < cap as i64 ? n : -1
 }
 
 /// Writes the current directory (NUL terminated) into `buf` and returns its length without the NUL, or -1 when `cap` is too small.

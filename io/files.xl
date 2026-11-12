@@ -2,7 +2,7 @@
 // Paths are Strings (UTF-8; `/` works on every OS, Windows also takes `\`). The raw calls are in std/sys: Linux syscalls (xlang-docs
 // std/syscalls), libSystem on macOS, kernel32 on Windows; a function returns false (or an empty String) on any failure.
 // Imported as the namespace `files`: `files.makeDirAll(&path)`.
-from "../sys" import sysMkdir, sysRmdir, sysRename, sysGetcwd, sysIsTerminal, sysUnlink
+from "../sys" import sysMkdir, sysRmdir, sysRename, sysGetcwd, sysIsTerminal, sysUnlink, sysChmod, sysSetTimes, sysSymlink, sysReadlink
 from "../str/string" import String, split, replaceAll
 from "../collections/vec" import Vec
 from "stat" import fsStat, FILE_MODE_TYPE, FILE_MODE_DIR
@@ -59,9 +59,41 @@ export fn removeFile(path: *String) -> bool {
     return sysUnlink(path.cstr()) == 0
 }
 
+/// Sets the permission bits of `path` (the low 12 bits of `mode`, e.g. 493 = octal 755; symbolic links are followed). Windows has no
+/// permission bits: it only maps "no write bit" to the read-only attribute.
+export fn chmod(path: *String, mode: u32) -> bool {
+    return sysChmod(path.cstr(), mode) == 0
+}
+
+/// Sets the access and modification times of `path` in whole seconds since the Unix epoch (symbolic links are followed).
+export fn setTimes(path: *String, accessSec: i64, modifySec: i64) -> bool {
+    return sysSetTimes(path.cstr(), accessSec, modifySec) == 0
+}
+
+/// Creates the symbolic link `link` that points at `target`; the target is stored as written and need not exist. On Windows the
+/// kind (file or directory) is fixed now from what `target` is, so create the target first.
+export fn symlink(target: *String, link: *String) -> bool {
+    return sysSymlink(target.cstr(), link.cstr()) == 0
+}
+
+/// The target a symbolic link stores, or an empty String when `path` is not a link (or does not exist).
+export fn readLink(path: *String) -> String {
+    local out: String = String()
+    out.reserve(4096)
+    local n: i64 = sysReadlink(path.cstr(), out.ptr, 4096)
+    if n > 0 { out.len = n as usize }
+    return out
+}
+
+/// True when `path` itself is a symbolic link, whether or not its target exists.
+export fn isSymlink(path: *String) -> bool {
+    return readLink(path).length() > 0
+}
+
 /// Removes `path` and everything under it (`rm -rf`); true when it is gone afterwards, also when it never existed. Symbolic links are
-/// not followed into: a link is removed as a file.
+/// not followed into: a link is removed itself (a Windows directory link with `RemoveDirectoryW`).
 export fn removeAll(path: *String) -> bool {
+    if isSymlink(path) { return removeFile(path) || removeDir(path) }
     if !exists(path) { return true }
     if !isDir(path) { return removeFile(path) }
     // Entries are removed as they are listed, so each round lists the directory again until it is empty or nothing was removed.

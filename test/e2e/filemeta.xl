@@ -1,0 +1,73 @@
+// filemeta: chmod, setTimes, symlink, readLink and isSymlink on the real file system, and `removeAll` not following a link.
+// Unix checks the exact permission bits; Windows has only the read-only attribute, so it checks the write bits it can show.
+from "std" import String, print, fsWrite, fsReadAllString
+from "std/io/files" import makeDir, removeAll, exists, isDir, chmod, setTimes, symlink, readLink, isSymlink
+from "std/io/stat" import fsStat
+
+fn fail(msg: str) -> i32 {
+    print("FAIL ")
+    print(msg)
+    print("\n")
+    return 1
+}
+
+@entry fn main() -> i32 {
+    local root: String = String("xl_filemeta_e2e")
+    removeAll(&root)
+    if !makeDir(&root) { return fail("makeDir") }
+    local file: String = String("xl_filemeta_e2e/f.txt")
+    if !fsWrite(file.cstr(), "data") { return fail("write") }
+
+    // chmod: 0o640 then 0o444 (read-only everywhere).
+    if !chmod(&file, 416) { return fail("chmod 640") }
+#if os != "windows"
+    if (fsStat(file.cstr()).mode & 4095) != 416 { return fail("mode 640") }
+#endif
+    if !chmod(&file, 292) { return fail("chmod 444") }
+    if (fsStat(file.cstr()).mode & 146) != 0 { return fail("write bits after 444") }
+    if !chmod(&file, 420) { return fail("chmod 644") }
+    if (fsStat(file.cstr()).mode & 128) == 0 { return fail("owner write after 644") }
+    local missing: String = String("xl_filemeta_e2e/none")
+    if chmod(&missing, 420) { return fail("chmod of a missing file") }
+
+    // setTimes: whole seconds, read back through stat's mtime.
+    if !setTimes(&file, 1000000000, 1500000000) { return fail("setTimes") }
+    if fsStat(file.cstr()).mtimeSec != 1500000000 { return fail("mtime") }
+    if setTimes(&missing, 1, 1) { return fail("setTimes of a missing file") }
+
+    // symlink to a file: the link reads through, stores the target as written, and a plain file is no link.
+    local link: String = String("xl_filemeta_e2e/link")
+    local target: String = String("f.txt")
+    if !symlink(&target, &link) { return fail("symlink") }
+    if symlink(&target, &link) { return fail("symlink over an existing path") }
+    if !isSymlink(&link) { return fail("isSymlink") }
+    if isSymlink(&file) { return fail("a file is no link") }
+    if isSymlink(&missing) { return fail("a missing path is no link") }
+    if !readLink(&link).equals("f.txt") { return fail("readLink") }
+    if readLink(&file).length() != 0 { return fail("readLink of a file") }
+    if !fsReadAllString(link.cstr()).equals("data") { return fail("read through the link") }
+
+    // A link to a directory is removed by removeAll without touching what it points at.
+    local dir: String = String("xl_filemeta_e2e/d")
+    if !makeDir(&dir) { return fail("makeDir d") }
+    local inner: String = String("xl_filemeta_e2e/d/keep.txt")
+    if !fsWrite(inner.cstr(), "keep") { return fail("write inner") }
+    local dirLink: String = String("xl_filemeta_e2e/dlink")
+    local dirTarget: String = String("d")
+    if !symlink(&dirTarget, &dirLink) { return fail("symlink to a directory") }
+    if !isDir(&dirLink) || !isSymlink(&dirLink) { return fail("directory link") }
+    if !removeAll(&dirLink) { return fail("removeAll of a directory link") }
+    if exists(&dirLink) { return fail("directory link still there") }
+    if !exists(&inner) { return fail("removeAll followed the link") }
+
+    // A dangling link exists as a link only.
+    local dangling: String = String("xl_filemeta_e2e/dangling")
+    local nowhere: String = String("nowhere")
+    if !symlink(&nowhere, &dangling) { return fail("dangling symlink") }
+    if exists(&dangling) || !isSymlink(&dangling) { return fail("dangling link state") }
+
+    if !removeAll(&root) { return fail("removeAll") }
+    if exists(&root) { return fail("root left") }
+    print("filemeta ok\n")
+    return 0
+}

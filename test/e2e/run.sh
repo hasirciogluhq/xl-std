@@ -54,6 +54,7 @@ tests=(
   "stdlib|0|499500|0|1"
   "fsjson|0||0|1"
   "files|0|files ok|0|1"
+  "filemeta|0|filemeta ok|0|1"
   "archive|0|archive ok|0|0"
   "argv|0|argv ok|0|1"
   "panics|134|before|0|0"

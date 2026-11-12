@@ -69,6 +69,10 @@ define SYS_MKDIR = 83
 define SYS_RMDIR = 84
 define SYS_RENAME = 82
 define SYS_GETCWD = 79
+define SYS_SYMLINKAT = 266          // arch/x86/entry/syscalls/syscall_64.tbl
+define SYS_READLINKAT = 267
+define SYS_FCHMODAT = 268
+define SYS_UTIMENSAT = 280
 #elif arch == "aarch64"
 define SYS_OPENAT = 56
 define SYS_CLOSE = 57
@@ -77,6 +81,10 @@ define SYS_UNLINKAT = 35
 define SYS_MKDIRAT = 34
 define SYS_RENAMEAT = 38
 define SYS_GETCWD = 17
+define SYS_SYMLINKAT = 36           // include/uapi/asm-generic/unistd.h
+define SYS_FCHMODAT = 53
+define SYS_READLINKAT = 78
+define SYS_UTIMENSAT = 88
 #endif
 define AT_REMOVEDIR = 512          // 0x200: unlinkat removes a directory (include/uapi/linux/fcntl.h)
 define TCGETS = 21505              // 0x5401 (include/uapi/asm-generic/ioctls.h)
@@ -276,6 +284,37 @@ export fn sysRename(src: *u8, dst: *u8) -> i32 {
 #else
     return syscall(SYS_RENAMEAT, AT_FDCWD, src, AT_FDCWD, dst) as i32
 #endif
+}
+
+/// Sets the permission bits of `path` (the low 12 bits of `mode`: rwx for user, group and other, setuid, setgid, sticky) through
+/// `fchmodat(AT_FDCWD, path, mode)`, following symbolic links; 0 on success, negative errno on failure. The same call on both CPUs:
+/// arm64 has no plain `chmod`.
+export fn sysChmod(path: *u8, mode: u32) -> i32 {
+    return syscall(SYS_FCHMODAT, AT_FDCWD, path, mode & 4095) as i32
+}
+
+/// Sets the access and modification times of `path` in whole seconds since 1970 (`utimensat(AT_FDCWD, path, times, 0)`, following
+/// symbolic links; `times` is two `struct timespec`, each seconds then nanoseconds as `i64`); 0 on success, negative errno on failure.
+export fn sysSetTimes(path: *u8, accessSec: i64, modifySec: i64) -> i32 {
+    local times: [i64; 4]
+    times[0] = accessSec
+    times[1] = 0
+    times[2] = modifySec
+    times[3] = 0
+    return syscall(SYS_UTIMENSAT, AT_FDCWD, path, &times[0], 0) as i32
+}
+
+/// Creates the symbolic link `linkPath` holding the text `target` (`symlinkat(target, AT_FDCWD, linkPath)`; the target need not
+/// exist); 0 on success, negative errno on failure (-17 EEXIST when `linkPath` exists).
+export fn sysSymlink(target: *u8, linkPath: *u8) -> i32 {
+    return syscall(SYS_SYMLINKAT, target, AT_FDCWD, linkPath) as i32
+}
+
+/// Writes the target text of the symbolic link `path` (not NUL terminated) into `buf` and returns its length; -1 when `path` is not a
+/// symbolic link or the text does not fit in `cap` (the kernel truncates silently, so a full buffer is taken as not fitting).
+export fn sysReadlink(path: *u8, buf: *u8, cap: usize) -> i64 {
+    local n: i64 = syscall(SYS_READLINKAT, AT_FDCWD, path, buf, cap)
+    return n >= 0 && n < cap as i64 ? n : -1
 }
 
 /// Writes the current directory (NUL terminated) into `buf` and returns its length without the NUL, or -1 when `cap` is too small.

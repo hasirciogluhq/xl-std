@@ -63,7 +63,7 @@ export fn fsStat(path: *u8) -> FileStat {
     if !sysFileInfo(path, &info[0]) { return FileStat { ok: false } }
     local mode: u32 = (info[0] & STAT_ATTR_DIRECTORY) != 0 ? STAT_DIRECTORY : STAT_REGULAR
     return FileStat {
-        mode: (info[0] & STAT_ATTR_READONLY) != 0 ? mode & 0xfffffedb : mode,        // clear the write bits 0222
+        mode: (info[0] & STAT_ATTR_READONLY) != 0 ? mode & 0xffffff6d : mode,        // clear the write bits 0222
         size: info[1], mtimeSec: info[2] / STAT_TICKS_PER_SECOND - STAT_EPOCH_DELTA, ok: true,
     }
 }
