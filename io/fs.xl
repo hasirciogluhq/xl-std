@@ -4,13 +4,19 @@
 from "../sys" import sysOpenRead, sysOpenWrite, sysClose, sysUnlink, sysFileSize, sysRead, sysWrite
 from "../str/string" import String
 
-/// Writes all of `n` bytes to `fd`; false on error.
+// A signal that arrives during a long `write` makes it fail with EINTR before any byte is written, or return a short
+// count after some were (https://man7.org/linux/man-pages/man2/write.2.html, write(2) on macOS). EINTR is 4 on Linux and
+// macOS; the Windows `sysWrite` reports failure as -1, so the retry never fires there.
+define EINTR = 4
+
+/// Writes all of `n` bytes to `fd`, resuming after short writes and EINTR; false on error.
 fn writeAll(fd: i32, data: *u8, n: usize) -> bool {
     local done: usize = 0
     while done < n {
         local w: isize = sysWrite(fd, &data[done], n - done)
+        if w == -EINTR { continue }
         if w <= 0 { return false }
-        done = done + (w as usize)
+        done += w as usize
     }
     return true
 }
