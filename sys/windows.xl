@@ -331,11 +331,23 @@ export fn sysMkdir(path: *u8) -> i32 {
     return CreateDirectoryW(&wide[0], nil) != 0 ? 0 : -1
 }
 
-/// Removes an empty directory; 0 on success.
+/// Removes an empty directory; 0 on success. A read-only directory is made writable first (see `sysUnlink`).
 export fn sysRmdir(path: *u8) -> i32 {
     local wide: [u16; 520]
     if !widen(path, &wide[0], 520) { return -1 }
-    return RemoveDirectoryW(&wide[0]) != 0 ? 0 : -1
+    if RemoveDirectoryW(&wide[0]) != 0 { return 0 }
+    return dropReadOnly(&wide[0]) && RemoveDirectoryW(&wide[0]) != 0 ? 0 : -1
+}
+
+/// Clears FILE_ATTRIBUTE_READONLY of `wide`; false when it was not set (or cannot be read), so a retry would fail the same way.
+/// POSIX deletes a read-only file (the directory's permission decides), Windows refuses it with ERROR_ACCESS_DENIED
+/// (https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-deletefilew): Git for Windows writes its pack files
+/// read-only, so deleting a cloned `.git` needs this. Go's os.Remove does the same.
+fn dropReadOnly(wide: *u16) -> bool {
+    local attrs: u32 = GetFileAttributesW(wide)
+    if attrs == INVALID_ATTRIBUTES || (attrs & ATTRIBUTE_READONLY) == 0 { return false }
+    local rest: u32 = attrs & (INVALID_ATTRIBUTES ^ ATTRIBUTE_READONLY)
+    return SetFileAttributesW(wide, rest == 0 ? ATTRIBUTE_NORMAL : rest) != 0
 }
 
 /// Renames `src` to `dst`, replacing an existing file (`MOVEFILE_REPLACE_EXISTING`); 0 on success.
@@ -516,11 +528,13 @@ export fn sysClose(fd: i32) -> i32 {
 }
 
 /// Deletes a file, or a symbolic link itself: `DeleteFileW` never follows a link (a link to a directory is not a file, so it fails
-/// and `sysRmdir` removes it). `NtDeleteFile` would follow the link and delete the target.
+/// and `sysRmdir` removes it). `NtDeleteFile` would follow the link and delete the target. A read-only file is deleted like on
+/// POSIX: its read-only attribute is cleared and the delete retried (`dropReadOnly`).
 export fn sysUnlink(path: *u8) -> i32 {
     local wide: [u16; 520]
     if !widen(path, &wide[0], 520) { return -1 }
-    return DeleteFileW(&wide[0]) != 0 ? 0 : -1
+    if DeleteFileW(&wide[0]) != 0 { return 0 }
+    return dropReadOnly(&wide[0]) && DeleteFileW(&wide[0]) != 0 ? 0 : -1
 }
 
 /// Metadata of `path` (a file or a directory) into `out[0..3]`: FileAttributes, EndOfFile in bytes, LastWriteTime in 100 ns ticks
