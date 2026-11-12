@@ -95,6 +95,11 @@ export class Client {
         return self.sendBody("PUT", url, contentType, body)
     }
 
+    fn delete(self, url: *String) -> Result<Response, HttpError> {
+        local r = Request("DELETE", url)
+        return self.send(&r)
+    }
+
     fn sendBody(self, method: str, url: *String, contentType: str, body: *String) -> Result<Response, HttpError> {
         local r = Request(method, url)
         r.headers.set("Content-Type", contentType)
