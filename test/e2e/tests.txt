@@ -3,6 +3,7 @@
 #   diag|name|build flag (empty: none)|diagnostic code the build output must contain, or `ok` (the build must succeed)
 run|proc_list|0|pid
 run|process|0|process ok
+run|pipe|0|pipe ok
 run|stdlib|0|499500
 run|fsjson|0|
 run|argv|0|argv ok

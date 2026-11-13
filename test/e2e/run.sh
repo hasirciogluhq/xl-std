@@ -43,6 +43,7 @@ echo "e2e: $XLANG_E2E_JOBS concurrent legs${XLANG_E2E_FILTER:+, filter '$XLANG_E
 tests=(
   "proc_list|0|pid|0|1"
   "process|0|process ok|0|1"
+  "pipe|0|pipe ok|0|1"
   "stdlib|0|499500|0|1"
   "fsjson|0||0|1"
   "files|0|files ok|0|1"

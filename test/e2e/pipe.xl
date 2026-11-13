@@ -1,0 +1,27 @@
+// pipe: `sysPipe(fds, true)` gives non-blocking ends on every OS (Linux pipe2 O_NONBLOCK, macOS pipe + fcntl O_NONBLOCK, Windows
+// PIPE_NOWAIT): a read of the empty pipe returns an error at once instead of waiting, and data written is read back.
+from "std" import String, print
+from "std/sys" import sysPipe, sysRead, sysWrite, sysClose
+
+fn fail(msg: str) -> i32 {
+    print("FAIL ")
+    print(msg)
+    print("\n")
+    return 1
+}
+
+@entry fn main() -> i32 {
+    local fds: [i32; 2]
+    if sysPipe(&fds[0], true) < 0 { return fail("sysPipe") }
+    defer {
+        sysClose(fds[0])
+        sysClose(fds[1])
+    }
+    local buf: [u8; 4]
+    if sysRead(fds[0], &buf[0], 4) >= 0 { return fail("read of an empty non-blocking pipe did not fail") }
+    local msg: String = String("ok")
+    if sysWrite(fds[1], msg.cstr(), 2) != 2 { return fail("write") }
+    if sysRead(fds[0], &buf[0], 4) != 2 || buf[0] != b'o' || buf[1] != b'k' { return fail("read back") }
+    print("pipe ok\n")
+    return 0
+}

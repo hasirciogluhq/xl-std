@@ -172,9 +172,29 @@ export fn sysPollWait(pfd: i32, tokens: *usize, max: i32, timeoutMs: i32) -> i32
 // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/pipe.2.html
 @library("System") declare fn pipe(fds: *i32) -> i32
 
-/// A pipe: `fds[0]` reads, `fds[1]` writes; 0, or -1 on failure.
+// macOS has no `pipe2`, so `O_NONBLOCK` is set on each end afterwards with the raw BSD fcntl (92): libSystem's `fcntl` is variadic, and
+// on arm64 Apple passes variadic arguments on the stack, so a fixed-argument declaration of it would hand the kernel garbage.
+// Numbers from bsd/sys/fcntl.h (F_GETFL 3, F_SETFL 4, O_NONBLOCK 0x4) and bsd/kern/syscalls.master in
+// https://github.com/apple-oss-distributions/xnu; https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html
+define SYS_FCNTL = 92
+define F_GETFL = 3
+define F_SETFL = 4
+define O_NONBLOCK = 0x4
+
+/// A pipe: `fds[0]` reads, `fds[1]` writes; 0, or -1 on failure. With `nonblocking`, both ends are `O_NONBLOCK` (a read of an empty or
+/// write to a full pipe fails with EAGAIN); when that cannot be set, both ends are closed and the result is -1.
 export fn sysPipe(fds: *i32, nonblocking: bool) -> i32 {
-    return pipe(fds)
+    if pipe(fds) < 0 { return -1 }
+    if !nonblocking { return 0 }
+    for i in 0..2 {
+        local flags: i64 = syscall(SYS_FCNTL, fds[i], F_GETFL, 0)
+        if flags < 0 || syscall(SYS_FCNTL, fds[i], F_SETFL, flags | O_NONBLOCK) < 0 {
+            sysClose(fds[0])
+            sysClose(fds[1])
+            return -1
+        }
+    }
+    return 0
 }
 
 // ---- files -----------------------------------------------------------------------------------
