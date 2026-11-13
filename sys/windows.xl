@@ -178,24 +178,64 @@ export fn sysYield() {
     NtYieldExecution()
 }
 
+// ---- threads and address waits (kernel32 / KernelBase) -------------------------------------------
+//
+// CreateThread is the documented thread interface; NtCreateThreadEx is undocumented and needs the caller to build the
+// initial context and TEB stack fields itself, so it is not used.
+//   https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread
+// WaitOnAddress / WakeByAddressSingle / WakeByAddressAll (Windows 8+, exported by KernelBase.dll, import library
+// Synchronization.lib) are the futex equivalent: the wait returns when `*addr != expected`, on a wake, or spuriously; callers
+// re-check, as with futex.
+//   https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitonaddress
+//   https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-wakebyaddresssingle
+@library("kernel32") declare fn CreateThread(attrs: *void, stackSize: usize, start: fn(*void) -> u32, arg: *void, flags: u32, tid: *u32) -> i64
+@library("kernel32") declare fn GetCurrentThreadId() -> u32
+@library("KernelBase") declare fn WaitOnAddress(addr: *void, compare: *void, size: usize, ms: u32) -> i32
+@library("KernelBase") declare fn WakeByAddressSingle(addr: *void)
+@library("KernelBase") declare fn WakeByAddressAll(addr: *void)
+
+define INFINITE = 4294967295                   // 0xFFFFFFFF, synchapi.h
+define STACK_SIZE_PARAM_IS_A_RESERVATION = 0x10000
+
 export fn sysThreadId() -> i64 {
+    return GetCurrentThreadId() as i64
+}
+
+/// Blocks while `*addr == expected` (may return spuriously).
+export fn sysWait(addr: *u32, expected: u32) {
+    local cmp: u32 = expected
+    WaitOnAddress(addr as *void, &cmp as *void, 4, INFINITE)
+}
+
+/// Wakes one waiter on `addr` when `count` is 1, all of them otherwise.
+export fn sysWake(addr: *u32, count: i32) {
+    if count == 1 { WakeByAddressSingle(addr as *void) } else { WakeByAddressAll(addr as *void) }
+}
+
+/// Runs on the new thread: the user entry, then the exit word is cleared and its waiters woken (the join protocol of std/thread;
+/// Windows has no CLONE_CHILD_CLEARTID).
+fn threadTrampoline(p: *void) -> u32 {
+    local words: *usize = p as *usize
+    local entry: fn(*void) = words[0] as fn(*void)
+    local ctid: *u32 = words[2] as *u32
+    entry(words[1] as *void)
+    __builtin_atomicStore(ctid, 0, MemoryOrder.release)
+    WakeByAddressAll(ctid as *void)
     return 0
 }
 
-export fn sysWait(addr: *u32, expected: u32) {
-    local spins: i32 = 0
-    while __builtin_atomicLoad(addr, MemoryOrder.acquire) == expected && spins < 64 {
-        spins = spins + 1
-    }
-}
-
-export fn sysWake(addr: *u32, count: i32) {
-}
-
-// Threads need `NtCreateThreadEx` plus a futex-like wait (WaitOnAddress); not done yet, so the scheduler
-// stays on one thread (see xlang-docs/known-limitations.md).
+/// Starts a thread. The OS allocates the thread's stack (`size` bytes reserved); the caller region `stack` only carries the
+/// argument block until the join. The handle is closed at once: the thread is joined through `ctid`, not its handle.
 export fn sysThreadCreate(entry: fn(*void), arg: *void, stack: *void, size: usize, ctid: *u32) -> i64 {
-    return -1
+    local block: *usize = stack as *usize
+    block[0] = entry as usize
+    block[1] = arg as usize
+    block[2] = ctid as usize
+    local tid: u32 = 0
+    local h: i64 = CreateThread(nil, size, threadTrampoline, block as *void, STACK_SIZE_PARAM_IS_A_RESERVATION, &tid)
+    if h == 0 { return -1 }
+    NtClose(h)
+    return tid as i64
 }
 
 export fn sysThreadRelease(stack: *void, size: usize) {
@@ -301,8 +341,30 @@ export fn sysPollWait(pfd: i32, tokens: *usize, max: i32, timeoutMs: i32) -> i32
     return out
 }
 
+// An anonymous pipe (a named pipe underneath): `fds[0]` reads, `fds[1]` writes, as handle low bits. Non-blocking sets PIPE_NOWAIT
+// (0x1, winbase.h) on both ends: a read of an empty pipe and a write to a full one return at once instead of waiting.
+//   https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createpipe
+//   https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-setnamedpipehandlestate
+@library("kernel32") declare fn CreatePipe(read: *i64, write: *i64, attrs: *void, size: u32) -> i32
+@library("kernel32") declare fn SetNamedPipeHandleState(h: i64, mode: *u32, maxCount: *u32, timeout: *u32) -> i32
+
+define PIPE_NOWAIT = 1
+
 export fn sysPipe(fds: *i32, nonblocking: bool) -> i32 {
-    return -1
+    local r: i64 = 0
+    local w: i64 = 0
+    if CreatePipe(&r, &w, nil, 0) == 0 { return -1 }
+    if nonblocking {
+        local mode: u32 = PIPE_NOWAIT
+        if SetNamedPipeHandleState(r, &mode, nil, nil) == 0 || SetNamedPipeHandleState(w, &mode, nil, nil) == 0 {
+            NtClose(r)
+            NtClose(w)
+            return -1
+        }
+    }
+    fds[0] = r as i32
+    fds[1] = w as i32
+    return 0
 }
 
 // ---- files ---------------------------------------------------------------------------------------

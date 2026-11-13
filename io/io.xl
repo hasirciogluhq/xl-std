@@ -3,6 +3,7 @@
 // `printEndl()` writes only "\n". The text rules (`{}`, `{{`, `}}`) live in std/str/fmt.
 from "../str/fmt" import FmtSink, FmtFd, fmtWrite, fmtEmit
 from "../str/string" import String
+from "../sys" import sysRead, sysWrite
 
 // ---- stdout ---------------------------------------------------------------------------------
 
@@ -280,4 +281,16 @@ export fn fprintln(fd: i32, fmt: str, ..args) {
     local sink: FmtSink = FmtSink(FmtFd, fd, nil, 0, nil)
     fmtEmit(&sink, fmt, ..args)
     sink.write("\n")
+}
+
+// ---- raw descriptor I/O ---------------------------------------------------------------------
+
+/// Reads up to `n` bytes from `fd` into `buf`; blocks in the OS call. Returns the count or -errno.
+export fn ioRead(fd: i32, buf: *u8, n: usize) -> isize {
+    return sysRead(fd, buf, n)
+}
+
+/// Writes up to `n` bytes of `buf` to `fd`; blocks in the OS call. Returns the count or -errno.
+export fn ioWrite(fd: i32, buf: *u8, n: usize) -> isize {
+    return sysWrite(fd, buf, n)
 }

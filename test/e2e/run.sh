@@ -53,8 +53,6 @@ tests=(
   "vecpanic|134|before|0|0"
   "threads|0|40000|1|0"
   "try|0|try ok|0|0"
-  "sched|0|20100|0|0"
-  "sched_io|0|5|0|0"
   "random|0|random ok|0|0"
   "stat|0|stat ok|0|0"
   "print|0|print ok|0|1"

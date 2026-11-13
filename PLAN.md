@@ -12,7 +12,7 @@ Open work only. Finished work lives in the code, `xlang-docs/std/` and git histo
 ## Next
 - WebSocket (RFC 6455), static files and ranges, HTTP/2 (RFC 9113, 7541; needs ALPN).
 - IPv6 sockets and address types (TLS and HTTP included).
-- Windows threads; fibers.
+- Run Windows threads (`CreateThread`, `WaitOnAddress`) under Wine/real Windows and set the `threads` Windows column.
 - Ed25519 certificates in TLS; 0-RTT only if a real user asks (replay risk, RFC 8446 section 8).
 
 ## Open decisions

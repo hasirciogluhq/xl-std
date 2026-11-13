@@ -4,13 +4,12 @@
 // A path is a pattern: ":name" matches one segment, "*name" matches the rest of the path including its leading slash. A static
 // route wins over a pattern route at the same place. Two routes of one method whose patterns differ only in parameter names are
 // rejected at registration (Gin panics too). A route's handler chain is the middleware in effect when it was registered, followed by
-// the handler. A matched chain runs as a scheduler task (std/thread spawn); the connection waits for it before it answers.
+// the handler. A matched chain runs on the calling thread before the connection answers.
 from "../mem/memory" import strlen
 from "../str/str" import fromParts, eq, fromC
 from "../str/string" import String
 from "../collections/vec" import Vec
 from "../tls/tls" import TlsCredentials
-from "../thread/sched" import spawn, waitAll
 from "context" import Context, Param, Handler
 from "server" import routerServe, routerServeTls
 
@@ -120,23 +119,20 @@ export class Engine {
         return routerServeTls(self as *void, engineServe, 0, port, cr, noListen)
     }
 
-    /// Routes one request: finds the route, fills its parameters, and runs its chain as a scheduler task. The call returns when the
-    /// task has finished. Without a matching route the not-found chain (or "404 page not found") answers.
+    /// Routes one request: finds the route, fills its parameters, and runs its chain. The call returns when the chain has finished. Without a matching route the not-found chain (or "404 page not found") answers.
     fn Serve(self, c: *Context) {
         local found: i32 = findRoute(self, c)
         if found >= 0 {
             local r: *Route = self.routes.get(found as usize)
             c.handlers = r.chain.clone()
             c.index = -1
-            spawn(runChain, c as *void)
-            waitAll()
+            c.Next()
             return
         }
         if self.handleMethodNotAllowed && allowedElsewhere(self, c) {
             c.handlers = self.notAllowed.clone()
             c.index = -1
-            spawn(runChain, c as *void)
-            waitAll()
+            c.Next()
             return
         }
         if self.redirectTrailingSlash || self.redirectFixedPath {
@@ -144,8 +140,7 @@ export class Engine {
         }
         c.handlers = self.notFound.clone()
         c.index = -1
-        spawn(runChain, c as *void)
-        waitAll()
+        c.Next()
         if !c.responded {
             c.String(404, "404 page not found")
         }
@@ -229,12 +224,6 @@ fn newGroup(e: *Engine, prefix: str, mw: *Vec<Handler>) -> *RouterGroup {
     g.prefix.append(prefix)
     g.middleware = mw.clone()
     return g
-}
-
-/// The task body: runs the chain of the context (the argument of spawn).
-fn runChain(arg: *void) {
-    local c: *Context = arg as *Context
-    c.Next()
 }
 
 /// Registers one route. A conflict with an existing route of the same method and shape stops the program (Gin's startup panic).
