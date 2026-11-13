@@ -123,13 +123,7 @@ export class Transform {
 
     /// Moves the position by (dx, dy, dz), in the parent frame (not the local, rotated frame).
     fn translate(self, dx: f64, dy: f64, dz: f64) {
-        // The sum goes into a whole-value local first: a field assignment whose right side reads another field of the
-        // same object (`self.position = Vec3(self.position.x + dx, ..)`) computes the wrong value in the current code
-        // generator, and this form is correct on every backend.
-        local px: f64 = self.position.x
-        local py: f64 = self.position.y
-        local pz: f64 = self.position.z
-        self.position = Vec3(px + dx, py + dy, pz + dz)
+        self.position = Vec3(self.position.x + dx, self.position.y + dy, self.position.z + dz)
     }
 
     /// Rotates the placement by `q`: the rotation is applied in the world (parent) frame, so the new rotation is

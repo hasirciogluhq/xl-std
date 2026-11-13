@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: .github/scripts/install-xlc.sh
       - name: xlc --check index.xl
-        run: xlc index.xl --check -DfeatureDefaultAllocator=true --target ${{ matrix.target }} --deny W0701
+        run: xlc index.xl --check -DfeatureDefaultAllocator=true --target ${{ matrix.target }}
 
   # Unit suites and end-to-end programs, built and run natively on each host. The Linux hosts also run the container legs of run.sh.
   test:

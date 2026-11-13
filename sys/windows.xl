@@ -80,8 +80,12 @@ export fn sysRead(fd: i32, buf: *u8, n: usize) -> isize {
     return io[1] as isize
 }
 
-export fn sysExit(code: i32) {
+/// Ends the process (NtTerminateProcess on the current-process pseudo handle,
+/// https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-zwterminateprocess).
+/// The call does not return for the current process; the loop only states that to the compiler.
+export fn sysExit(code: i32) -> never {
     NtTerminateProcess(CURRENT_PROCESS as i64, code)
+    while true { }
 }
 
 export fn sysMap(size: usize) -> *void {
@@ -188,8 +192,8 @@ export fn sysWait(addr: *u32, expected: u32) {
 export fn sysWake(addr: *u32, count: i32) {
 }
 
-// Threads need `NtCreateThreadEx` plus a futex-like wait (WaitOnAddress); not done yet, the scheduler
-// stays on one thread like macOS (see xlang-docs/known-limitations.md).
+// Threads need `NtCreateThreadEx` plus a futex-like wait (WaitOnAddress); not done yet, so the scheduler
+// stays on one thread (see xlang-docs/known-limitations.md).
 export fn sysThreadCreate(entry: fn(*void), arg: *void, stack: *void, size: usize, ctid: *u32) -> i64 {
     return -1
 }

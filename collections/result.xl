@@ -7,11 +7,11 @@
 // `Result.Err(e)` and needs a known target type where it is created, because the enum is generic
 // (`local r: Result<i32, Error> = Result.Ok(1)`; without that type the build is `E0756`).
 //
-// The `?` operator is not part of the language yet (see `xlang-docs/known-limitations.md`); code that
-// wants early exit writes the switch out today:
+// `r?` takes the value of an `Ok` and returns the `Err` from the enclosing function otherwise; the
+// error type must be the same in both (there is no conversion). A `switch` on an owned `Result`
+// takes the payload as well:
 //
-//     local r: Result<i32, Error> = step()
-//     switch r {
+//     switch step() {
 //         case Result.Err(e) { return Result.Err(e) }
 //         case Result.Ok(v) { /* continue with v */ }
 //     }

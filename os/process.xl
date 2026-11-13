@@ -12,8 +12,7 @@
 // releases them when it is dropped. The OS work is in `std/sys/spawn`: this file is the same on every OS except for the program
 // search (Windows searches PATH itself, as CreateProcessW does) and the null device.
 //
-// Why one class and not a `Result<Child, Error>`: a payload bound in a `switch` is a copy, so a droppable payload (a child that owns
-// pipes) cannot be taken out of a `Result` yet (see known-limitations.md). Failure is therefore `Option<ProcessError>`: None is success.
+// One class, as in Go: `start`, `wait` and the other steps report failure as `Option<ProcessError>`, where None is success.
 //
 // Behavior that depends on the OS, in one place:
 //   * Signals: POSIX delivers the signal. Windows has none, so every `Signal` ends the process with TerminateProcess (exit code 1);

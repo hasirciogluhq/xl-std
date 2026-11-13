@@ -159,15 +159,8 @@ export class Quat {
         local c: Quat = b.normalized()
         local d: f64 = a.dot(&c)
         if d < 0.0 {
-            // The components are read into locals before the constructor call: an inlined nested constructor that
-            // reads a field of the value being replaced computes the wrong value in the current code generator
-            // (`Quat(0.0 - c.w, ...)` assigned to `c`), and this form is correct on every backend.
-            local nw: f64 = 0.0 - c.w
-            local nx: f64 = 0.0 - c.x
-            local ny: f64 = 0.0 - c.y
-            local nz: f64 = 0.0 - c.z
-            c = Quat(nw, nx, ny, nz)
-            d = 0.0 - d
+            c = Quat(-c.w, -c.x, -c.y, -c.z)
+            d = -d
         }
         if d > 0.999999999 {
             local lin: Quat = Quat(a.w + (c.w - a.w) * t, a.x + (c.x - a.x) * t,

@@ -9,7 +9,7 @@ from "unwind" import unwindPanic
 
 // The message goes through `sysWriteFile`: a panic writes to stderr only, so it must not pull in the
 // socket path (ws2_32 on Windows) that `sysWrite` also contains.
-register(panic) fn panic(msg: *u8) {
+register(panic) fn panic(msg: *u8) -> never {
     unwindPanic(msg)
     sysWriteFile(2, "panic: ", 7)
     sysWriteFile(2, msg, strlen(msg))

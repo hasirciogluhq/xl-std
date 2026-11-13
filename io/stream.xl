@@ -91,17 +91,13 @@ export class Stream {
     }
 }
 
-// The shared stream of standard input lives in static storage (no heap), written once with `__builtin_write` the way `Vec` fills a slot.
-global stdinSlot: [u64; 8]
-global stdinReady: bool
-staticAssert(sizeOf(Stream) <= 64)
+// The shared stream of standard input, made on first use and never freed (fd 0 is not owned).
+global stdinShared: *Stream = nil
 
 /// Standard input, shared by every caller.
 export fn stdin() -> *Stream {
-    local shared: *Stream = &stdinSlot[0] as *Stream
-    if !stdinReady {
-        __builtin_write(shared, Stream(0, false))
-        stdinReady = true
+    if stdinShared == nil {
+        stdinShared = new Stream(0, false)
     }
-    return shared
+    return stdinShared
 }

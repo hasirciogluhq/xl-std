@@ -30,8 +30,11 @@ export fn sysRead(fd: i32, buf: *u8, n: usize) -> isize {
     return syscall(SYS_READ, fd, buf, n) as isize
 }
 
-export fn sysExit(code: i32) {
+/// Ends the process (exit(2) of XNU, https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/_exit.2.html).
+/// The call does not return; the loop only states that to the compiler.
+export fn sysExit(code: i32) -> never {
     syscall(SYS_EXIT, code)
+    while true { }
 }
 
 export fn sysMap(size: usize) -> *void {
@@ -64,7 +67,7 @@ export fn sysWait(addr: *u32, expected: u32) {
 export fn sysWake(addr: *u32, count: i32) {
 }
 
-// ---- threads: libSystem pthreads (decision D1, option A in xlang-docs/known-limitations.md) ------------
+// ---- threads: libSystem pthreads ------------------------------------------------------------------------
 //
 // pthread_create, pthread_attr_setstacksize and pthread_detach are the documented interface of libSystem (Apple, pthread(3)). The raw
 // bsdthread_* system calls are not used: the kernel refuses bsdthread_register in a process that did not start through libSystem.

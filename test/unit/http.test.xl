@@ -1,7 +1,7 @@
 // Unit tests of the HTTP client without a network: `Peer` is a scripted Transport that answers each connection with one canned reply,
 // a few bytes per read, and records what the client wrote. They cover body framing, interim responses, redirects (relative, cross-origin,
 // 303), retries, malformed and truncated replies, streaming through a closure, URL parsing and resolution, and header lists.
-// Each case returns a Result so that `?` takes responses out (a payload copied out of a `switch` is freed twice, known-limitations).
+// Each case returns a Result so that `?` takes responses out.
 from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEqStr, expectTrue, expectFalse, expectEq, testFail
 from "std/http" import Client, Request, Response, Headers, Url, HttpError, Transport, parseUrl, errorText
 from "std" import String, Vec, Result

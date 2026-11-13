@@ -14,7 +14,7 @@
 // - Every request is sent with `Connection: close` on a fresh connection; no Accept-Encoding is sent, so bodies arrive as they are.
 from "../str/string" import String
 from "../str/fmt" import format
-from "../collections/result" import Result, resultIsOk
+from "../collections/result" import Result
 from "url" import Url, HttpError, parseUrl, decimal
 from "headers" import Headers
 from "transport" import Transport, NetConn, Wire
@@ -121,8 +121,7 @@ export class Client {
     /// Sends `req` and hands the body to `sink(r, chunk)` as it arrives; the returned Response has an empty body.
     fn stream<F>(self, req: *Request, sink: F) -> Result<Response, HttpError> {
         local net = NetConn()
-        local t: Transport = &net         // known-limitations: a generic call cannot also convert an argument to an interface
-        return self.streamVia(t, req, sink)
+        return self.streamVia(&net, req, sink)
     }
 
     /// `stream` over the transport `t`, which is closed when the call returns.
@@ -141,9 +140,11 @@ export class Client {
             self.open(&wire, &url, &head, &body, idempotent(&method), &out)?
             local location = out.header("Location")
             if self.maxRedirects > 0 && isRedirect(out.status) && location.length() > 0 {
-                // Only `?` moves a droppable payload out of a Result (known-limitations), so check first, then take it.
-                if hop == self.maxRedirects || !resultIsOk(url.resolve(&location)) { return Result.Err(HttpError.Redirect) }
-                url = url.resolve(&location)?
+                if hop == self.maxRedirects { return Result.Err(HttpError.Redirect) }
+                switch url.resolve(&location) {
+                    case Result.Ok(next) { url = next }
+                    case Result.Err(_) { return Result.Err(HttpError.Redirect) }
+                }
                 if (out.status == 303 && !method.equals("HEAD")) || (out.status <= 302 && method.equals("POST")) {
                     method = String("GET")
                     body.clear()

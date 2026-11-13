@@ -4,14 +4,8 @@
 // it is exhaustive without a default, and the payload is dropped only when the variant is live,
 // so `Option<String>` owns its string exactly once.
 //
-// The `?` operator does not exist in the language yet (see `xlang-docs/known-limitations.md`), so a
-// function that wants to stop on `None` writes the switch out:
-//
-//     local o: Option<i32> = lookup()
-//     switch o {
-//         case Option.None { return }
-//         case Option.Some(v) { /* continue with v */ }
-//     }
+// `o?` takes the value of a `Some` and returns `None` from the enclosing function otherwise, which
+// must itself return an `Option`. A `switch` on an owned `Option` takes the payload as well.
 //
 // The helpers below read an `Option` without a `switch`: `optionOrElse` returns the value or a
 // fallback, `optionIsSome` tests the variant, and `optionTake` moves the value out through an out
