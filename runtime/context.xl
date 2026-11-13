@@ -1,21 +1,38 @@
 // std/runtime/context: the stack-switching primitive used by the scheduler (std/thread/sched).
 // The compiler knows nothing of this: it is `__builtin_asm`.
+//
+// A suspended context is its stack pointer. The stack holds, from the top down: the frame pointer and
+// the link register, the callee-saved registers, and the address the context resumes at (label `3:` of
+// the asm block that suspended it). Resuming jumps to that address, so every context continues in the
+// copy of the block that saved it: the optimizer may inline `switchContext` into each caller, and the
+// copies live in different functions with different frames.
+//
+// The block declares every other register as destroyed (`inout` inputs and `clobber`): when it falls
+// through at `3:`, another context has run, so only the registers it restored hold their old values.
+// The vector registers are clobbered whole: AAPCS64 keeps only the low halves of v8-v15 across a call
+// (https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers),
+// and Windows x64 keeps xmm6-xmm15, rdi and rsi, which System V does not
+// (https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention#callercallee-saved-registers).
 
-/// Saves the callee-saved registers on the current stack and its pointer in `*save`, then either
-/// resumes the context whose stack pointer is `load`, or (when `entry` is not nil) calls `entry`
-/// on the fresh stack `load`. Both contexts are suspended at this very asm block, so they share
-/// the frame of this function; frame pointers are always kept (the code generator does it).
-/// A fresh stack starts with a zero frame pointer: the unwinder (std/runtime/unwind) stops there.
+/// Suspends the running context and stores its stack pointer in `*save`, then resumes the context whose
+/// stack pointer is `load`, or, when `entry` is not nil, calls `entry` on the fresh stack `load` (which
+/// must not return). A fresh stack starts with a zero frame pointer: the unwinder (std/runtime/unwind)
+/// stops there.
 export fn switchContext(save: *usize, load: usize, entry: fn()) {
+    local s: *usize = save
+    local l: usize = load
+    local e: fn() = entry
 #if arch == "x86_64"
-    __builtin_asm("push rbp\npush rbx\npush r12\npush r13\npush r14\npush r15\nmov [rdi], rsp\nmov rsp, rsi\ntest rdx, rdx\njnz 2f\npop r15\npop r14\npop r13\npop r12\npop rbx\npop rbp\njmp 3f\n2:\nxor ebp, ebp\ncall rdx\nud2\n3:",
-                  in("rdi") save, in("rsi") load, in("rdx") entry, clobber("rax"), clobber("rcx"),
-                  clobber("r8"), clobber("r9"), clobber("r10"), clobber("r11"), clobber("cc"))
+    __builtin_asm("lea rax, [rip + 3f]\npush rbp\npush rbx\npush r12\npush r13\npush r14\npush r15\npush rax\nmov [rdi], rsp\nmov rsp, rsi\ntest rdx, rdx\njnz 2f\npop rax\npop r15\npop r14\npop r13\npop r12\npop rbx\npop rbp\njmp rax\n2:\nxor ebp, ebp\ncall rdx\nud2\n3:",
+                  inout("rdi") s, inout("rsi") l, inout("rdx") e,
+                  clobber("rax", "rcx", "r8", "r9", "r10", "r11", "cc"),
+                  clobber("xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"),
+                  clobber("xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15"))
 #elif arch == "aarch64"
-    __builtin_asm("stp x29, x30, [sp, #-16]!\nstp x19, x20, [sp, #-16]!\nstp x21, x22, [sp, #-16]!\nstp x23, x24, [sp, #-16]!\nstp x25, x26, [sp, #-16]!\nstp x27, x28, [sp, #-16]!\nstp d8, d9, [sp, #-16]!\nstp d10, d11, [sp, #-16]!\nstp d12, d13, [sp, #-16]!\nstp d14, d15, [sp, #-16]!\nmov x9, sp\nstr x9, [x0]\nmov sp, x1\ncbnz x2, 2f\nldp d14, d15, [sp], #16\nldp d12, d13, [sp], #16\nldp d10, d11, [sp], #16\nldp d8, d9, [sp], #16\nldp x27, x28, [sp], #16\nldp x25, x26, [sp], #16\nldp x23, x24, [sp], #16\nldp x21, x22, [sp], #16\nldp x19, x20, [sp], #16\nldp x29, x30, [sp], #16\nb 3f\n2:\nmov x29, xzr\nblr x2\nbrk #1\n3:",
-                  in("x0") save, in("x1") load, in("x2") entry, clobber("x9"), clobber("x3"), clobber("x4"),
-                  clobber("x5"), clobber("x6"), clobber("x7"), clobber("x8"), clobber("x10"), clobber("x11"),
-                  clobber("x12"), clobber("x13"), clobber("x14"), clobber("x15"), clobber("x16"), clobber("x17"),
-                  clobber("cc"))
+    __builtin_asm("adr x9, 3f\nstp x29, x30, [sp, #-16]!\nstp x19, x20, [sp, #-16]!\nstp x21, x22, [sp, #-16]!\nstp x23, x24, [sp, #-16]!\nstp x25, x26, [sp, #-16]!\nstp x27, x28, [sp, #-16]!\nstp d8, d9, [sp, #-16]!\nstp d10, d11, [sp, #-16]!\nstp d12, d13, [sp, #-16]!\nstp d14, d15, [sp, #-16]!\nstr x9, [sp, #-16]!\nmov x9, sp\nstr x9, [x0]\nmov sp, x1\ncbnz x2, 2f\nldr x9, [sp], #16\nldp d14, d15, [sp], #16\nldp d12, d13, [sp], #16\nldp d10, d11, [sp], #16\nldp d8, d9, [sp], #16\nldp x27, x28, [sp], #16\nldp x25, x26, [sp], #16\nldp x23, x24, [sp], #16\nldp x21, x22, [sp], #16\nldp x19, x20, [sp], #16\nldp x29, x30, [sp], #16\nbr x9\n2:\nmov x29, xzr\nblr x2\nbrk #1\n3:",
+                  inout("x0") s, inout("x1") l, inout("x2") e,
+                  clobber("x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc"),
+                  clobber("q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9", "q10", "q11", "q12", "q13", "q14", "q15"),
+                  clobber("q16", "q17", "q18", "q19", "q20", "q21", "q22", "q23", "q24", "q25", "q26", "q27", "q28", "q29", "q30", "q31"))
 #endif
 }

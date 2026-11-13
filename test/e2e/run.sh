@@ -99,7 +99,8 @@ tests=(
 
 # server program | client program | text the client prints on success. The server runs in the background
 # (it serves until the client asks it to quit); the client's exit status and output are the result.
-# Each pair runs with an RSA and an ECDSA certificate (`-D tlsEc=1`) on its own port.
+# Each pair runs with an RSA and an ECDSA certificate (`-D tlsEc=1`), unoptimized and at -O2 (the release
+# builds of `xl` are -O2, so a bug that only shows under optimization must fail here), each on its own port.
 pairs=(
   "tlsserver|tlsclient|tlsclient ok"
   "httpsserver|httpsclient|httpsclient ok"
@@ -275,8 +276,11 @@ run_pair() {   # label server-bin client-bin text mode(native|docker:PLAT|window
 for p in "${pairs[@]}"; do
   IFS='|' read -r srvname cliname text <<<"$p"
   wantName "$srvname" || wantName "$cliname" || continue
-  for cert in rsa ec; do
+  for variant in rsa ec rsa-O2 ec-O2; do
+    cert=${variant%%-*}
     extra=(); [ "$cert" = ec ] && extra=(-D tlsEc=1)
+    [ "$variant" != "$cert" ] && extra+=(-O2)
+    cert=$variant
     port=$((port + 1))
     legs=("native:$host_os")
     [ "$docker_ok" = 1 ] && legs+=("docker:arm64" "docker:amd64")
