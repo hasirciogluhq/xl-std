@@ -1,12 +1,18 @@
 // Client half of the TLS server e2e (`tlsserver.xl` must be listening on 127.0.0.1:tlsPort). The
 // test certificate is the only trusted root. Positive: a small reply, a 200000-byte stream. Negative:
 // wrong host name, untrusted root. Last it asks the server to quit. Exits 0 and prints
-// `tlsclient ok`. Build with `-D tlsPort=14433` and `-D tlsEc=1` to match the server.
+// `tlsclient ok`. Build with `-D tlsPort=14433` and `-D tlsEc=1` to match the server; with `-D tls12=1` every
+// connection must come out as TLS 1.2 and a TLS 1.3-only client must be refused.
 from "std" import print, trustSetBundlePem, tlsConnect, tlsRead, tlsWrite, tlsClose, tlsErrorText
-from "std" import TlsConn, TLS_OK, TLS_ERR_CERT, strlen
+from "std" import TlsConn, TLS_OK, TLS_ERR_CERT, TLS_1_2, TLS_1_3, tlsConnectVersions, strlen
 from "tls/fixture" import rsaCert, ecCert
 
 global buf: [u8; 8192]
+#ifdef tls12
+global wantVersion: u16 = TLS_1_2
+#else
+global wantVersion: u16 = TLS_1_3
+#endif
 
 fn contains(s: *u8, n: usize, p: *u8) -> bool {
     local pl: usize = strlen(p)
@@ -26,6 +32,10 @@ fn fetch(host: *u8, request: *u8) -> isize {
     local c: TlsConn
     local e: i32 = tlsConnect(&c, 2130706433, tlsPort as u16, host)
     if e != TLS_OK { return e as isize }
+    if c.version != wantVersion {
+        tlsClose(&c)
+        return -101
+    }
     if !tlsWrite(&c, request, strlen(request)) {
         tlsClose(&c)
         return -100
@@ -80,6 +90,16 @@ fn fetch(host: *u8, request: *u8) -> isize {
         return 4
     }
     trustSetBundlePem(good, strlen(good))
+#ifdef tls12
+    // the server speaks TLS 1.2 only: a client that insists on TLS 1.3 gets no connection
+    local c13: TlsConn
+    local e13: i32 = tlsConnectVersions(&c13, 2130706433, tlsPort as u16, "localhost", TLS_1_3, TLS_1_3)
+    tlsClose(&c13)
+    if e13 == TLS_OK {
+        print("FAIL: TLS 1.3-only client connected to a TLS 1.2 server\n")
+        return 6
+    }
+#endif
     n = fetch("localhost", "GET /quit HTTP/1.1\r\n\r\n")
     if n != 3 {
         print("FAIL: quit\n")

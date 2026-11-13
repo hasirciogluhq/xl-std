@@ -1,5 +1,5 @@
-// std/tls: TLS. `tls` is the TLS 1.3 client and server; `truststore` holds the OS root certificates
-// and chain validation. Other TLS versions are planned as parts of this folder.
+// std/tls: TLS 1.2 and 1.3. `tls` is the public client and server API (the layout of the other files is in its
+// header); `truststore` holds the OS root certificates and chain validation; `names` the IANA version and suite names.
 export * from "tls"
 export * from "truststore"
 export * from "names"

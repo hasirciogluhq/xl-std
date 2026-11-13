@@ -1,0 +1,310 @@
+// std/tls/record: the record layer of both versions and the application-data API (`tlsWrite`, `tlsRead`,
+// `tlsClose`).
+//   TLS 1.3  every protected record is opaque_type 23 carrying TLSInnerPlaintext = content || type; the AAD is the
+//            5-byte record header; the nonce is the IV XOR the sequence number (RFC 8446 sections 5.2 and 5.3).
+//   TLS 1.2  the record keeps its real type; the AAD is seq_num || type || version || plaintext length
+//            (RFC 5246 section 6.2.3.3). AES-GCM sends an 8-byte explicit nonce after the header, here the sequence
+//            number (RFC 5288 section 3); ChaCha20-Poly1305 sends none and XORs like TLS 1.3 (RFC 7905 section 2).
+// `sealRecord` and `openRecord` do the cryptography on a buffer and are what the unit suite exercises; the
+// send/receive functions add the socket.
+from "../sys" import sysClose, sysUnmap
+from "../crypto/cipher/chacha20poly1305" import aeadSeal, aeadOpen
+from "../crypto/cipher/aesgcm" import aesGcmSeal, aesGcmOpen
+from "conn" import TlsConn, REC_BUF, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_ALERT, TLS_ERR_AEAD, TLS_1_3, TLS_1_2
+from "conn" import suiteChacha
+from "../crypto/hash/digest" import DIGEST_SHA384
+from "keys" import nextSecret13, trafficKeys13
+from "wire" import emit, emit16, emitBytes, get16, get24, copyBytes, writeAll, readFull
+
+define MAX_FRAGMENT = 16384
+
+/// The 12-byte nonce `iv` XOR the big-endian 64-bit `seq`, right-aligned.
+fn xorNonce(iv: *u8, seq: u64, out: *u8) {
+    copyBytes(out, iv, 12)
+    for i in 0..8 { out[4 + i] ^= ((seq >> (((7 - i) * 8) as u64)) & 0xff) as u8 }
+}
+
+fn put64(p: *u8, v: u64) {
+    for i in 0..8 { p[i] = ((v >> (((7 - i) * 8) as u64)) & 0xff) as u8 }
+}
+
+/// The 13-byte TLS 1.2 AEAD additional data.
+fn aad12(seq: u64, typ: u8, n: usize, out: *u8) {
+    put64(out, seq)
+    out[8] = typ
+    out[9] = 3
+    out[10] = 3
+    out[11] = ((n >> 8) & 0xff) as u8
+    out[12] = (n & 0xff) as u8
+}
+
+/// Bytes between the header and the ciphertext: the explicit nonce of TLS 1.2 AES-GCM.
+fn explicitLen(c: *TlsConn) -> usize {
+    return c.version == TLS_1_2 && !suiteChacha(c.suite as usize) ? 8 : 0
+}
+
+/// Writes one protected record of `typ` carrying `data[0..n]` (n <= 2^14) into `b` with the write keys of `c` and
+/// advances the write sequence number. Returns the record length (header included).
+export fn sealRecord(c: *TlsConn, typ: u8, data: *u8, n: usize, b: *u8) -> usize {
+    local nonce: [u8; 12]
+    local len: usize = 0
+    local chacha = suiteChacha(c.suite as usize)
+    local body: usize = 0                    // bytes that are encrypted
+    local aad: [u8; 13]
+    local alen: usize = 5
+    local at = 5 + explicitLen(c)
+    if c.version == TLS_1_3 {
+        body = n + 1
+        emit(b, &len, 23)
+        emit16(b, &len, 0x0303)
+        emit16(b, &len, body + 16)
+        copyBytes(&b[5], data, n)
+        b[5 + n] = typ
+        copyBytes(&aad[0], b, 5)
+        xorNonce(&c.wIv[0], c.wSeq, &nonce[0])
+    } else {
+        body = n
+        emit(b, &len, typ)
+        emit16(b, &len, 0x0303)
+        emit16(b, &len, at - 5 + n + 16)
+        aad12(c.wSeq, typ, n, &aad[0])
+        alen = 13
+        if chacha {
+            xorNonce(&c.wIv[0], c.wSeq, &nonce[0])
+        } else {
+            copyBytes(&nonce[0], &c.wIv[0], 4)
+            put64(&nonce[4], c.wSeq)
+            copyBytes(&b[5], &nonce[4], 8)
+        }
+        copyBytes(&b[at], data, n)
+    }
+    if chacha {
+        aeadSeal(&c.wKey[0], &nonce[0], &aad[0], alen, &b[at], body, &b[at], &b[at + body])
+    } else {
+        aesGcmSeal(&c.wKey[0], c.keyLen, &nonce[0], &aad[0], alen, &b[at], body, &b[at], &b[at + body])
+    }
+    c.wSeq++
+    return at + body + 16
+}
+
+/// Authenticates and decrypts the protected record `r` (header + `l` body bytes) with the read keys of `c`, in place.
+/// On success the plaintext starts at `r + 5`, `*typ` is its content type and `*len` its length.
+export fn openRecord(c: *TlsConn, r: *u8, l: usize, typ: *u8, len: *usize) -> i32 {
+    local nonce: [u8; 12]
+    local aad: [u8; 13]
+    local chacha = suiteChacha(c.suite as usize)
+    local ok = false
+    if c.version == TLS_1_3 {
+        if r[0] != 23 || l < 17 { return TLS_ERR_PROTOCOL }
+        local n = l - 16
+        xorNonce(&c.rIv[0], c.rSeq, &nonce[0])
+        copyBytes(&aad[0], r, 5)
+        ok = chacha ? aeadOpen(&c.rKey[0], &nonce[0], &aad[0], 5, &r[5], n, &r[5 + n], &r[5])
+                    : aesGcmOpen(&c.rKey[0], c.keyLen, &nonce[0], &aad[0], 5, &r[5], n, &r[5 + n], &r[5])
+        if !ok { return TLS_ERR_AEAD }
+        c.rSeq++
+        // strip the zero padding; the last non-zero byte is the real content type
+        while n > 0 && r[5 + n - 1] == 0 { n-- }
+        if n == 0 { return TLS_ERR_PROTOCOL }
+        *typ = r[5 + n - 1]
+        *len = n - 1
+        return TLS_OK
+    }
+    local ex = explicitLen(c)
+    if r[0] == 20 || l < ex + 16 { return TLS_ERR_PROTOCOL }    // a ChangeCipherSpec after the key change
+    local n = l - ex - 16
+    if chacha {
+        xorNonce(&c.rIv[0], c.rSeq, &nonce[0])
+    } else {
+        copyBytes(&nonce[0], &c.rIv[0], 4)
+        copyBytes(&nonce[4], &r[5], 8)
+        copyBytes(&r[5], &r[13], n + 16)                        // ciphertext and tag move over the explicit nonce
+    }
+    aad12(c.rSeq, r[0], n, &aad[0])
+    ok = chacha ? aeadOpen(&c.rKey[0], &nonce[0], &aad[0], 13, &r[5], n, &r[5 + n], &r[5])
+                : aesGcmOpen(&c.rKey[0], c.keyLen, &nonce[0], &aad[0], 13, &r[5], n, &r[5 + n], &r[5])
+    if !ok { return TLS_ERR_AEAD }
+    c.rSeq++
+    *typ = r[0]
+    *len = n
+    return TLS_OK
+}
+
+/// Sends one record of `typ` with `n` bytes of `data` (n <= 2^14), protected once the write keys are set.
+export fn sendRecord(c: *TlsConn, typ: u8, data: *u8, n: usize) -> bool {
+    local b = c.out
+    if c.wEnc { return writeAll(c.fd, b, sealRecord(c, typ, data, n, b)) }
+    local len: usize = 0
+    emit(b, &len, typ)
+    emit16(b, &len, 0x0303)
+    emit16(b, &len, n)
+    emitBytes(b, &len, data, n)
+    return writeAll(c.fd, b, len)
+}
+
+/// Reads one record into `c.rec`. A protected record is opened in place; `*typ` is the content type and `*len` the
+/// plaintext length at `c.rec + 5`. Returns 0 or a TLS_ERR.
+export fn recvRecord(c: *TlsConn, typ: *u8, len: *usize) -> i32 {
+    local r = c.rec
+    if !readFull(c.fd, r, 5) { return TLS_ERR_IO }
+    local l = get16(&r[3])
+    if l > MAX_FRAGMENT + 256 { return TLS_ERR_PROTOCOL }
+    if !readFull(c.fd, &r[5], l) { return TLS_ERR_IO }
+    *typ = r[0]
+    *len = l
+    if !c.rEnc { return TLS_OK }
+    if c.version == TLS_1_3 && r[0] == 20 { return TLS_OK }     // the 1.3 compatibility CCS is never protected
+    return openRecord(c, r, l, typ, len)
+}
+
+/// Switches the read (`write` false) or write direction of a TLS 1.3 connection to the traffic secret `secret`.
+export fn install13(c: *TlsConn, secret: *u8, write: bool) {
+    local hl: usize = c.hashAlg == DIGEST_SHA384 ? 48 : 32
+    if write {
+        copyBytes(&c.wSecret[0], secret, hl)
+        trafficKeys13(c.hashAlg, secret, c.keyLen, &c.wKey[0], &c.wIv[0])
+        c.wSeq = 0
+        c.wEnc = true
+    } else {
+        copyBytes(&c.rSecret[0], secret, hl)
+        trafficKeys13(c.hashAlg, secret, c.keyLen, &c.rKey[0], &c.rIv[0])
+        c.rSeq = 0
+        c.rEnc = true
+    }
+}
+
+/// Sends an alert (`level` 1 warning, 2 fatal; RFC 8446 section 6, RFC 5246 section 7.2).
+export fn sendAlert(c: *TlsConn, level: u8, desc: u8) {
+    local a: [u8; 2]
+    a[0] = level
+    a[1] = desc
+    sendRecord(c, 21, &a[0], 2)
+}
+
+/// Closes `c` after a failed handshake and passes the code through.
+export fn fail(c: *TlsConn, code: i32) -> i32 {
+    tlsClose(c)
+    return code
+}
+
+// ---- application data ------------------------------------------------------------------------------------------
+
+/// Sends all `n` bytes; false on failure.
+export fn tlsWrite(c: *TlsConn, data: *u8, n: usize) -> bool {
+    if !c.open { return false }
+    local at: usize = 0
+    while at < n {
+        local take = n - at < MAX_FRAGMENT ? n - at : MAX_FRAGMENT
+        if !sendRecord(c, 23, &data[at], take) { return false }
+        at += take
+    }
+    return true
+}
+
+fn rekeyRead(c: *TlsConn) {
+    nextSecret13(c.hashAlg, &c.rSecret[0])
+    trafficKeys13(c.hashAlg, &c.rSecret[0], c.keyLen, &c.rKey[0], &c.rIv[0])
+    c.rSeq = 0
+}
+
+fn rekeyWrite(c: *TlsConn) {
+    nextSecret13(c.hashAlg, &c.wSecret[0])
+    trafficKeys13(c.hashAlg, &c.wSecret[0], c.keyLen, &c.wKey[0], &c.wIv[0])
+    c.wSeq = 0
+}
+
+/// Post-handshake messages of a handshake record: TLS 1.3 KeyUpdate is honored, NewSessionTicket and the rest are
+/// ignored (RFC 8446 section 4.6). TLS 1.2 renegotiation (HelloRequest, a new ClientHello) is refused with a
+/// no_renegotiation warning (RFC 5746 section 4.2 / 4.4) and the connection goes on.
+fn postHandshake(c: *TlsConn, rl: usize) -> i32 {
+    if c.version == TLS_1_2 {
+        sendAlert(c, 1, 100)
+        return TLS_OK
+    }
+    local p: usize = 0
+    while p + 4 <= rl {
+        local mt = c.rec[5 + p]
+        local ml = get24(&c.rec[5 + p + 1])
+        if p + 4 + ml > rl { return TLS_ERR_PROTOCOL }
+        if mt == 24 && ml == 1 {
+            local requested = c.rec[5 + p + 4] == 1
+            rekeyRead(c)
+            if requested {
+                local ku: [u8; 5] = [24, 0, 0, 1, 0]
+                sendRecord(c, 22, &ku[0], 5)
+                rekeyWrite(c)
+            }
+        }
+        p += 4 + ml
+    }
+    return TLS_OK
+}
+
+/// Reads the next application-data record into `c.plain`; handles alerts and post-handshake messages. Returns 1 for
+/// data, 0 for end of stream, negative on error.
+fn nextData(c: *TlsConn) -> i32 {
+    while true {
+        local typ: u8 = 0
+        local rl: usize = 0
+        local e = recvRecord(c, &typ, &rl)
+        if e != TLS_OK {
+            c.eof = true
+            return e == TLS_ERR_IO ? 0 : e                       // a bare TCP close is the end of the stream
+        }
+        if typ == 23 {
+            c.plain = &c.rec[5]
+            c.plainLen = rl
+            if rl > 0 { return 1 }
+        } else if typ == 21 {
+            if rl < 2 { return TLS_ERR_PROTOCOL }
+            if c.rec[6] == 0 {
+                c.eof = true
+                c.closedByPeer = true
+                return 0
+            }
+            // TLS 1.2 warning alerts are informational; TLS 1.3 has none but close_notify (RFC 8446 section 6)
+            if c.version != TLS_1_2 || c.rec[5] != 1 {
+                c.eof = true
+                c.alert = c.rec[6]
+                return TLS_ERR_ALERT
+            }
+        } else if typ == 22 {
+            local r = postHandshake(c, rl)
+            if r != TLS_OK { return r }
+        } else if typ != 20 {
+            return TLS_ERR_PROTOCOL
+        }
+    }
+    return 0
+}
+
+/// Reads up to `n` bytes of application data. Returns the count, 0 at end of stream (`c.closedByPeer` tells a clean
+/// close_notify from a bare TCP close), or a negative TLS_ERR.
+export fn tlsRead(c: *TlsConn, buf: *u8, n: usize) -> isize {
+    if !c.open || n == 0 { return 0 }
+    if c.plainLen == 0 {
+        if c.eof { return 0 }
+        local r = nextData(c)
+        if r <= 0 { return r as isize }
+    }
+    local take = c.plainLen > n ? n : c.plainLen
+    copyBytes(buf, c.plain, take)
+    c.plain = &c.plain[take]
+    c.plainLen -= take
+    return take as isize
+}
+
+/// Sends close_notify (best effort), closes the socket and releases the record buffers. Safe to call on a connection
+/// that failed to open or was already closed.
+export fn tlsClose(c: *TlsConn) {
+    if c.rec == nil { return }
+    if c.open && c.wEnc { sendAlert(c, 1, 0) }
+    if c.fd >= 0 { sysClose(c.fd) }
+    c.fd = -1
+    sysUnmap(c.rec as *void, REC_BUF * 2)
+    c.rec = nil
+    c.out = nil
+    c.plain = nil
+    c.plainLen = 0
+    c.open = false
+}

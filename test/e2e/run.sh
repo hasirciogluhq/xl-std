@@ -41,16 +41,8 @@ echo "e2e: $XLANG_E2E_JOBS concurrent legs${XLANG_E2E_FILTER:+, filter '$XLANG_E
 
 # name | expected exit code | expected stdout (a `grep -F` substring) | uses OS threads | runs on Windows
 tests=(
-  "language|0||0|1"
-  "controlflow|0|controlflow ok|0|1"
-  "for|0|for ok|0|1"
-  "enums|0|enums ok|0|1"
-  "generic_enums|0|generic_enums ok|0|1"
-  "tuple_return|0|tuple return ok|0|1"
-  "tuple_destructure|0|tuple destructuring ok|0|1"
   "proc_list|0|pid|0|1"
   "process|0|process ok|0|1"
-  "router|0|router ok|0|1"
   "stdlib|0|499500|0|1"
   "fsjson|0||0|1"
   "files|0|files ok|0|1"
@@ -63,36 +55,11 @@ tests=(
   "try|0|try ok|0|0"
   "sched|0|20100|0|0"
   "sched_io|0|5|0|0"
-  "bitops|0|bitops ok|0|1"
-  "sha256|0|sha256 ok|0|1"
-  "sha512|0|sha512 ok|0|1"
-  "hmac|0|hmac ok|0|1"
-  "aesgcm|0|aesgcm ok|0|1"
-  "chacha20poly1305|0|chacha20poly1305 ok|0|1"
-  "x25519|0|x25519 ok|0|1"
-  "ecdsa|0|ecdsa ok|0|1"
-  "strings|0|strings ok|0|1"
-  "strtools|0|strtools ok|0|1"
-  "utf16|0|utf16 ok|0|1"
-  "for_iter|0|for_iter ok|0|1"
-  "overload|0|overload ok|0|1"
-  "raii|0|raii ok|0|1"
-  "generics|0|generics ok|0|1"
-  "collections|0|collections ok|0|1"
-  "math_vectors|0|math_vectors ok|0|1"
-  "math_matrix2|0|math_matrix2 ok|0|1"
-  "math_matrix3|0|math_matrix3 ok|0|1"
-  "math_matrix4|0|math_matrix4 ok|0|1"
-  "math_quat|0|math_quat ok|0|1"
-  "math_transform|0|math_transform ok|0|1"
-  "big|0|big ok|0|1"
+  "random|0|random ok|0|0"
+  "stat|0|stat ok|0|0"
   "print|0|print ok|0|1"
   "printalloc|0|printalloc ok|0|1"
-  "variadic|0|variadic ok|0|1"
   "printpanic|134|format: 2 placeholders, got 1 arguments|0|0"
-  "init|0|init ok|0|1"
-  "initset|0|initset ok|0|1"
-  "cyclic|0|cyclic ok|0|1"
   "entry_order|3|initA initB entry finiB finiA|0|0"
 )
 [ "${XLANG_E2E_NET:-}" = 1 ] && tests+=("https|0|https ok|0|1")
@@ -101,6 +68,7 @@ tests=(
 # (it serves until the client asks it to quit); the client's exit status and output are the result.
 # Each pair runs with an RSA and an ECDSA certificate (`-D tlsEc=1`), unoptimized and at -O2 (the release
 # builds of `xl` are -O2, so a bug that only shows under optimization must fail here), each on its own port.
+# The TLS pair also runs with the server limited to TLS 1.2 (`-D tls12=1`).
 pairs=(
   "tlsserver|tlsclient|tlsclient ok"
   "httpsserver|httpsclient|httpsclient ok"
@@ -276,10 +244,15 @@ run_pair() {   # label server-bin client-bin text mode(native|docker:PLAT|window
 for p in "${pairs[@]}"; do
   IFS='|' read -r srvname cliname text <<<"$p"
   wantName "$srvname" || wantName "$cliname" || continue
-  for variant in rsa ec rsa-O2 ec-O2; do
+  variants="rsa ec rsa-O2 ec-O2"
+  [ "$srvname" = tlsserver ] && variants="$variants rsa-12 ec-12"   # the server limited to TLS 1.2
+  for variant in $variants; do
     cert=${variant%%-*}
     extra=(); [ "$cert" = ec ] && extra=(-D tlsEc=1)
-    [ "$variant" != "$cert" ] && extra+=(-O2)
+    case "$variant" in
+      *-O2) extra+=(-O2) ;;
+      *-12) extra+=(-D tls12=1) ;;
+    esac
     cert=$variant
     port=$((port + 1))
     legs=("native:$host_os")

@@ -1,0 +1,138 @@
+// std/tls/sign: signature schemes (RFC 8446 section 4.2.3): which ones the client offers, what each means for a
+// given certificate key and protocol version, how the server picks one from the client's list, and the signing
+// itself. Supported:
+//   ecdsa_secp256r1_sha256 0x0403, ecdsa_secp384r1_sha384 0x0503: in TLS 1.3 bound to the curve; in TLS 1.2 they
+//     mean "ECDSA with this hash" on any curve (RFC 8422 section 5.1.3), and the server signs with its own curve's.
+//   rsa_pss_rsae_sha256/384/512 0x0804..0x0806: both versions (RFC 8446 section 4.2.3 allows them in TLS 1.2).
+//   rsa_pkcs1_sha256/384/512 0x0401, 0x0501, 0x0601: TLS 1.2 ServerKeyExchange only; TLS 1.3 forbids them in
+//     CertificateVerify (they are still offered for certificate signatures).
+// SHA-1 and the RSASSA-PSS-key (`rsa_pss_pss_*`) and EdDSA schemes are not offered.
+from "../sys" import sysRandom
+from "../crypto/hash/digest" import digest, DIGEST_SHA256, DIGEST_SHA384, DIGEST_SHA512
+from "../crypto/sig/rsa" import rsaSignPss, rsaSignPkcs1
+from "../crypto/sig/ecdsa" import ecdsaSign, ECDSA_P256, ECDSA_P384
+from "../crypto/x509/privkey" import PrivKey
+from "../crypto/x509/x509" import Cert, x509VerifySignature, KEY_RSA, KEY_EC_P256, KEY_EC_P384
+from "../crypto/x509/x509" import SIG_ECDSA_SHA256, SIG_ECDSA_SHA384, SIG_RSA_PSS_SHA256, SIG_RSA_PSS_SHA384, SIG_RSA_PSS_SHA512
+from "../crypto/x509/x509" import SIG_RSA_PKCS1_SHA256, SIG_RSA_PKCS1_SHA384, SIG_RSA_PKCS1_SHA512
+from "wire" import emit16, get16, copyBytes
+
+global OFFERED: [u16; 8] = [0x0403, 0x0503, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601]
+
+/// Writes the signature_algorithms list (without its length prefix) and returns its byte length.
+export fn offerSchemes(out: *u8) -> usize {
+    local n: usize = 0
+    for s in OFFERED { emit16(out, &n, *s as usize) }
+    return n
+}
+
+/// The x509 SIG_* verification algorithm for `scheme` with the key of `cert`, or 0 when the pair is not allowed.
+export fn schemeAlg(scheme: usize, cert: *Cert, v13: bool) -> i32 {
+    local ec = cert.keyType == KEY_EC_P256 || cert.keyType == KEY_EC_P384
+    if scheme == 0x0403 && ec && (!v13 || cert.keyType == KEY_EC_P256) { return SIG_ECDSA_SHA256 }
+    if scheme == 0x0503 && ec && (!v13 || cert.keyType == KEY_EC_P384) { return SIG_ECDSA_SHA384 }
+    if cert.keyType != KEY_RSA { return 0 }
+    if scheme == 0x0804 { return SIG_RSA_PSS_SHA256 }
+    if scheme == 0x0805 { return SIG_RSA_PSS_SHA384 }
+    if scheme == 0x0806 { return SIG_RSA_PSS_SHA512 }
+    if v13 { return 0 }
+    if scheme == 0x0401 { return SIG_RSA_PKCS1_SHA256 }
+    if scheme == 0x0501 { return SIG_RSA_PKCS1_SHA384 }
+    if scheme == 0x0601 { return SIG_RSA_PKCS1_SHA512 }
+    return 0
+}
+
+/// Checks the peer's signature `sig` over `msg` made with `scheme` by the leaf certificate `cert`.
+export fn verifySigned(cert: *Cert, scheme: usize, v13: bool, msg: *u8, mlen: usize, sig: *u8, slen: usize) -> bool {
+    local alg = schemeAlg(scheme, cert, v13)
+    return alg != 0 && x509VerifySignature(cert, alg, msg, mlen, sig, slen)
+}
+
+fn listHas(list: *u8, n: usize, scheme: usize) -> bool {
+    local i: usize = 0
+    while i + 1 < n {
+        if get16(&list[i]) == scheme { return true }
+        i += 2
+    }
+    return false
+}
+
+/// The scheme the server signs with: its own preference for the key type, among the client's
+/// signature_algorithms `list[0..n]`. 0 when none fits.
+export fn pickScheme(keyType: i32, list: *u8, n: usize, v13: bool) -> usize {
+    if keyType == KEY_EC_P256 { return listHas(list, n, 0x0403) ? 0x0403 : 0 }
+    if keyType == KEY_EC_P384 { return listHas(list, n, 0x0503) ? 0x0503 : 0 }
+    local pref: [u16; 6] = [0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601]
+    for s, i in pref {
+        if (!v13 || i < 3) && listHas(list, n, *s as usize) { return *s as usize }
+    }
+    return 0
+}
+
+fn schemeHash(scheme: usize) -> i32 {
+    local h = scheme >> 8
+    if scheme == 0x0805 || h == 5 { return DIGEST_SHA384 }
+    if scheme == 0x0806 || h == 6 { return DIGEST_SHA512 }
+    return DIGEST_SHA256
+}
+
+/// Appends a DER INTEGER holding the unsigned big-endian `v[0..size]` at `out[at]`; returns the new end.
+fn derInt(v: *u8, size: usize, out: *u8, at: usize) -> usize {
+    local off: usize = 0
+    while off + 1 < size && v[off] == 0 { off++ }
+    local len = size - off
+    local pad: usize = (v[off] & 0x80) != 0 ? 1 : 0
+    out[at] = 0x02
+    out[at + 1] = (len + pad) as u8
+    local p = at + 2
+    if pad == 1 {
+        out[p] = 0
+        p++
+    }
+    copyBytes(&out[p], &v[off], len)
+    return p + len
+}
+
+/// Signs `msg[0..mlen]` with the server key and `scheme` (one `pickScheme` chose). Writes the signature to `sig`
+/// (capacity 512) and returns its length, 0 on failure. ECDSA signatures are DER `Ecdsa-Sig-Value`
+/// (RFC 8446 section 4.2.3, RFC 3279 section 2.2.3).
+export fn signWith(k: *PrivKey, scheme: usize, msg: *u8, mlen: usize, sig: *u8) -> usize {
+    local alg = schemeHash(scheme)
+    local hash: [u8; 64]
+    digest(alg, msg, mlen, &hash[0])
+    local hl: usize = alg == DIGEST_SHA256 ? 32 : alg == DIGEST_SHA384 ? 48 : 64
+    if k.keyType == KEY_RSA {
+        if (scheme & 0xff) == 1 { return rsaSignPkcs1(&k.n[0], k.nLen, &k.d[0], k.dLen, alg, &hash[0], hl, sig) }
+        local salt: [u8; 64]
+        if !sysRandom(&salt[0], hl) { return 0 }
+        return rsaSignPss(&k.n[0], k.nLen, &k.d[0], k.dLen, alg, &hash[0], hl, &salt[0], sig)
+    }
+    local size: usize = k.keyType == KEY_EC_P384 ? 48 : 32
+    local curve = k.keyType == KEY_EC_P384 ? ECDSA_P384 : ECDSA_P256
+    local nonce: [u8; 48]
+    local r: [u8; 48]
+    local s: [u8; 48]
+    for tries in 0..16 {
+        if !sysRandom(&nonce[0], size) { return 0 }
+        if ecdsaSign(curve, &k.d[0], &hash[0], hl, &nonce[0], &r[0], &s[0]) {
+            local body: [u8; 112]
+            local e = derInt(&r[0], size, &body[0], 0)
+            e = derInt(&s[0], size, &body[0], e)
+            sig[0] = 0x30
+            sig[1] = e as u8
+            copyBytes(&sig[2], &body[0], e)
+            return e + 2
+        }
+    }
+    return 0
+}
+
+/// The TLS 1.3 CertificateVerify input (RFC 8446 section 4.4.3): 64 spaces, the context string, a zero byte, then
+/// the transcript hash. Returns its length.
+export fn verifyContent13(hash: *u8, hl: usize, out: *u8) -> usize {
+    for i in 0..64 { out[i] = 0x20 }
+    copyBytes(&out[64], "TLS 1.3, server CertificateVerify", 33)
+    out[97] = 0
+    copyBytes(&out[98], hash, hl)
+    return 98 + hl
+}

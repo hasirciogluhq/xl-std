@@ -1,5 +1,5 @@
-// std/crypto/hash/hmac: HMAC-SHA256 (RFC 2104), HKDF-SHA256 (RFC 5869) and the TLS 1.3 `HKDF-Expand-Label`
-// (RFC 8446 7.1). Messages are limited to 1024 bytes (everything TLS key derivation feeds it fits).
+// std/crypto/hash/hmac: HMAC-SHA256 (RFC 2104) and HKDF-SHA256 (RFC 5869) without allocation. Messages are limited
+// to 1024 bytes. The TLS key derivations (any hash) are in std/tls/keys.
 from "sha256" import sha256
 
 define HMAC_MAX_MSG = 1024
@@ -82,26 +82,4 @@ export fn hkdfExpand(prk: *u8, info: *u8, ilen: usize, okm: *u8, len: usize) -> 
         counter = counter + 1
     }
     return true
-}
-
-/// TLS 1.3 HKDF-Expand-Label(secret, label, context, length) with the `"tls13 "` prefix; `label` is
-/// NUL-terminated without the prefix, `ctx` may be empty.
-export fn hkdfExpandLabel(secret: *u8, label: *u8, ctx: *u8, clen: usize, out: *u8, len: usize) {
-    local info: [u8; 2 + 1 + 6 + 32 + 1 + 64]
-    local n: usize = 0
-    info[0] = ((len / 256) % 256) as u8
-    info[1] = (len % 256) as u8
-    local ll: usize = 0
-    while label[ll] != 0 { ll = ll + 1 }
-    info[2] = (6 + ll) as u8
-    n = 3
-    copy(&info[n], "tls13 ", 6)
-    n = n + 6
-    copy(&info[n], label, ll)
-    n = n + ll
-    info[n] = clen as u8
-    n = n + 1
-    copy(&info[n], ctx, clen)
-    n = n + clen
-    hkdfExpand(secret, &info[0], n, out, len)
 }

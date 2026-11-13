@@ -1,0 +1,140 @@
+// std/tls/server12: the TLS 1.2 server after the ClientHello, ECDHE only (RFC 5246 section 7.3, RFC 8422):
+//   server   ServerHello, Certificate, ServerKeyExchange (named curve + point, signed), ServerHelloDone
+//   client   ClientKeyExchange, ChangeCipherSpec, Finished
+//   server   ChangeCipherSpec, Finished
+// The ServerHello carries an empty session id (no resumption), echoes renegotiation_info, extended_master_secret
+// and ec_point_formats when the client sent them, and ends its random with the downgrade sentinel when TLS 1.3 is
+// allowed (RFC 8446 section 4.1.3).
+from "../sys" import sysRandom
+from "conn" import TlsConn, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_SIGNATURE, TLS_ERR_FINISHED, TLS_ERR_ENTROPY
+from "conn" import TLS_1_3, suiteChacha
+from "credentials" import TlsCredentials
+from "keys" import trHash, trUpdate, master12, keyBlock12, finished12
+from "handshake" import Hs, ServerHs, Kex, nextHs, sendHs, sendCcs, kexNew, kexShared
+from "sign" import signWith
+from "wire" import emit, emit16, emit24, emitBytes, patch16, patch24, get24, copyBytes, ctEq
+
+global DOWNGRADE_12: [u8; 8] = [0x44, 0x4f, 0x57, 0x4e, 0x47, 0x52, 0x44, 0x01]
+
+/// The TLS 1.2 Certificate message from the credentials' TLS 1.3 list: the same entries without the per-certificate
+/// extensions (RFC 5246 section 7.4.2). Returns its length.
+fn certificate12(cr: *TlsCredentials, out: *u8) -> usize {
+    local n: usize = 0
+    emit(out, &n, 11)
+    emit24(out, &n, 0)
+    emit24(out, &n, 0)
+    local at: usize = 0
+    while at < cr.listLen {
+        local dl = get24(&cr.list[at])
+        emitBytes(out, &n, &cr.list[at], 3 + dl)
+        at += 3 + dl + 2
+    }
+    patch24(out, 1, n - 4)
+    patch24(out, 4, n - 7)
+    return n
+}
+
+export fn server12(c: *TlsConn, h: *Hs, cr: *TlsCredentials, s: *ServerHs, tmp: *u8) -> i32 {
+    local random: [u8; 32]
+    if !sysRandom(&random[0], 32) { return TLS_ERR_ENTROPY }
+    if cr.maxVersion >= TLS_1_3 { copyBytes(&random[24], &DOWNGRADE_12[0], 8) }
+
+    // ---- ServerHello
+    local n: usize = 0
+    emit(tmp, &n, 2)
+    emit24(tmp, &n, 0)
+    emit16(tmp, &n, 0x0303)
+    emitBytes(tmp, &n, &random[0], 32)
+    emit(tmp, &n, 0)                                          // no session id: nothing to resume
+    emit16(tmp, &n, c.suite as usize)
+    emit(tmp, &n, 0)
+    if s.reneg || s.ems || s.pointFormats {
+        local extAt = n
+        emit16(tmp, &n, 0)
+        if s.reneg {
+            emit16(tmp, &n, 0xff01)
+            emit16(tmp, &n, 1)
+            emit(tmp, &n, 0)
+        }
+        if s.ems {
+            emit16(tmp, &n, 23)
+            emit16(tmp, &n, 0)
+        }
+        if s.pointFormats {
+            emit16(tmp, &n, 11)
+            emit16(tmp, &n, 2)
+            emit(tmp, &n, 1)
+            emit(tmp, &n, 0)
+        }
+        patch16(tmp, extAt, n - extAt - 2)
+    }
+    patch24(tmp, 1, n - 4)
+    if !sendHs(c, h, tmp, n) { return TLS_ERR_IO }
+    if !sendHs(c, h, tmp, certificate12(cr, tmp)) { return TLS_ERR_IO }
+
+    // ---- ServerKeyExchange: params = curve_type 3 (named_curve) || group || point; the signature covers
+    //      client_random || server_random || params (RFC 8422 section 5.4)
+    local k: Kex
+    if !kexNew(&k, s.group) { return TLS_ERR_ENTROPY }
+    local signed: [u8; 64 + 4 + 97]
+    copyBytes(&signed[0], &s.random[0], 32)
+    copyBytes(&signed[32], &random[0], 32)
+    local pl: usize = 64
+    emit(&signed[0], &pl, 3)
+    emit16(&signed[0], &pl, s.group)
+    emit(&signed[0], &pl, k.pubLen as u8)
+    emitBytes(&signed[0], &pl, &k.pub[0], k.pubLen)
+    local sig: [u8; 512]
+    local sigLen = signWith(&cr.key, s.scheme, &signed[0], pl, &sig[0])
+    if sigLen == 0 { return TLS_ERR_SIGNATURE }
+    n = 0
+    emit(tmp, &n, 12)
+    emit24(tmp, &n, pl - 64 + 4 + sigLen)
+    emitBytes(tmp, &n, &signed[64], pl - 64)
+    emit16(tmp, &n, s.scheme)
+    emit16(tmp, &n, sigLen)
+    emitBytes(tmp, &n, &sig[0], sigLen)
+    if !sendHs(c, h, tmp, n) { return TLS_ERR_IO }
+    local done: [u8; 4] = [14, 0, 0, 0]
+    if !sendHs(c, h, &done[0], 4) { return TLS_ERR_IO }
+
+    // ---- ClientKeyExchange: the client's point (opaque <1..2^8-1>)
+    local err: i32 = TLS_OK
+    local m = nextHs(c, h, &err)
+    if m == nil { return err }
+    local bl = h.msgLen - 4
+    if m[0] != 16 || bl < 1 || 1 + (m[4] as usize) != bl { return TLS_ERR_PROTOCOL }
+    local pms: [u8; 48]
+    local pmsLen = kexShared(&k, &m[5], bl - 1, &pms[0])
+    if pmsLen == 0 { return TLS_ERR_PROTOCOL }
+    trUpdate(&h.th, m, h.msgLen)
+
+    local th: [u8; 48]
+    trHash(&h.th, &th[0])
+    local master: [u8; 48]
+    master12(c.hashAlg, &pms[0], pmsLen, s.ems, &th[0], &s.random[0], &random[0], &master[0])
+    local ivLen: usize = suiteChacha(c.suite as usize) ? 12 : 4
+    keyBlock12(c.hashAlg, &master[0], &s.random[0], &random[0], c.keyLen, ivLen,
+               &c.rKey[0], &c.wKey[0], &c.rIv[0], &c.wIv[0])
+
+    // ---- the client's ChangeCipherSpec (nextHs switches the read keys) and Finished
+    h.ccsOk = true
+    m = nextHs(c, h, &err)
+    if m == nil { return err }
+    if m[0] != 20 || h.msgLen != 16 || !c.rEnc { return TLS_ERR_PROTOCOL }
+    local want: [u8; 12]
+    trHash(&h.th, &th[0])
+    finished12(c.hashAlg, &master[0], true, &th[0], &want[0])
+    if !ctEq(&want[0], &m[4], 12) { return TLS_ERR_FINISHED }
+    trUpdate(&h.th, m, h.msgLen)
+
+    // ---- our ChangeCipherSpec and Finished
+    if !sendCcs(c) { return TLS_ERR_IO }
+    c.wSeq = 0
+    c.wEnc = true
+    local fin: [u8; 16] = [20, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    trHash(&h.th, &th[0])
+    finished12(c.hashAlg, &master[0], false, &th[0], &fin[4])
+    if !sendHs(c, h, &fin[0], 16) { return TLS_ERR_IO }
+    return TLS_OK
+}

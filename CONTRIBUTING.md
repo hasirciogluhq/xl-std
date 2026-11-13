@@ -8,7 +8,7 @@
 - **Every feature works on Linux, macOS and Windows** (x86-64 and arm64 where the OS supports it). Where an OS cannot support it, the result is a clear compile-time error documented in `known-limitations`.
 - **OS code lives in `sys/`**, one file per area, routed with `#if os`. Read the vendor documentation first and cite it in comments.
 - **Layout:** `<area>/<file>.xl` with `<area>/index.xl` re-exporting the area. Names carry no module prefix.
-- **Unit tests are platform independent, e2e tests are platform related.** `test/unit/*.test.xl` checks code that gives the same result on every OS and CPU (`Vec`, `String`, `Option`, slices, parsing, math, encodings, collections) and never touches the OS: no files, sockets, processes, clocks, threads or environment. `test/e2e/` holds what depends on the OS or the CPU (sockets, processes, files, threads, entropy, TLS, syscalls, the Windows leg). Most tests are unit tests; the e2e table stays the small, heavy part. A test that needs the host goes to e2e, a logic check never does.
+- **One rule for where a test goes.** A test whose code under test reaches an OS-specific call (a syscall or an OS library: files, sockets, processes, clocks, threads, entropy, stdout/stderr, abort, unwinding, the loader) is an e2e program in `test/e2e/`. Everything else is a unit suite in `test/unit/*.test.xl` and nothing else: no e2e twin. Write no e2e test that a unit test can cover.
 - Use the newest syntax the language offers; if the language lacks a form you need, open an issue instead of working around it.
 
 ## Workflow

@@ -1,0 +1,75 @@
+// std/tls/wire: byte helpers shared by the TLS files: big-endian writers into a caller buffer with a running length,
+// big-endian readers, a constant-time compare, and full socket reads and writes. Internal to std/tls.
+// The integer layout is the TLS presentation language (RFC 8446 section 3, https://www.rfc-editor.org/rfc/rfc8446).
+from "../sys" import sysRead, sysWrite
+
+export fn emit(b: *u8, n: *usize, v: u8) {
+    b[*n] = v
+    *n += 1
+}
+
+export fn emit16(b: *u8, n: *usize, v: usize) {
+    emit(b, n, ((v >> 8) & 0xff) as u8)
+    emit(b, n, (v & 0xff) as u8)
+}
+
+export fn emit24(b: *u8, n: *usize, v: usize) {
+    emit(b, n, ((v >> 16) & 0xff) as u8)
+    emit16(b, n, v & 0xffff)
+}
+
+export fn emitBytes(b: *u8, n: *usize, src: *u8, len: usize) {
+    copyBytes(&b[*n], src, len)
+    *n += len
+}
+
+/// Writes `v` as a 16-bit big-endian length at `b[at]` (a length prefix patched after its body is written).
+export fn patch16(b: *u8, at: usize, v: usize) {
+    b[at] = ((v >> 8) & 0xff) as u8
+    b[at + 1] = (v & 0xff) as u8
+}
+
+/// Writes `v` as a 24-bit big-endian length at `b[at]`.
+export fn patch24(b: *u8, at: usize, v: usize) {
+    b[at] = ((v >> 16) & 0xff) as u8
+    patch16(b, at + 1, v & 0xffff)
+}
+
+export fn get16(p: *u8) -> usize {
+    return ((p[0] as usize) << 8) | (p[1] as usize)
+}
+
+export fn get24(p: *u8) -> usize {
+    return ((p[0] as usize) << 16) | ((p[1] as usize) << 8) | (p[2] as usize)
+}
+
+/// Copies `n` bytes front to back, so `dst` may overlap `src` when it lies before it.
+export fn copyBytes(dst: *u8, src: *u8, n: usize) {
+    for i in 0..n { dst[i] = src[i] }
+}
+
+export fn ctEq(a: *u8, b: *u8, n: usize) -> bool {
+    local diff: u8 = 0
+    for i in 0..n { diff |= a[i] ^ b[i] }
+    return diff == 0
+}
+
+export fn writeAll(fd: i32, data: *u8, n: usize) -> bool {
+    local done: usize = 0
+    while done < n {
+        local w = sysWrite(fd, &data[done], n - done)
+        if w <= 0 { return false }
+        done += w as usize
+    }
+    return true
+}
+
+export fn readFull(fd: i32, buf: *u8, n: usize) -> bool {
+    local done: usize = 0
+    while done < n {
+        local r = sysRead(fd, &buf[done], n - done)
+        if r <= 0 { return false }
+        done += r as usize
+    }
+    return true
+}

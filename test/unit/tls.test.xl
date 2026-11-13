@@ -1,0 +1,151 @@
+// TLS key derivation and record protection, without sockets. The expected values come from an independent Python
+// implementation (hmac/hashlib) of the TLS 1.2 PRF (RFC 5246 section 5), HKDF-Expand-Label and the TLS 1.3 key
+// schedule (RFC 8446 section 7.1). The record tests seal with one connection's write keys, open with another's read
+// keys, and check the wire length, the content type, the sequence numbers and tamper rejection for every suite.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expect, expectEq
+from "std/tls/keys" import prf12, master12, keyBlock12, finished12, Schedule13, schedule13, finished13, trafficKeys13
+from "std/tls/conn" import TlsConn, setSuite, TLS_OK, TLS_ERR_AEAD, TLS_1_2, TLS_1_3
+from "std/tls/record" import sealRecord, openRecord
+from "std/crypto/hash/digest" import DIGEST_SHA256, DIGEST_SHA384
+from "std/encoding/hex" import hexDecode
+from "std" import strlen
+
+/// `got[0..n]` equals the hex text `want`.
+fn same(t: *T, got: *u8, n: usize, want: *u8, what: *u8) {
+    local w: [u8; 256]
+    expectEq(t, hexDecode(want, strlen(want), &w[0]) as i64, n as i64)
+    local ok = true
+    for i in 0..n { if got[i] != w[i] { ok = false } }
+    expect(t, ok, what)
+}
+
+fn fill(p: *u8, n: usize, v: u8) {
+    for i in 0..n { p[i] = v }
+}
+
+fn prf(t: *T) {
+    local sec: [u8; 16]
+    local seed: [u8; 16]
+    for i in 0..16 {
+        sec[i] = i as u8
+        seed[i] = (0xa0 + i) as u8
+    }
+    local out: [u8; 148]
+    prf12(DIGEST_SHA256, &sec[0], 16, "test label", &seed[0], 16, &out[0], 100)
+    same(t, &out[0], 100, "6c3954e20b9a03d78752e8c23a44f7d0d1d0e52930a22c7c5ee134bd0247cad50e6247f58a6fa46a20f786d285d1dda07d51a21138d243f8167e4b6c9e9b4e8dd5fae4964134bd4720c242db86378aa01598053e22d5036ab852d07fa700be4901b1b8f2", "P_SHA256")
+    prf12(DIGEST_SHA384, &sec[0], 16, "test label", &seed[0], 16, &out[0], 148)
+    same(t, &out[0], 148, "1cca056b13fd7feb155b19763681dcac6e45b6ae8ecf133d79f15e7713490de31111da4745971bdc957751e0aff393591502b09c05d75332f85235c0d4eba026304998f9bb3a8c4be03748bf89e0a019d08e147486fef3288cd79dcbf4788cf393a7bbb0f6d094545d35fa76908de4f489f7da32a06bf2d0ebdbe836754079c07af5b3491e1d700cb68a5c3db2c841703f247713", "P_SHA384")
+}
+
+fn secrets12(t: *T) {
+    local pms: [u8; 32]
+    local cr: [u8; 32]
+    local sr: [u8; 32]
+    local sh: [u8; 32]
+    fill(&pms[0], 32, 0x33)
+    fill(&cr[0], 32, 0x44)
+    fill(&sr[0], 32, 0x55)
+    fill(&sh[0], 32, 0x66)
+    local ms: [u8; 48]
+    master12(DIGEST_SHA256, &pms[0], 32, true, &sh[0], &cr[0], &sr[0], &ms[0])
+    same(t, &ms[0], 48, "c72e5721741774c800a57a38aa19d3233b8a81a3e39d8f8e64a108ec2c3b779e6b39bb4f33715d828489d8fecaff2603", "extended master secret")
+    master12(DIGEST_SHA256, &pms[0], 32, false, &sh[0], &cr[0], &sr[0], &ms[0])
+    same(t, &ms[0], 48, "851c644c0dc941a7bd3d4650b482c9d8f7b280e464d1a176450ed646a819419a25c837a120f94ec9c4fe5f90b2b40e38", "master secret")
+    local kb: [u8; 40]
+    keyBlock12(DIGEST_SHA256, &ms[0], &cr[0], &sr[0], 16, 4, &kb[0], &kb[16], &kb[32], &kb[36])
+    same(t, &kb[0], 40, "64f6a222090f373892ec6f925e2996938ebfd80c6a262dc00fa025318c1c0c3158958b49d904bec8", "key block")
+    local fin: [u8; 12]
+    finished12(DIGEST_SHA256, &ms[0], true, &sh[0], &fin[0])
+    same(t, &fin[0], 12, "3825a53e753f0f8d222323da", "client finished")
+}
+
+fn schedule(t: *T, alg: i32, cHs: *u8, sHs: *u8, master: *u8, fin: *u8, key: *u8, iv: *u8) {
+    local hl: usize = alg == DIGEST_SHA384 ? 48 : 32
+    local shared: [u8; 32]
+    local hh: [u8; 48]
+    fill(&shared[0], 32, 0x11)
+    fill(&hh[0], 48, 0x22)
+    local k: Schedule13
+    schedule13(&k, alg, &shared[0], 32, &hh[0])
+    same(t, &k.cHs[0], hl, cHs, "client handshake traffic secret")
+    same(t, &k.sHs[0], hl, sHs, "server handshake traffic secret")
+    same(t, &k.master[0], hl, master, "master secret")
+    local out: [u8; 48]
+    finished13(alg, &k.sHs[0], &hh[0], &out[0])
+    same(t, &out[0], hl, fin, "finished")
+    local kk: [u8; 32]
+    local ivv: [u8; 12]
+    local kl: usize = alg == DIGEST_SHA384 ? 32 : 16
+    trafficKeys13(alg, &k.cHs[0], kl, &kk[0], &ivv[0])
+    same(t, &kk[0], kl, key, "traffic key")
+    same(t, &ivv[0], 12, iv, "traffic iv")
+}
+
+fn schedule256(t: *T) {
+    schedule(t, DIGEST_SHA256, "5acb2dba3af0a93c6481d7b30306cf27f9c206d5bb16cf4641f18b2165adfe4e",
+        "a9672808fb7c7c1c7297ef1c25649cb9ea9b647d48928dee97680f9791b47309",
+        "2ef9baa9ad36caf15ba67133454bf07c8d2c0b64e012fc2c2a0f898eff098f82",
+        "78d54275f6ac12a4efc7e2207da6089190eff0fdc4d2a00b3f71d243401cf0fd",
+        "fdb70a8db6a6a8fbc9a7a9641d301a51", "3efe6937d1a705606605f7af")
+}
+
+fn schedule384(t: *T) {
+    schedule(t, DIGEST_SHA384, "cc709014ac8e8d81dadaad328c5bb794614784d4d40726dc1d9d9225d49867e30562c532a3ffbc15282269dcb87dc4db",
+        "adc79cc02b3f7953620164fdd771098bf5d3e122f0bf21295190b9a2cc50bd7b1aa4a90da6dc7c0467f7ce859d351f97",
+        "44de65fc83862a80c2fa6fe3f6bba2a81117f9dc906bb716117215a009eeaa34a0876aaaa837f60e4508d16578848a88",
+        "3cdaa00ccbb5423feea0e1b5883b7bf681bd3ba91be564c241c61804b094e42bb59671613f13345ab2ca86f7d1eefdc2",
+        "bb5100abc622a40b41de75e4e540b2719932463ab7156b406f11ab0cf3a6ddca", "edec1ea06a3e66f33473c4c8")
+}
+
+/// Seals two records with `a` and opens them with `b` for one suite; then a flipped bit must fail.
+fn roundTrip(t: *T, version: u16, cs: usize, overhead: usize) {
+    local a: TlsConn
+    local b: TlsConn
+    setSuite(&a, version, cs)
+    setSuite(&b, version, cs)
+    for i in 0..32 {
+        a.wKey[i] = (i * 3) as u8
+        b.rKey[i] = (i * 3) as u8
+    }
+    for i in 0..12 {
+        a.wIv[i] = (0x90 + i) as u8
+        b.rIv[i] = (0x90 + i) as u8
+    }
+    a.wSeq = 0
+    b.rSeq = 0
+    local buf: [u8; 128]
+    local typ: u8 = 0
+    local len: usize = 0
+    for round in 0..2 {
+        local n = sealRecord(&a, 23, "hello record", 12, &buf[0])
+        expectEq(t, n as i64, (overhead + 17) as i64)         // header 5 + plaintext 12 + overhead
+        expectEq(t, openRecord(&b, &buf[0], n - 5, &typ, &len) as i64, TLS_OK)
+        expectEq(t, typ as i64, 23)
+        expectEq(t, len as i64, 12)
+        expect(t, buf[5] == 104 && buf[16] == 100, "plaintext back in place")    // 'h' ... 'd'
+    }
+    expectEq(t, b.rSeq as i64, 2)
+    local n = sealRecord(&a, 22, "x", 1, &buf[0])
+    buf[n - 1] ^= 1
+    expectEq(t, openRecord(&b, &buf[0], n - 5, &typ, &len) as i64, TLS_ERR_AEAD)
+}
+
+fn records(t: *T) {
+    roundTrip(t, TLS_1_3, 0x1301, 1 + 16)                    // inner content type + tag
+    roundTrip(t, TLS_1_3, 0x1302, 1 + 16)
+    roundTrip(t, TLS_1_3, 0x1303, 1 + 16)
+    roundTrip(t, TLS_1_2, 0xc02f, 8 + 16)                    // explicit nonce + tag
+    roundTrip(t, TLS_1_2, 0xc030, 8 + 16)
+    roundTrip(t, TLS_1_2, 0xcca8, 16)
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "TLS 1.2 PRF", prf)
+    test(&s, "TLS 1.2 master secret, key block, Finished", secrets12)
+    test(&s, "TLS 1.3 key schedule, SHA-256", schedule256)
+    test(&s, "TLS 1.3 key schedule, SHA-384", schedule384)
+    test(&s, "record seal and open, every suite", records)
+    return suiteRun(&s)
+}

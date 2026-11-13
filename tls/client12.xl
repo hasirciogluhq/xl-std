@@ -1,0 +1,110 @@
+// std/tls/client12: the TLS 1.2 client after ServerHello, ECDHE only (RFC 5246 section 7.3, RFC 8422 section 2):
+//   server   Certificate, ServerKeyExchange (named curve + signed point), [CertificateRequest], ServerHelloDone
+//   client   [empty Certificate], ClientKeyExchange (our point), ChangeCipherSpec, Finished
+//   server   ChangeCipherSpec, Finished
+// The master secret is the extended one when the server agreed (RFC 7627); session resumption and renegotiation
+// are not offered.
+from "../crypto/x509/x509" import Cert, KEY_RSA
+from "conn" import TlsConn, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_SIGNATURE, TLS_ERR_FINISHED, TLS_ERR_UNSUPPORTED
+from "conn" import TLS_ERR_ENTROPY, suiteEcdsa, suiteChacha
+from "keys" import trHash, trUpdate, master12, keyBlock12, finished12
+from "handshake" import Hs, ClientHs, MAX_CERTS, Kex, nextHs, sendHs, sendCcs, kexNew, kexShared, groupKnown, readChain
+from "sign" import schemeAlg, verifySigned
+from "wire" import get16, get24, copyBytes, ctEq
+
+export fn client12(c: *TlsConn, h: *Hs, ch: *ClientHs) -> i32 {
+    local err: i32 = TLS_OK
+    // ---- Certificate
+    local m = nextHs(c, h, &err)
+    if m == nil { return err }
+    local bl = h.msgLen - 4
+    if m[0] != 11 || bl < 3 || 3 + get24(&m[4]) != bl { return TLS_ERR_PROTOCOL }
+    local chain: [Cert; MAX_CERTS]
+    local chainLen: usize = 0
+    local r = readChain(c, &m[7], bl - 3, false, ch.host, &chain[0], &chainLen)
+    if r != TLS_OK { return r }
+    if suiteEcdsa(c.suite as usize) == (chain[0].keyType == KEY_RSA) { return TLS_ERR_UNSUPPORTED }
+    trUpdate(&h.th, m, h.msgLen)
+
+    // ---- ServerKeyExchange: ECParameters (curve_type 3 = named_curve, the group), the point, the signature over
+    //      client_random || server_random || params (RFC 8422 section 5.4)
+    m = nextHs(c, h, &err)
+    if m == nil { return err }
+    local mb = &m[4]
+    bl = h.msgLen - 4
+    if m[0] != 12 || bl < 4 || mb[0] != 3 { return TLS_ERR_PROTOCOL }
+    local group = get16(&mb[1])
+    local plen = mb[3] as usize
+    local pl = 4 + plen                                       // params length
+    if !groupKnown(group) { return TLS_ERR_UNSUPPORTED }
+    if plen > 97 || pl + 4 > bl { return TLS_ERR_PROTOCOL }
+    local scheme = get16(&mb[pl])
+    local sl = get16(&mb[pl + 2])
+    if pl + 4 + sl != bl { return TLS_ERR_PROTOCOL }
+    if schemeAlg(scheme, &chain[0], false) == 0 { return TLS_ERR_UNSUPPORTED }
+    local signed: [u8; 64 + 4 + 97]
+    copyBytes(&signed[0], &ch.random[0], 32)
+    copyBytes(&signed[32], &ch.serverRandom[0], 32)
+    copyBytes(&signed[64], mb, pl)
+    if !verifySigned(&chain[0], scheme, false, &signed[0], 64 + pl, &mb[pl + 4], sl) { return TLS_ERR_SIGNATURE }
+    local peer = &signed[68]                                  // the server's point, kept past the next nextHs
+    trUpdate(&h.th, m, h.msgLen)
+
+    // ---- [CertificateRequest], ServerHelloDone
+    local certRequested = false
+    m = nextHs(c, h, &err)
+    if m == nil { return err }
+    if m[0] == 13 {
+        certRequested = true
+        trUpdate(&h.th, m, h.msgLen)
+        m = nextHs(c, h, &err)
+        if m == nil { return err }
+    }
+    if m[0] != 14 || h.msgLen != 4 { return TLS_ERR_PROTOCOL }
+    trUpdate(&h.th, m, h.msgLen)
+
+    // ---- our flight
+    local k: Kex
+    if !kexNew(&k, group) { return TLS_ERR_ENTROPY }
+    local pms: [u8; 48]
+    local pmsLen = kexShared(&k, peer, plen, &pms[0])
+    if pmsLen == 0 { return TLS_ERR_PROTOCOL }
+    if certRequested {
+        local empty: [u8; 7] = [11, 0, 0, 3, 0, 0, 0]
+        if !sendHs(c, h, &empty[0], 7) { return TLS_ERR_IO }
+    }
+    local cke: [u8; 5 + 97]
+    cke[0] = 16
+    cke[1] = 0
+    cke[2] = 0
+    cke[3] = (k.pubLen + 1) as u8
+    cke[4] = k.pubLen as u8
+    copyBytes(&cke[5], &k.pub[0], k.pubLen)
+    if !sendHs(c, h, &cke[0], 5 + k.pubLen) { return TLS_ERR_IO }
+
+    local th: [u8; 48]
+    trHash(&h.th, &th[0])                                     // the session hash of RFC 7627 section 3
+    local master: [u8; 48]
+    master12(c.hashAlg, &pms[0], pmsLen, ch.ems, &th[0], &ch.random[0], &ch.serverRandom[0], &master[0])
+    local ivLen: usize = suiteChacha(c.suite as usize) ? 12 : 4
+    keyBlock12(c.hashAlg, &master[0], &ch.random[0], &ch.serverRandom[0], c.keyLen, ivLen,
+               &c.wKey[0], &c.rKey[0], &c.wIv[0], &c.rIv[0])
+    if !sendCcs(c) { return TLS_ERR_IO }
+    c.wSeq = 0
+    c.wEnc = true
+    local fin: [u8; 16] = [20, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    trHash(&h.th, &th[0])
+    finished12(c.hashAlg, &master[0], true, &th[0], &fin[4])
+    if !sendHs(c, h, &fin[0], 16) { return TLS_ERR_IO }
+
+    // ---- the server's ChangeCipherSpec (nextHs switches the read keys) and Finished
+    h.ccsOk = true
+    m = nextHs(c, h, &err)
+    if m == nil { return err }
+    if m[0] != 20 || h.msgLen != 16 || !c.rEnc { return TLS_ERR_PROTOCOL }
+    local want: [u8; 12]
+    trHash(&h.th, &th[0])
+    finished12(c.hashAlg, &master[0], false, &th[0], &want[0])
+    if !ctEq(&want[0], &m[4], 12) { return TLS_ERR_FINISHED }
+    return TLS_OK
+}

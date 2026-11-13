@@ -1,0 +1,56 @@
+// RSA signing (RFC 8017): PKCS#1 v1.5 is deterministic, so the signature is compared byte for byte with the one
+// `openssl dgst -sha256 -sign` made with the same 1024-bit key over "abc"; PSS signs with a fixed salt and is checked
+// by the verifier, then rejected after one flipped bit.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expect, expectEq
+from "std/crypto/sig/rsa" import rsaSignPkcs1, rsaSignPss, rsaVerifyPkcs1, rsaVerifyPss
+from "std/crypto/hash/sha256" import sha256
+from "std/encoding/hex" import hexDecode
+from "std" import strlen
+
+global N: *u8 = "c15e75aa0ee116719a5d1d1eaa70f2a07c9a4f5dd6d1385d10b0611cbb0684b054e8dd5e6f2bae40cbbdd6187b6ac275de2255a25bd71cd6dc5aa226f08eb61e455f43b0141c1c381936cf0c79a10f52ac3dd5b922809b6ca560a60abcc22f5656a4b64df5d6b55b57dae1a882860de259e8309042fdd6c42ded800ace0644e5"
+global D: *u8 = "31af1a9e8a5a2d511d2f8596e68644e11582f49790e58b0ce687db3bed961c2bce7552c3bbdec65421c572283235d9273ddf268fa3f75e929a65b33a3c1eff0dcee431e5d8c8e03488515cf3df88cf441cb9ac704db490c7551187919234d6268565ac6791b166ae548b33228102bf2cbc6403a49ca240a409a6414886c5d981"
+global SIG: *u8 = "629fddbae547fef7a5cfeb1637e242cc42a415e52716c688321be3d29abdb686b251e7245881d56003fb69ebf8e26fbfed680984589f3cd6f17bc239b87340b987912bb284d7adfe81e23bd0b1dfaaf59ad99348324c858cd950c6455c942f8d5fa4850b68e3091545fc41953ff3979b98e91941e6df8bed61880569f383186f"
+
+struct Key { n: [u8; 128], d: [u8; 128], e: [u8; 3], h: [u8; 32] }
+
+fn load(k: *Key) {
+    hexDecode(N, strlen(N), &k.n[0])
+    hexDecode(D, strlen(D), &k.d[0])
+    k.e[0] = 1
+    k.e[1] = 0
+    k.e[2] = 1
+    sha256("abc", 3, &k.h[0])
+}
+
+fn pkcs1(t: *T) {
+    local k: Key
+    load(&k)
+    local want: [u8; 128]
+    hexDecode(SIG, strlen(SIG), &want[0])
+    local sig: [u8; 128]
+    expectEq(t, rsaSignPkcs1(&k.n[0], 128, &k.d[0], 128, 1, &k.h[0], 32, &sig[0]) as i64, 128)
+    local same = true
+    for i in 0..128 { if sig[i] != want[i] { same = false } }
+    expect(t, same, "matches openssl")
+    expect(t, rsaVerifyPkcs1(&k.n[0], 128, &k.e[0], 3, &sig[0], 128, 1, &k.h[0], 32), "verifies")
+}
+
+fn pss(t: *T) {
+    local k: Key
+    load(&k)
+    local salt: [u8; 32]
+    for i in 0..32 { salt[i] = i as u8 }
+    local sig: [u8; 128]
+    expectEq(t, rsaSignPss(&k.n[0], 128, &k.d[0], 128, 1, &k.h[0], 32, &salt[0], &sig[0]) as i64, 128)
+    expect(t, rsaVerifyPss(&k.n[0], 128, &k.e[0], 3, &sig[0], 128, 1, &k.h[0], 32), "verifies")
+    sig[100] ^= 1
+    expect(t, !rsaVerifyPss(&k.n[0], 128, &k.e[0], 3, &sig[0], 128, 1, &k.h[0], 32), "tampered rejected")
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "PKCS#1 v1.5 sign", pkcs1)
+    test(&s, "PSS sign and verify", pss)
+    return suiteRun(&s)
+}

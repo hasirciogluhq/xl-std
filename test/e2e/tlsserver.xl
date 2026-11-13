@@ -1,9 +1,9 @@
-// TLS 1.3 server e2e (the peer is `tlsclient.xl`, or openssl/curl): serves connections on
+// TLS server e2e (the peer is `tlsclient.xl`, or openssl/curl): serves connections on
 // 127.0.0.1:tlsPort until a client asks for `/quit`. Failed handshakes (the client's negative tests)
-// are expected and just logged. Build with `-D tlsPort=14433` and optionally `-D tlsEc=1` for the
-// ECDSA P-256 certificate instead of RSA-2048.
+// are expected and just logged. Build with `-D tlsPort=14433`, optionally `-D tlsEc=1` for the
+// ECDSA P-256 certificate instead of RSA-2048 and `-D tls12=1` to serve TLS 1.2 only.
 from "std" import print, tlsLoadCredentialsPem, tlsListen, tlsAccept, tlsRead, tlsWrite, tlsClose
-from "std" import tlsErrorText, TlsConn, TlsCredentials, TLS_OK, strlen
+from "std" import tlsErrorText, TlsConn, TlsCredentials, TLS_OK, TLS_1_2, strlen
 from "std/sys" import sysClose
 from "tls/fixture" import rsaCert, rsaKey, ecCert, ecKey
 
@@ -32,6 +32,9 @@ fn startsWith(s: *u8, p: *u8) -> bool {
         print("\n")
         return 1
     }
+#ifdef tls12
+    cred.maxVersion = TLS_1_2
+#endif
     local fd: i32 = tlsListen(2130706433, tlsPort as u16)
     if fd < 0 {
         print("server: listen\n")

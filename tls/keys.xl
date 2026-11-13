@@ -1,0 +1,224 @@
+// std/tls/keys: the handshake transcript and the key derivations of both versions, for SHA-256 and SHA-384 suites.
+//   TLS 1.3  HKDF (RFC 5869) with HKDF-Expand-Label and Derive-Secret, the key schedule of RFC 8446 section 7.1,
+//            traffic keys (section 7.3) and the Finished MAC (section 4.4.4).
+//   TLS 1.2  the PRF P_hash of RFC 5246 section 5, the master secret (section 8.1) or the extended master secret
+//            (RFC 7627 section 4), the key block (RFC 5246 section 6.3) and Finished verify_data (section 7.4.9).
+// Nothing here touches the OS: the unit suite `test/unit/tlskeys.test.xl` checks every function.
+from "../crypto/hash/sha256" import Sha256, sha256Init, sha256Update, sha256Final
+from "../crypto/hash/sha512" import Sha512, sha384Init, sha512Update, sha512Final
+from "../crypto/hash/mac" import hmac
+from "../crypto/hash/digest" import digest, digestLen, DIGEST_SHA256, DIGEST_SHA384
+from "wire" import copyBytes
+
+/// The running transcript hash. Both hashes run from the first message, because the suite (and with it the hash) is
+/// known only after ServerHello; `alg` names the one that counts.
+export struct Transcript {
+    s256: Sha256
+    s384: Sha512
+    alg: i32
+}
+
+export fn trInit(t: *Transcript) {
+    sha256Init(&t.s256)
+    sha384Init(&t.s384)
+    t.alg = DIGEST_SHA256
+}
+
+export fn trUpdate(t: *Transcript, p: *u8, n: usize) {
+    sha256Update(&t.s256, p, n)
+    sha512Update(&t.s384, p, n)
+}
+
+/// The hash of everything added so far (the transcript keeps running); returns its length, 32 or 48.
+export fn trHash(t: *Transcript, out: *u8) -> usize {
+    if t.alg == DIGEST_SHA384 {
+        sha512Final(&t.s384, out)
+        return 48
+    }
+    sha256Final(&t.s256, out)
+    return 32
+}
+
+fn cstrLen(s: *u8) -> usize {
+    local n: usize = 0
+    while s[n] != 0 { n++ }
+    return n
+}
+
+// ---- TLS 1.3 -----------------------------------------------------------------------------------------------------
+
+/// HKDF-Extract (RFC 5869 section 2.2); an empty salt stands for HashLen zero bytes.
+export fn extract(alg: i32, salt: *u8, slen: usize, ikm: *u8, ilen: usize, out: *u8) {
+    local zeros: [u8; 48]
+    for i in 0..48 { zeros[i] = 0 }
+    if slen == 0 {
+        hmac(alg, &zeros[0], digestLen(alg), ikm, ilen, out)
+    } else {
+        hmac(alg, salt, slen, ikm, ilen, out)
+    }
+}
+
+/// HKDF-Expand (RFC 5869 section 2.3): T(i) = HMAC(prk, T(i-1) || info || i). `info` is at most 128 bytes.
+fn expand(alg: i32, prk: *u8, info: *u8, ilen: usize, out: *u8, len: usize) {
+    local hl = digestLen(alg)
+    local buf: [u8; 64 + 128 + 1]
+    local t: [u8; 64]
+    local tlen: usize = 0
+    local done: usize = 0
+    local counter: u8 = 1
+    while done < len {
+        copyBytes(&buf[0], &t[0], tlen)
+        copyBytes(&buf[tlen], info, ilen)
+        buf[tlen + ilen] = counter
+        hmac(alg, prk, hl, &buf[0], tlen + ilen + 1, &t[0])
+        local take = len - done < hl ? len - done : hl
+        copyBytes(&out[done], &t[0], take)
+        done += take
+        tlen = hl
+        counter++
+    }
+}
+
+/// HKDF-Expand-Label(secret, label, context, length) (RFC 8446 section 7.1): the info is
+/// uint16 length || opaque label<7..255> = "tls13 " + label || opaque context<0..255>. `label` is NUL-terminated.
+export fn expandLabel(alg: i32, secret: *u8, label: *u8, ctx: *u8, clen: usize, out: *u8, len: usize) {
+    local info: [u8; 128]
+    local ll = cstrLen(label)
+    info[0] = ((len >> 8) & 0xff) as u8
+    info[1] = (len & 0xff) as u8
+    info[2] = (6 + ll) as u8
+    copyBytes(&info[3], "tls13 ", 6)
+    copyBytes(&info[9], label, ll)
+    info[9 + ll] = clen as u8
+    copyBytes(&info[10 + ll], ctx, clen)
+    expand(alg, secret, &info[0], 10 + ll + clen, out, len)
+}
+
+/// Derive-Secret(secret, label, messages) with the transcript hash already computed: HashLen bytes into `out`.
+export fn deriveSecret(alg: i32, secret: *u8, label: *u8, hash: *u8, out: *u8) {
+    local hl = digestLen(alg)
+    expandLabel(alg, secret, label, hash, hl, out, hl)
+}
+
+/// The secrets of RFC 8446 section 7.1 that the handshake needs, without PSK (the early secret has a zero IKM).
+export struct Schedule13 {
+    alg: i32
+    hl: usize
+    cHs: [u8; 48]            // client_handshake_traffic_secret
+    sHs: [u8; 48]            // server_handshake_traffic_secret
+    master: [u8; 48]
+}
+
+/// Runs the schedule from the (EC)DHE shared secret and the hash of ClientHello..ServerHello.
+export fn schedule13(k: *Schedule13, alg: i32, shared: *u8, slen: usize, helloHash: *u8) {
+    k.alg = alg
+    k.hl = digestLen(alg)
+    local zeros: [u8; 48]
+    for i in 0..48 { zeros[i] = 0 }
+    local emptyHash: [u8; 48]
+    local early: [u8; 48]
+    local derived: [u8; 48]
+    local hs: [u8; 48]
+    digest(alg, &zeros[0], 0, &emptyHash[0])
+    extract(alg, &zeros[0], 0, &zeros[0], k.hl, &early[0])
+    deriveSecret(alg, &early[0], "derived", &emptyHash[0], &derived[0])
+    extract(alg, &derived[0], k.hl, shared, slen, &hs[0])
+    deriveSecret(alg, &hs[0], "c hs traffic", helloHash, &k.cHs[0])
+    deriveSecret(alg, &hs[0], "s hs traffic", helloHash, &k.sHs[0])
+    deriveSecret(alg, &hs[0], "derived", &emptyHash[0], &derived[0])
+    extract(alg, &derived[0], k.hl, &zeros[0], k.hl, &k.master[0])
+}
+
+/// client_ and server_application_traffic_secret_0 from the hash of ClientHello..server Finished.
+export fn appSecrets13(k: *Schedule13, hash: *u8, cAp: *u8, sAp: *u8) {
+    deriveSecret(k.alg, &k.master[0], "c ap traffic", hash, cAp)
+    deriveSecret(k.alg, &k.master[0], "s ap traffic", hash, sAp)
+}
+
+/// The record key and the 12-byte IV of a traffic secret (RFC 8446 section 7.3).
+export fn trafficKeys13(alg: i32, secret: *u8, keyLen: usize, key: *u8, iv: *u8) {
+    local none: [u8; 1]
+    expandLabel(alg, secret, "key", &none[0], 0, key, keyLen)
+    expandLabel(alg, secret, "iv", &none[0], 0, iv, 12)
+}
+
+/// The next traffic secret after a KeyUpdate (RFC 8446 section 7.2), in place.
+export fn nextSecret13(alg: i32, secret: *u8) {
+    local none: [u8; 1]
+    local next: [u8; 48]
+    local hl = digestLen(alg)
+    expandLabel(alg, secret, "traffic upd", &none[0], 0, &next[0], hl)
+    copyBytes(secret, &next[0], hl)
+}
+
+/// Finished verify_data = HMAC(finished_key, transcript hash), finished_key from the handshake traffic secret
+/// `base` (RFC 8446 section 4.4.4); HashLen bytes into `out`.
+export fn finished13(alg: i32, base: *u8, hash: *u8, out: *u8) {
+    local hl = digestLen(alg)
+    local key: [u8; 48]
+    local none: [u8; 1]
+    expandLabel(alg, base, "finished", &none[0], 0, &key[0], hl)
+    hmac(alg, &key[0], hl, hash, hl, out)
+}
+
+// ---- TLS 1.2 -----------------------------------------------------------------------------------------------------
+
+/// PRF(secret, label, seed) = P_hash(secret, label || seed) (RFC 5246 section 5), with
+/// A(0) = label || seed, A(i) = HMAC(secret, A(i-1)), output HMAC(secret, A(i) || label || seed) for i = 1, 2, ...
+/// `label` is NUL-terminated; label and seed together are at most 128 bytes.
+export fn prf12(alg: i32, secret: *u8, slen: usize, label: *u8, seed: *u8, seedLen: usize, out: *u8, n: usize) {
+    local hl = digestLen(alg)
+    local ls: [u8; 128]
+    local ll = cstrLen(label)
+    copyBytes(&ls[0], label, ll)
+    copyBytes(&ls[ll], seed, seedLen)
+    local lsLen = ll + seedLen
+    local a: [u8; 64]
+    hmac(alg, secret, slen, &ls[0], lsLen, &a[0])
+    local msg: [u8; 64 + 128]
+    local block: [u8; 64]
+    local done: usize = 0
+    while done < n {
+        copyBytes(&msg[0], &a[0], hl)
+        copyBytes(&msg[hl], &ls[0], lsLen)
+        hmac(alg, secret, slen, &msg[0], hl + lsLen, &block[0])
+        local take = n - done < hl ? n - done : hl
+        copyBytes(&out[done], &block[0], take)
+        done += take
+        hmac(alg, secret, slen, &a[0], hl, &a[0])
+    }
+}
+
+/// The 48-byte master secret. With `ems` it is the extended master secret, bound to the hash of the handshake up to
+/// ClientKeyExchange (`sessionHash`, RFC 7627 section 4); otherwise PRF(pms, "master secret", client || server random).
+export fn master12(alg: i32, pms: *u8, plen: usize, ems: bool, sessionHash: *u8, clientRandom: *u8, serverRandom: *u8, out: *u8) {
+    if ems {
+        prf12(alg, pms, plen, "extended master secret", sessionHash, digestLen(alg), out, 48)
+        return
+    }
+    local seed: [u8; 64]
+    copyBytes(&seed[0], clientRandom, 32)
+    copyBytes(&seed[32], serverRandom, 32)
+    prf12(alg, pms, plen, "master secret", &seed[0], 64, out, 48)
+}
+
+/// The AEAD key block (RFC 5246 section 6.3; AEAD suites have no MAC keys): client key, server key, client IV,
+/// server IV. The IV is the 4-byte GCM salt (RFC 5288 section 3) or the 12-byte ChaCha20 IV (RFC 7905 section 2).
+export fn keyBlock12(alg: i32, master: *u8, clientRandom: *u8, serverRandom: *u8, keyLen: usize, ivLen: usize,
+                     cKey: *u8, sKey: *u8, cIv: *u8, sIv: *u8) {
+    local seed: [u8; 64]
+    copyBytes(&seed[0], serverRandom, 32)
+    copyBytes(&seed[32], clientRandom, 32)
+    local kb: [u8; 2 * 32 + 2 * 12]
+    prf12(alg, master, 48, "key expansion", &seed[0], 64, &kb[0], 2 * keyLen + 2 * ivLen)
+    copyBytes(cKey, &kb[0], keyLen)
+    copyBytes(sKey, &kb[keyLen], keyLen)
+    copyBytes(cIv, &kb[2 * keyLen], ivLen)
+    copyBytes(sIv, &kb[2 * keyLen + ivLen], ivLen)
+}
+
+/// Finished verify_data = PRF(master, "client finished" or "server finished", transcript hash)[0..12]
+/// (RFC 5246 section 7.4.9).
+export fn finished12(alg: i32, master: *u8, client: bool, hash: *u8, out: *u8) {
+    prf12(alg, master, 48, client ? "client finished" : "server finished", hash, digestLen(alg), out, 12)
+}

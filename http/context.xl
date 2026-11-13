@@ -293,6 +293,7 @@ export class Context {
             tlsWrite(self.tls, data, n)
             return
         }
+        if self.fd < 0 { return }               // no connection (a Context driven by hand): the answer is dropped
         local done: usize = 0
         while done < n {
             local w: isize = sysWrite(self.fd, &data[done], n - done)

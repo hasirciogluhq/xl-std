@@ -1,0 +1,150 @@
+// std/tls/conn: the connection state shared by the client and the server, the result codes, the protocol versions and
+// the cipher suite table. Only ECDHE key exchange with AEAD ciphers exists, as in rustls:
+//   TLS 1.3 (RFC 8446)  TLS_CHACHA20_POLY1305_SHA256 0x1303, TLS_AES_128_GCM_SHA256 0x1301, TLS_AES_256_GCM_SHA384 0x1302
+//   TLS 1.2 (RFC 5246)  ECDHE_ECDSA / ECDHE_RSA with CHACHA20_POLY1305_SHA256 (0xCCA9 / 0xCCA8, RFC 7905),
+//                       AES_128_GCM_SHA256 (0xC02B / 0xC02F) and AES_256_GCM_SHA384 (0xC02C / 0xC030, RFC 5289)
+// The lists are in preference order: ChaCha20 first (constant-time in software), then AES-128, then AES-256.
+// Registry: https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-4
+from "../sys" import sysClose, sysMap, sysSetRecvTimeout
+from "../crypto/hash/digest" import DIGEST_SHA256, DIGEST_SHA384
+
+export define TLS_OK = 0
+export define TLS_ERR_IO = -1             // socket failure or the peer closed during the handshake
+export define TLS_ERR_PROTOCOL = -2       // malformed or unexpected message
+export define TLS_ERR_ALERT = -3          // the peer sent a fatal alert (`TlsConn.alert`)
+export define TLS_ERR_VERSION = -4        // no protocol version in common
+export define TLS_ERR_CERT = -5           // chain rejected (`TlsConn.trust` holds the TRUST_* code)
+export define TLS_ERR_SIGNATURE = -6      // CertificateVerify or ServerKeyExchange signature failed
+export define TLS_ERR_FINISHED = -7       // Finished MAC mismatch
+export define TLS_ERR_ENTROPY = -8
+export define TLS_ERR_MEMORY = -9
+export define TLS_ERR_RETRY = -10         // HelloRetryRequest (unsupported)
+export define TLS_ERR_UNSUPPORTED = -11   // no cipher suite, group or signature scheme in common
+export define TLS_ERR_CLOCK = -12
+export define TLS_ERR_DNS = -13
+export define TLS_ERR_AEAD = -14          // record failed authentication
+export define TLS_ERR_CREDENTIALS = -15   // server certificate/key file missing, malformed or mismatched
+export define TLS_ERR_DOWNGRADE = -16     // a version downgrade was detected (RFC 8446 section 4.1.3, RFC 7507)
+
+/// Protocol versions as they appear on the wire (`TlsConn.version`, the bounds of `tlsConnectVersions` and of
+/// `TlsCredentials`). Nothing older than TLS 1.2 is implemented.
+export define TLS_1_2 = 0x0303
+export define TLS_1_3 = 0x0304
+
+export define REC_BUF = 16645             // 5 header + 2^14 + 256 (the largest TLS 1.3 record, RFC 8446 section 5.2)
+define RECV_TIMEOUT_MS = 20000
+
+export struct TlsConn {
+    fd: i32
+    version: u16             // TLS_1_2 or TLS_1_3 once the handshake has chosen it, 0 before
+    suite: u16               // IANA cipher suite code (`tlsCipherSuiteName` names it)
+    keyLen: usize            // AEAD key bytes: 16 or 32
+    hashAlg: i32             // DIGEST_SHA256 or DIGEST_SHA384: the hash of the suite
+    wKey: [u8; 32]
+    wIv: [u8; 12]            // TLS 1.3 and ChaCha20: the 12-byte IV; TLS 1.2 AES-GCM: the 4-byte salt
+    wSeq: u64
+    wSecret: [u8; 48]        // TLS 1.3 traffic secret (KeyUpdate derives the next one from it)
+    wEnc: bool
+    rKey: [u8; 32]
+    rIv: [u8; 12]
+    rSeq: u64
+    rSecret: [u8; 48]
+    rEnc: bool
+    rec: *u8
+    out: *u8
+    plain: *u8               // decrypted application data not yet returned
+    plainLen: usize
+    eof: bool
+    closedByPeer: bool       // the peer sent close_notify (false: bare TCP close)
+    alert: u8
+    trust: i32
+    open: bool
+}
+
+global SUITES13: [u16; 3] = [0x1303, 0x1301, 0x1302]
+global SUITES12: [u16; 6] = [0xcca9, 0xcca8, 0xc02b, 0xc02f, 0xc02c, 0xc030]
+
+export fn suites13() -> []u16 { return SUITES13[0..3] }
+export fn suites12() -> []u16 { return SUITES12[0..6] }
+
+export fn isSuite13(cs: usize) -> bool { return cs == 0x1301 || cs == 0x1302 || cs == 0x1303 }
+
+export fn isSuite12(cs: usize) -> bool {
+    for s in SUITES12 { if *s as usize == cs { return true } }
+    return false
+}
+
+/// ChaCha20-Poly1305 suites (12-byte implicit IV); the others are AES-GCM.
+export fn suiteChacha(cs: usize) -> bool { return cs == 0x1303 || cs == 0xcca8 || cs == 0xcca9 }
+
+/// TLS 1.2 suites authenticated with an ECDSA certificate; the rest of the 1.2 list takes RSA.
+export fn suiteEcdsa(cs: usize) -> bool { return cs == 0xcca9 || cs == 0xc02b || cs == 0xc02c }
+
+export fn suiteKeyLen(cs: usize) -> usize { return cs == 0x1301 || cs == 0xc02b || cs == 0xc02f ? 16 : 32 }
+
+export fn suiteHash(cs: usize) -> i32 { return cs == 0x1302 || cs == 0xc02c || cs == 0xc030 ? DIGEST_SHA384 : DIGEST_SHA256 }
+
+/// Records the chosen suite in `c`.
+export fn setSuite(c: *TlsConn, version: u16, cs: usize) {
+    c.version = version
+    c.suite = cs as u16
+    c.keyLen = suiteKeyLen(cs)
+    c.hashAlg = suiteHash(cs)
+}
+
+/// Resets every field of `c` to "not connected".
+export fn connReset(c: *TlsConn) {
+    c.fd = -1
+    c.version = 0
+    c.suite = 0
+    c.open = false
+    c.eof = false
+    c.closedByPeer = false
+    c.alert = 0
+    c.trust = 0
+    c.plainLen = 0
+    c.plain = nil
+    c.wEnc = false
+    c.rEnc = false
+    c.rec = nil
+    c.out = nil
+}
+
+/// Takes over the connected socket `fd`: sets the receive timeout and maps the two record buffers.
+export fn connOpen(c: *TlsConn, fd: i32) -> i32 {
+    c.fd = fd
+    sysSetRecvTimeout(fd, RECV_TIMEOUT_MS)
+    local mem = sysMap(REC_BUF * 2) as *u8
+    if mem == nil {
+        sysClose(fd)
+        c.fd = -1
+        return TLS_ERR_MEMORY
+    }
+    c.rec = mem
+    c.out = &mem[REC_BUF]
+    c.open = true
+    return TLS_OK
+}
+
+export fn tlsErrorText(code: i32) -> *u8 {
+    switch code {
+        case TLS_OK { return "ok" }
+        case TLS_ERR_IO { return "network error or connection closed" }
+        case TLS_ERR_PROTOCOL { return "malformed or unexpected TLS message" }
+        case TLS_ERR_ALERT { return "the peer sent a fatal TLS alert" }
+        case TLS_ERR_VERSION { return "no TLS version in common (TLS 1.2 and 1.3 are supported)" }
+        case TLS_ERR_CERT { return "server certificate rejected" }
+        case TLS_ERR_SIGNATURE { return "handshake signature is invalid" }
+        case TLS_ERR_FINISHED { return "handshake Finished MAC mismatch" }
+        case TLS_ERR_ENTROPY { return "no random bytes available" }
+        case TLS_ERR_MEMORY { return "out of memory" }
+        case TLS_ERR_RETRY { return "HelloRetryRequest is not supported" }
+        case TLS_ERR_UNSUPPORTED { return "no cipher suite, group or signature scheme in common" }
+        case TLS_ERR_CLOCK { return "system clock unavailable" }
+        case TLS_ERR_DNS { return "host name could not be resolved" }
+        case TLS_ERR_AEAD { return "record authentication failed" }
+        case TLS_ERR_CREDENTIALS { return "server certificate or private key could not be loaded" }
+        case TLS_ERR_DOWNGRADE { return "protocol version downgrade detected" }
+        default { return "unknown error" }
+    }
+}

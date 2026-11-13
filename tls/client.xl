@@ -1,0 +1,224 @@
+// std/tls/client: the client entry points, the ClientHello and the ServerHello, after which `client13` or
+// `client12` finishes the handshake. One ClientHello offers both versions (RFC 8446 section 4.1.2 and
+// appendix D): TLS 1.3 through supported_versions and an x25519 key_share, TLS 1.2 through legacy_version 0x0303,
+// its suites, ec_point_formats, extended_master_secret and renegotiation_info.
+// A TLS 1.2 ServerHello from a server that also speaks TLS 1.3 is refused through the downgrade sentinel in its
+// random (RFC 8446 section 4.1.3). HelloRetryRequest is not supported (TLS_ERR_RETRY): servers that support x25519
+// accept the offered share directly.
+from "../sys" import sysTcpSocket, sysTcpConnect, sysClose, sysMap, sysUnmap, sysRandom
+from "../net/dns" import dnsResolve
+from "conn" import TlsConn, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_VERSION, TLS_ERR_ENTROPY, TLS_ERR_MEMORY
+from "conn" import TLS_ERR_RETRY, TLS_ERR_UNSUPPORTED, TLS_ERR_DNS, TLS_ERR_DOWNGRADE, TLS_1_2, TLS_1_3
+from "conn" import connReset, connOpen, setSuite, suites13, suites12, isSuite13, isSuite12
+from "keys" import trInit, trUpdate
+from "record" import fail
+from "handshake" import Hs, ClientHs, HS_BUF, GROUP_X25519, GROUP_P256, GROUP_P384, nextHs, sendHs, kexNew
+from "sign" import offerSchemes
+from "client13" import client13
+from "client12" import client12
+from "wire" import emit, emit16, emit24, emitBytes, patch16, patch24, get16, copyBytes, ctEq
+
+/// The random of a HelloRetryRequest: SHA-256 of "HelloRetryRequest" (RFC 8446 section 4.1.3).
+global HRR_RANDOM: [u8; 32] = [0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c, 0x02, 0x1e, 0x65,
+    0xb8, 0x91, 0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c]
+
+/// The last 8 bytes of a TLS 1.3 server's random when it negotiates TLS 1.2: "DOWNGRD" 01 (RFC 8446 section 4.1.3).
+global DOWNGRADE_12: [u8; 8] = [0x44, 0x4f, 0x57, 0x4e, 0x47, 0x52, 0x44, 0x01]
+
+fn buildHello(ch: *ClientHs, hostLen: usize, sid: *u8, min: u16, max: u16, out: *u8) -> usize {
+    local n: usize = 0
+    emit(out, &n, 1)
+    emit24(out, &n, 0)                                        // patched at the end
+    emit16(out, &n, 0x0303)                                   // legacy_version
+    emitBytes(out, &n, &ch.random[0], 32)
+    emit(out, &n, 32)
+    emitBytes(out, &n, sid, 32)
+    local at = n
+    emit16(out, &n, 0)
+    if max >= TLS_1_3 { for s in suites13() { emit16(out, &n, *s as usize) } }
+    if min <= TLS_1_2 { for s in suites12() { emit16(out, &n, *s as usize) } }
+    patch16(out, at, n - at - 2)
+    emit(out, &n, 1)
+    emit(out, &n, 0)                                          // compression: null only
+    local extAt = n
+    emit16(out, &n, 0)
+    // server_name (RFC 6066 section 3): one host_name entry
+    emit16(out, &n, 0)
+    emit16(out, &n, hostLen + 5)
+    emit16(out, &n, hostLen + 3)
+    emit(out, &n, 0)
+    emit16(out, &n, hostLen)
+    emitBytes(out, &n, ch.host, hostLen)
+    // supported_groups (RFC 8446 section 4.2.7)
+    emit16(out, &n, 10)
+    emit16(out, &n, 8)
+    emit16(out, &n, 6)
+    emit16(out, &n, GROUP_X25519)
+    emit16(out, &n, GROUP_P256)
+    emit16(out, &n, GROUP_P384)
+    // signature_algorithms (RFC 8446 section 4.2.3)
+    emit16(out, &n, 13)
+    at = n
+    n += 4
+    local sl = offerSchemes(&out[n])
+    n += sl
+    patch16(out, at, sl + 2)
+    patch16(out, at + 2, sl)
+    if min <= TLS_1_2 {
+        // ec_point_formats: uncompressed only (RFC 8422 section 5.1.2)
+        emit16(out, &n, 11)
+        emit16(out, &n, 2)
+        emit(out, &n, 1)
+        emit(out, &n, 0)
+        // extended_master_secret, empty (RFC 7627 section 5.1)
+        emit16(out, &n, 23)
+        emit16(out, &n, 0)
+        // renegotiation_info with an empty renegotiated_connection: the initial handshake (RFC 5746 section 3.4)
+        emit16(out, &n, 0xff01)
+        emit16(out, &n, 1)
+        emit(out, &n, 0)
+    }
+    if max >= TLS_1_3 {
+        // supported_versions (RFC 8446 section 4.2.1), newest first
+        local vl: usize = min <= TLS_1_2 ? 4 : 2
+        emit16(out, &n, 43)
+        emit16(out, &n, vl + 1)
+        emit(out, &n, vl as u8)
+        emit16(out, &n, TLS_1_3)
+        if min <= TLS_1_2 { emit16(out, &n, TLS_1_2) }
+        // key_share: x25519 (RFC 8446 section 4.2.8)
+        emit16(out, &n, 51)
+        emit16(out, &n, 38)
+        emit16(out, &n, 36)
+        emit16(out, &n, GROUP_X25519)
+        emit16(out, &n, 32)
+        emitBytes(out, &n, &ch.x.pub[0], 32)
+    }
+    patch16(out, extAt, n - extAt - 2)
+    patch24(out, 1, n - 4)
+    return n
+}
+
+/// Parses the ServerHello `body[0..blen]`, chooses the version and the suite, and keeps what the rest needs in `ch`.
+fn readServerHello(c: *TlsConn, ch: *ClientHs, body: *u8, blen: usize, sid: *u8, min: u16, max: u16) -> i32 {
+    if blen < 2 + 32 + 1 { return TLS_ERR_PROTOCOL }
+    copyBytes(&ch.serverRandom[0], &body[2], 32)
+    if ctEq(&body[2], &HRR_RANDOM[0], 32) { return TLS_ERR_RETRY }
+    local legacy = get16(&body[0])
+    local sidLen = body[34] as usize
+    local at = 35 + sidLen
+    if sidLen > 32 || at + 3 > blen { return TLS_ERR_PROTOCOL }
+    local echoed = sidLen == 32 && ctEq(&body[35], sid, 32)
+    local cs = get16(&body[at])
+    if body[at + 2] != 0 { return TLS_ERR_PROTOCOL }        // compression must be null
+    at += 3
+    local version: usize = 0
+    ch.shareLen = 0
+    ch.ems = false
+    if at < blen {
+        if at + 2 > blen { return TLS_ERR_PROTOCOL }
+        local extEnd = at + 2 + get16(&body[at])
+        at += 2
+        if extEnd != blen { return TLS_ERR_PROTOCOL }
+        while at + 4 <= extEnd {
+            local et = get16(&body[at])
+            local el = get16(&body[at + 2])
+            at += 4
+            if at + el > extEnd { return TLS_ERR_PROTOCOL }
+            if et == 43 {
+                if el != 2 { return TLS_ERR_PROTOCOL }
+                version = get16(&body[at])
+            } else if et == 51 {
+                if el < 4 || get16(&body[at]) != GROUP_X25519 || get16(&body[at + 2]) != el - 4 || el - 4 > 97 {
+                    return TLS_ERR_PROTOCOL
+                }
+                ch.shareLen = el - 4
+                copyBytes(&ch.share[0], &body[at + 4], ch.shareLen)
+            } else if et == 23 {
+                if el != 0 { return TLS_ERR_PROTOCOL }
+                ch.ems = true
+            } else if et == 0xff01 {
+                if el != 1 || body[at] != 0 { return TLS_ERR_PROTOCOL }
+            }
+            at += el
+        }
+        if at != extEnd { return TLS_ERR_PROTOCOL }
+    }
+    if version != 0 {
+        // supported_versions present: TLS 1.3, the session id echoed (RFC 8446 section 4.1.3)
+        if version != TLS_1_3 || max < TLS_1_3 { return TLS_ERR_VERSION }
+        if !echoed { return TLS_ERR_PROTOCOL }
+        if !isSuite13(cs) { return TLS_ERR_UNSUPPORTED }
+        if ch.shareLen == 0 { return TLS_ERR_PROTOCOL }
+        setSuite(c, TLS_1_3, cs)
+        return TLS_OK
+    }
+    if legacy != TLS_1_2 || min > TLS_1_2 { return TLS_ERR_VERSION }
+    if max >= TLS_1_3 && ctEq(&ch.serverRandom[24], &DOWNGRADE_12[0], 8) { return TLS_ERR_DOWNGRADE }
+    if echoed { return TLS_ERR_PROTOCOL }                    // a resumption we never offered
+    if !isSuite12(cs) { return TLS_ERR_UNSUPPORTED }
+    setSuite(c, TLS_1_2, cs)
+    return TLS_OK
+}
+
+fn clientHandshake(c: *TlsConn, h: *Hs, ch: *ClientHs, hostLen: usize, min: u16, max: u16) -> i32 {
+    local sid: [u8; 32]
+    if !sysRandom(&ch.random[0], 32) || !sysRandom(&sid[0], 32) { return TLS_ERR_ENTROPY }
+    if max >= TLS_1_3 && !kexNew(&ch.x, GROUP_X25519) { return TLS_ERR_ENTROPY }
+    local hello: [u8; 768]
+    local hn = buildHello(ch, hostLen, &sid[0], min, max, &hello[0])
+    trInit(&h.th)
+    if !sendHs(c, h, &hello[0], hn) { return TLS_ERR_IO }
+    local err: i32 = TLS_OK
+    local m = nextHs(c, h, &err)
+    if m == nil { return err }
+    if m[0] != 2 { return TLS_ERR_PROTOCOL }
+    local r = readServerHello(c, ch, &m[4], h.msgLen - 4, &sid[0], min, max)
+    if r != TLS_OK { return r }
+    h.th.alg = c.hashAlg
+    trUpdate(&h.th, m, h.msgLen)
+    return c.version == TLS_1_3 ? client13(c, h, ch) : client12(c, h, ch)
+}
+
+/// Connects to `ip:port` and runs the handshake, verifying the certificate for `host` (the server name, also sent
+/// as SNI), with a protocol version between `min` and `max` (TLS_1_2 or TLS_1_3). `c.version` and `c.suite` tell
+/// what was negotiated. `c` is initialized here; `tlsClose` is safe whether or not this succeeded.
+export fn tlsConnectVersions(c: *TlsConn, ip: u32, port: u16, host: *u8, min: u16, max: u16) -> i32 {
+    connReset(c)
+    if min < TLS_1_2 || max > TLS_1_3 || min > max { return TLS_ERR_VERSION }
+    local fd = sysTcpSocket()
+    if fd < 0 { return TLS_ERR_IO }
+    if sysTcpConnect(fd, ip, port) < 0 {
+        sysClose(fd)
+        return TLS_ERR_IO
+    }
+    local r = connOpen(c, fd)
+    if r != TLS_OK { return r }
+    local hostLen: usize = 0
+    while host[hostLen] != 0 { hostLen++ }
+    if hostLen == 0 || hostLen > 253 { return fail(c, TLS_ERR_PROTOCOL) }
+    local hs: Hs
+    hs.buf = sysMap(HS_BUF) as *u8
+    if hs.buf == nil { return fail(c, TLS_ERR_MEMORY) }
+    hs.len = 0
+    hs.pos = 0
+    hs.ccsOk = false
+    local ch: ClientHs
+    ch.host = host
+    r = clientHandshake(c, &hs, &ch, hostLen, min, max)
+    sysUnmap(hs.buf as *void, HS_BUF)
+    return r != TLS_OK ? fail(c, r) : TLS_OK
+}
+
+/// `tlsConnectVersions` with TLS 1.2 and TLS 1.3 allowed (1.3 preferred).
+export fn tlsConnect(c: *TlsConn, ip: u32, port: u16, host: *u8) -> i32 {
+    return tlsConnectVersions(c, ip, port, host, TLS_1_2, TLS_1_3)
+}
+
+/// Resolves `host` with `std/net/dns`, then `tlsConnect`.
+export fn tlsConnectHost(c: *TlsConn, host: *u8, port: u16) -> i32 {
+    connReset(c)
+    local ip: u32 = 0
+    if !dnsResolve(host, &ip) { return TLS_ERR_DNS }
+    return tlsConnect(c, ip, port, host)
+}

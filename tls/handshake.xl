@@ -1,0 +1,200 @@
+// std/tls/handshake: the pieces both sides and both versions share: the handshake message reader (`Hs`, `nextHs`,
+// `sendHs`), the ECDHE key exchange over the named groups x25519, secp256r1 and secp384r1 (RFC 8446 section 4.2.7,
+// RFC 8422 section 5.1.1; points uncompressed, RFC 8446 section 4.2.8.2), and the certificate list reader of the
+// client.
+from "../sys" import sysRandom, sysClockSeconds
+from "../crypto/kex/x25519" import x25519, x25519Base
+from "../crypto/sig/ecdsa" import ecdsaKeypair, ecdhShared, ECDSA_P256, ECDSA_P384
+from "../crypto/x509/x509" import Cert, x509Parse
+from "truststore" import trustVerifyChain
+from "conn" import TlsConn, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_ALERT, TLS_ERR_CERT, TLS_ERR_CLOCK, TLS_1_2
+from "keys" import Transcript, trUpdate
+from "record" import sendRecord, recvRecord
+from "wire" import get16, get24, copyBytes
+
+export define HS_BUF = 65536
+export define MAX_CERTS = 8
+
+export define GROUP_X25519 = 0x001d
+export define GROUP_P256 = 0x0017
+export define GROUP_P384 = 0x0018
+
+/// Handshake reassembly: records are appended to `buf`, messages are taken from `pos`.
+export struct Hs {
+    buf: *u8
+    len: usize
+    pos: usize
+    th: Transcript
+    msgLen: usize            // total length (header included) of the message nextHs returned
+    ccsOk: bool              // TLS 1.2: the peer's ChangeCipherSpec may come now (the read keys are pending in c)
+}
+
+/// What the client keeps between its ClientHello and the rest of the handshake.
+export struct ClientHs {
+    host: *u8
+    random: [u8; 32]
+    serverRandom: [u8; 32]
+    x: Kex                   // the x25519 key share offered for TLS 1.3
+    share: [u8; 97]          // TLS 1.3: the server's key_share
+    shareLen: usize
+    ems: bool                // TLS 1.2: the server agreed to the extended master secret (RFC 7627)
+}
+
+/// What the server took from the ClientHello and chose.
+export struct ServerHs {
+    random: [u8; 32]         // the client's
+    sid: [u8; 32]
+    sidLen: usize
+    share: [u8; 32]          // TLS 1.3: the client's x25519 key share
+    gotShare: bool
+    group: usize             // TLS 1.2: the ECDHE group
+    scheme: usize            // the signature scheme
+    ems: bool                // TLS 1.2: the client offered extended_master_secret
+    reneg: bool              // TLS 1.2: the client signaled secure renegotiation (RFC 5746)
+    pointFormats: bool       // TLS 1.2: the client sent ec_point_formats
+}
+
+/// The next complete handshake message (header included), or nil with the error in `*err`. Alerts fail. A TLS 1.3
+/// ChangeCipherSpec is dropped (RFC 8446 section D.4); in TLS 1.2 it must be the single byte 1, come only where
+/// `h.ccsOk` allows it and not split a message, and it switches on the pending read keys (RFC 5246 section 7.1).
+export fn nextHs(c: *TlsConn, h: *Hs, err: *i32) -> *u8 {
+    while true {
+        local avail = h.len - h.pos
+        if avail >= 4 {
+            local need = 4 + get24(&h.buf[h.pos + 1])
+            if need > HS_BUF {
+                *err = TLS_ERR_PROTOCOL
+                return nil
+            }
+            if avail >= need {
+                h.msgLen = need
+                local m = &h.buf[h.pos]
+                h.pos += need
+                return m
+            }
+        }
+        local typ: u8 = 0
+        local rl: usize = 0
+        local e = recvRecord(c, &typ, &rl)
+        if e != TLS_OK {
+            *err = e
+            return nil
+        }
+        if typ == 21 {
+            if rl >= 2 { c.alert = c.rec[6] }
+            *err = TLS_ERR_ALERT
+            return nil
+        }
+        if typ == 22 {
+            if h.len + rl > HS_BUF {
+                *err = TLS_ERR_PROTOCOL
+                return nil
+            }
+            copyBytes(&h.buf[h.len], &c.rec[5], rl)
+            h.len += rl
+        } else if typ == 20 {
+            if c.version == TLS_1_2 {
+                if !h.ccsOk || rl != 1 || c.rec[5] != 1 || h.pos != h.len {
+                    *err = TLS_ERR_PROTOCOL
+                    return nil
+                }
+                c.rEnc = true
+                c.rSeq = 0
+                h.ccsOk = false
+            }
+        } else {
+            *err = TLS_ERR_PROTOCOL
+            return nil
+        }
+    }
+    return nil
+}
+
+/// Sends one handshake message (header included), adding it to the transcript.
+export fn sendHs(c: *TlsConn, h: *Hs, msg: *u8, n: usize) -> bool {
+    trUpdate(&h.th, msg, n)
+    local at: usize = 0
+    while at < n {
+        local take = n - at < 16384 ? n - at : 16384
+        if !sendRecord(c, 22, &msg[at], take) { return false }
+        at += take
+    }
+    return true
+}
+
+/// Sends the one-byte ChangeCipherSpec record (TLS 1.2, and the TLS 1.3 middlebox-compatibility one).
+export fn sendCcs(c: *TlsConn) -> bool {
+    local one: [u8; 1] = [1]
+    return sendRecord(c, 20, &one[0], 1)
+}
+
+// ---- ECDHE ---------------------------------------------------------------------------------------------------
+
+/// An ephemeral key pair of one group. `pub` is what goes on the wire: 32 bytes for x25519 (RFC 7748), the
+/// uncompressed point 04 || X || Y for the NIST curves (65 or 97 bytes).
+export struct Kex {
+    group: usize
+    priv: [u8; 48]
+    pub: [u8; 97]
+    pubLen: usize
+}
+
+export fn groupKnown(g: usize) -> bool { return g == GROUP_X25519 || g == GROUP_P256 || g == GROUP_P384 }
+
+/// A fresh key pair for `group`; false without entropy or for an unknown group.
+export fn kexNew(k: *Kex, group: usize) -> bool {
+    k.group = group
+    if group == GROUP_X25519 {
+        k.pubLen = 32
+        return sysRandom(&k.priv[0], 32) && x25519Base(&k.pub[0], &k.priv[0])
+    }
+    if !groupKnown(group) { return false }
+    local size: usize = group == GROUP_P256 ? 32 : 48
+    k.pub[0] = 4
+    k.pubLen = 1 + 2 * size
+    return ecdsaKeypair(group == GROUP_P256 ? ECDSA_P256 : ECDSA_P384, &k.priv[0], &k.pub[1], &k.pub[1 + size])
+}
+
+/// The shared secret with the peer's public value `peer[0..plen]`: the x25519 output or the x coordinate of the ECDH
+/// point (RFC 8446 section 7.4, RFC 8422 section 5.10). Returns its length, 0 for an invalid peer value (wrong length,
+/// not on the curve, or an all-zero x25519 result).
+export fn kexShared(k: *Kex, peer: *u8, plen: usize, out: *u8) -> usize {
+    if k.group == GROUP_X25519 {
+        if plen != 32 || !x25519(out, &k.priv[0], peer) { return 0 }
+        return 32
+    }
+    local size: usize = k.group == GROUP_P256 ? 32 : 48
+    if plen != 1 + 2 * size || peer[0] != 4 { return 0 }
+    local curve = k.group == GROUP_P256 ? ECDSA_P256 : ECDSA_P384
+    if !ecdhShared(curve, &k.priv[0], &peer[1], &peer[1 + size], out) { return 0 }
+    return size
+}
+
+// ---- certificates (client) -----------------------------------------------------------------------------------
+
+/// Parses the certificate_list `p[0..n]` of a Certificate message into `chain` and validates it for `host`. TLS 1.3
+/// entries carry a per-certificate extensions block after the DER (RFC 8446 section 4.4.2), TLS 1.2 entries do not
+/// (RFC 5246 section 7.4.2). Sets `c.trust`; returns TLS_OK, TLS_ERR_PROTOCOL, TLS_ERR_CERT or TLS_ERR_CLOCK.
+export fn readChain(c: *TlsConn, p: *u8, n: usize, v13: bool, host: *u8, chain: *Cert, count: *usize) -> i32 {
+    local at: usize = 0
+    *count = 0
+    while at < n {
+        if at + 3 > n { return TLS_ERR_PROTOCOL }
+        local cl = get24(&p[at])
+        at += 3
+        if at + cl > n || (v13 && at + cl + 2 > n) { return TLS_ERR_PROTOCOL }
+        if *count >= MAX_CERTS { return TLS_ERR_CERT }
+        if !x509Parse(&chain[*count], &p[at], cl) {
+            c.trust = 0
+            return TLS_ERR_CERT
+        }
+        *count += 1
+        at += cl
+        if v13 { at += 2 + get16(&p[at]) }                   // per-certificate extensions are ignored
+    }
+    if at != n || *count == 0 { return TLS_ERR_PROTOCOL }
+    local now = sysClockSeconds()
+    if now < 0 { return TLS_ERR_CLOCK }
+    c.trust = trustVerifyChain(chain, *count, host, now)
+    return c.trust != 0 ? TLS_ERR_CERT : TLS_OK
+}

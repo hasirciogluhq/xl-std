@@ -1,0 +1,237 @@
+// std/tls/server: `tlsListen`, `tlsAccept` and the ClientHello, after which `server13` or `server12` finishes the
+// handshake. The server takes the newest version both sides allow (`TlsCredentials.minVersion` / `maxVersion`),
+// the client's first cipher suite it supports (for TLS 1.2 one that matches the key type: ECDSA suites for an EC
+// key, RSA suites for an RSA key), its first group among x25519, P-256 and P-384, and a signature scheme for the key
+// (`pickScheme`). No client certificates, no resumption, no HelloRetryRequest: a TLS 1.3 client without an x25519 key
+// share fails with TLS_ERR_RETRY. A TLS 1.2 ClientHello carrying TLS_FALLBACK_SCSV while TLS 1.3 is allowed is a
+// downgrade (RFC 7507 section 3).
+from "../sys" import sysTcpSocket, sysTcpListen, sysTcpAccept, sysClose, sysMap, sysUnmap
+from "../crypto/x509/x509" import KEY_RSA, KEY_EC_P384
+from "conn" import TlsConn, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_VERSION, TLS_ERR_MEMORY, TLS_ERR_RETRY
+from "conn" import TLS_ERR_UNSUPPORTED, TLS_ERR_FINISHED, TLS_ERR_DOWNGRADE, TLS_1_2, TLS_1_3
+from "conn" import connReset, connOpen, setSuite, isSuite13, isSuite12, suiteEcdsa
+from "credentials" import TlsCredentials
+from "keys" import trInit, trUpdate
+from "record" import fail, sendAlert
+from "handshake" import Hs, ServerHs, HS_BUF, GROUP_X25519, GROUP_P256, GROUP_P384, nextHs, groupKnown
+from "sign" import pickScheme
+from "server13" import server13
+from "server12" import server12
+from "wire" import get16, copyBytes
+
+/// Binds a listening TCP socket on `ip:port` (host-order IPv4, `0` = every interface). Returns the descriptor for
+/// `tlsAccept`, or -1. Close it with `sys.sysClose`.
+export fn tlsListen(ip: u32, port: u16) -> i32 {
+    local fd = sysTcpSocket()
+    if fd < 0 { return -1 }
+    if sysTcpListen(fd, ip, port) < 0 {
+        sysClose(fd)
+        return -1
+    }
+    return fd
+}
+
+/// Parses the ClientHello `body[0..blen]` and chooses version, suite, group and signature scheme.
+fn readClientHello(c: *TlsConn, cr: *TlsCredentials, s: *ServerHs, body: *u8, blen: usize) -> i32 {
+    if blen < 2 + 32 + 1 { return TLS_ERR_PROTOCOL }
+    local legacy = get16(&body[0])
+    copyBytes(&s.random[0], &body[2], 32)
+    s.sidLen = body[34] as usize
+    local at = 35 + s.sidLen
+    if s.sidLen > 32 || at + 2 > blen { return TLS_ERR_PROTOCOL }
+    copyBytes(&s.sid[0], &body[35], s.sidLen)
+    local csLen = get16(&body[at])
+    at += 2
+    if csLen < 2 || (csLen % 2) != 0 || at + csLen + 1 > blen { return TLS_ERR_PROTOCOL }
+    local suites = &body[at]
+    at += csLen
+    at += 1 + (body[at] as usize)                            // compression methods
+    if at > blen { return TLS_ERR_PROTOCOL }
+
+    local svSeen = false
+    local offers13 = false
+    local offers12 = false
+    local fallback = false
+    local sa: *u8 = nil
+    local saLen: usize = 0
+    local groups: *u8 = nil
+    local gLen: usize = 0
+    local uncompressed = false
+    s.gotShare = false
+    s.ems = false
+    s.reneg = false
+    s.pointFormats = false
+    if at < blen {
+        if at + 2 > blen { return TLS_ERR_PROTOCOL }
+        local extEnd = at + 2 + get16(&body[at])
+        at += 2
+        if extEnd > blen { return TLS_ERR_PROTOCOL }
+        while at + 4 <= extEnd {
+            local et = get16(&body[at])
+            local el = get16(&body[at + 2])
+            at += 4
+            if at + el > extEnd { return TLS_ERR_PROTOCOL }
+            local e = &body[at]
+            if et == 43 {
+                // supported_versions: a one-byte length, then versions
+                if el < 1 || 1 + (e[0] as usize) > el { return TLS_ERR_PROTOCOL }
+                svSeen = true
+                local j: usize = 1
+                while j + 1 <= e[0] as usize {
+                    local v = get16(&e[j])
+                    if v == TLS_1_3 { offers13 = true }
+                    if v == TLS_1_2 { offers12 = true }
+                    j += 2
+                }
+            } else if et == 51 {
+                // key_share: client_shares<0..2^16-1> of (group, key_exchange<1..2^16-1>)
+                if el < 2 || 2 + get16(&e[0]) > el { return TLS_ERR_PROTOCOL }
+                local q: usize = 2
+                local end = 2 + get16(&e[0])
+                while q + 4 <= end {
+                    local kl = get16(&e[q + 2])
+                    if q + 4 + kl > end { return TLS_ERR_PROTOCOL }
+                    if get16(&e[q]) == GROUP_X25519 && kl == 32 {
+                        copyBytes(&s.share[0], &e[q + 4], 32)
+                        s.gotShare = true
+                    }
+                    q += 4 + kl
+                }
+            } else if et == 13 || et == 10 {
+                // signature_algorithms / supported_groups: a two-byte length, then 16-bit codes
+                if el < 2 || 2 + get16(&e[0]) > el { return TLS_ERR_PROTOCOL }
+                if et == 13 {
+                    sa = &e[2]
+                    saLen = get16(&e[0])
+                } else {
+                    groups = &e[2]
+                    gLen = get16(&e[0])
+                }
+            } else if et == 11 {
+                // ec_point_formats: a one-byte length, then formats (0 = uncompressed)
+                if el < 1 || 1 + (e[0] as usize) > el { return TLS_ERR_PROTOCOL }
+                s.pointFormats = true
+                for j in 0..e[0] as usize { if e[1 + j] == 0 { uncompressed = true } }
+            } else if et == 23 {
+                s.ems = true
+            } else if et == 0xff01 {
+                if el != 1 || e[0] != 0 { return TLS_ERR_PROTOCOL }    // the initial handshake
+                s.reneg = true
+            }
+            at += el
+        }
+    }
+    local i: usize = 0
+    while i < csLen {
+        local cs = get16(&suites[i])
+        if cs == 0x00ff { s.reneg = true }                       // TLS_EMPTY_RENEGOTIATION_INFO_SCSV (RFC 5746)
+        if cs == 0x5600 { fallback = true }                      // TLS_FALLBACK_SCSV (RFC 7507)
+        i += 2
+    }
+
+    if svSeen && offers13 && cr.maxVersion >= TLS_1_3 {
+        local pick: usize = 0
+        i = 0
+        while i < csLen && pick == 0 {
+            if isSuite13(get16(&suites[i])) { pick = get16(&suites[i]) }
+            i += 2
+        }
+        if pick == 0 { return TLS_ERR_UNSUPPORTED }
+        s.scheme = sa == nil ? 0 : pickScheme(cr.key.keyType, sa, saLen, true)
+        if s.scheme == 0 { return TLS_ERR_UNSUPPORTED }
+        if !s.gotShare { return TLS_ERR_RETRY }
+        setSuite(c, TLS_1_3, pick)
+        return TLS_OK
+    }
+    if !(svSeen ? offers12 : legacy >= TLS_1_2) || cr.minVersion > TLS_1_2 { return TLS_ERR_VERSION }
+    if fallback && cr.maxVersion >= TLS_1_3 { return TLS_ERR_DOWNGRADE }
+    local ec = cr.key.keyType != KEY_RSA
+    local pick: usize = 0
+    i = 0
+    while i < csLen && pick == 0 {
+        local cs = get16(&suites[i])
+        if isSuite12(cs) && suiteEcdsa(cs) == ec { pick = cs }
+        i += 2
+    }
+    if pick == 0 { return TLS_ERR_UNSUPPORTED }
+    // no supported_groups: RFC 8422 section 4 lets the server choose; P-256 is the one every client has
+    s.group = gLen == 0 ? GROUP_P256 : 0
+    i = 0
+    while i + 1 < gLen && s.group == 0 {
+        if groupKnown(get16(&groups[i])) { s.group = get16(&groups[i]) }
+        i += 2
+    }
+    if s.group == 0 || (s.pointFormats && !uncompressed) { return TLS_ERR_UNSUPPORTED }
+    // an ECDSA certificate's curve must be one the client listed too (RFC 8422 section 5.1)
+    if ec && gLen > 0 {
+        local curve: usize = cr.key.keyType == KEY_EC_P384 ? GROUP_P384 : GROUP_P256
+        local listed = false
+        i = 0
+        while i + 1 < gLen {
+            if get16(&groups[i]) == curve { listed = true }
+            i += 2
+        }
+        if !listed { return TLS_ERR_UNSUPPORTED }
+    }
+    s.scheme = sa == nil ? 0 : pickScheme(cr.key.keyType, sa, saLen, false)
+    if s.scheme == 0 { return TLS_ERR_UNSUPPORTED }
+    setSuite(c, TLS_1_2, pick)
+    return TLS_OK
+}
+
+fn serverHandshake(c: *TlsConn, h: *Hs, cr: *TlsCredentials, tmp: *u8) -> i32 {
+    local err: i32 = TLS_OK
+    local m = nextHs(c, h, &err)
+    if m == nil { return err }
+    if m[0] != 1 { return TLS_ERR_PROTOCOL }
+    local s: ServerHs
+    local r = readClientHello(c, cr, &s, &m[4], h.msgLen - 4)
+    if r != TLS_OK { return r }
+    trInit(&h.th)
+    h.th.alg = c.hashAlg
+    trUpdate(&h.th, m, h.msgLen)
+    return c.version == TLS_1_3 ? server13(c, h, cr, &s, tmp) : server12(c, h, cr, &s, tmp)
+}
+
+/// The alert a failed server handshake sends (RFC 8446 section 6.2), 0 for none.
+fn alertFor(code: i32) -> u8 {
+    switch code {
+        case TLS_ERR_VERSION { return 70 }                       // protocol_version
+        case TLS_ERR_UNSUPPORTED { return 40 }                   // handshake_failure
+        case TLS_ERR_RETRY { return 40 }
+        case TLS_ERR_PROTOCOL { return 50 }                      // decode_error
+        case TLS_ERR_FINISHED { return 51 }                      // decrypt_error
+        case TLS_ERR_DOWNGRADE { return 86 }                     // inappropriate_fallback
+        default { return 0 }
+    }
+}
+
+/// Accepts one TCP connection on `listenFd` (from `tlsListen`) and runs the server handshake. `c` is initialized
+/// here; on failure it is already closed and a negative TLS_ERR_* is returned. Use `tlsRead` / `tlsWrite` /
+/// `tlsClose` afterwards; `c.version` and `c.suite` tell what was negotiated.
+export fn tlsAccept(listenFd: i32, cr: *TlsCredentials, c: *TlsConn) -> i32 {
+    connReset(c)
+    local fd = sysTcpAccept(listenFd)
+    if fd < 0 { return TLS_ERR_IO }
+    local r = connOpen(c, fd)
+    if r != TLS_OK { return r }
+    local tmp = sysMap(HS_BUF * 2) as *u8
+    if tmp == nil {
+        c.open = false
+        return fail(c, TLS_ERR_MEMORY)
+    }
+    local hs: Hs
+    hs.buf = &tmp[HS_BUF]
+    hs.len = 0
+    hs.pos = 0
+    hs.ccsOk = false
+    r = serverHandshake(c, &hs, cr, tmp)
+    sysUnmap(tmp as *void, HS_BUF * 2)
+    if r != TLS_OK {
+        local a = alertFor(r)
+        if a != 0 { sendAlert(c, 2, a) }
+        c.open = false                                            // no close_notify after a failed handshake
+        return fail(c, r)
+    }
+    return TLS_OK
+}

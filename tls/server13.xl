@@ -1,0 +1,101 @@
+// std/tls/server13: the TLS 1.3 server after the ClientHello (RFC 8446 section 2, full handshake without PSK):
+// ServerHello (x25519), the compatibility ChangeCipherSpec, EncryptedExtensions, Certificate, CertificateVerify and
+// Finished; then the client Finished. Application keys for writing switch after our Finished, for reading after the
+// client's.
+from "../sys" import sysRandom
+from "conn" import TlsConn, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_SIGNATURE, TLS_ERR_FINISHED, TLS_ERR_ENTROPY
+from "credentials" import TlsCredentials
+from "keys" import Schedule13, schedule13, appSecrets13, finished13, trHash
+from "record" import install13
+from "handshake" import Hs, ServerHs, Kex, GROUP_X25519, nextHs, sendHs, sendCcs, kexNew, kexShared
+from "sign" import signWith, verifyContent13
+from "wire" import emit, emit16, emit24, emitBytes, patch16, patch24, ctEq
+
+export fn server13(c: *TlsConn, h: *Hs, cr: *TlsCredentials, s: *ServerHs, tmp: *u8) -> i32 {
+    local k: Kex
+    local random: [u8; 32]
+    if !kexNew(&k, GROUP_X25519) || !sysRandom(&random[0], 32) { return TLS_ERR_ENTROPY }
+    local shared: [u8; 32]
+    if kexShared(&k, &s.share[0], 32, &shared[0]) == 0 { return TLS_ERR_PROTOCOL }
+
+    // ---- ServerHello: the session id echoed, supported_versions and key_share
+    local n: usize = 0
+    emit(tmp, &n, 2)
+    emit24(tmp, &n, 0)
+    emit16(tmp, &n, 0x0303)
+    emitBytes(tmp, &n, &random[0], 32)
+    emit(tmp, &n, s.sidLen as u8)
+    emitBytes(tmp, &n, &s.sid[0], s.sidLen)
+    emit16(tmp, &n, c.suite as usize)
+    emit(tmp, &n, 0)
+    local extAt = n
+    emit16(tmp, &n, 0)
+    emit16(tmp, &n, 43)
+    emit16(tmp, &n, 2)
+    emit16(tmp, &n, 0x0304)
+    emit16(tmp, &n, 51)
+    emit16(tmp, &n, 36)
+    emit16(tmp, &n, GROUP_X25519)
+    emit16(tmp, &n, 32)
+    emitBytes(tmp, &n, &k.pub[0], 32)
+    patch16(tmp, extAt, n - extAt - 2)
+    patch24(tmp, 1, n - 4)
+    if !sendHs(c, h, tmp, n) || !sendCcs(c) { return TLS_ERR_IO }
+
+    local th: [u8; 48]
+    local hl = trHash(&h.th, &th[0])
+    local ks: Schedule13
+    schedule13(&ks, c.hashAlg, &shared[0], 32, &th[0])
+    install13(c, &ks.sHs[0], true)
+    install13(c, &ks.cHs[0], false)
+
+    // ---- EncryptedExtensions (empty), Certificate, CertificateVerify, Finished
+    local ee: [u8; 6] = [8, 0, 0, 2, 0, 0]
+    if !sendHs(c, h, &ee[0], 6) { return TLS_ERR_IO }
+    n = 0
+    emit(tmp, &n, 11)
+    emit24(tmp, &n, 1 + 3 + cr.listLen)
+    emit(tmp, &n, 0)                                          // empty certificate_request_context
+    emit24(tmp, &n, cr.listLen)
+    emitBytes(tmp, &n, cr.list, cr.listLen)
+    if !sendHs(c, h, tmp, n) { return TLS_ERR_IO }
+
+    local content: [u8; 98 + 48]
+    trHash(&h.th, &th[0])
+    local cl = verifyContent13(&th[0], hl, &content[0])
+    local sig: [u8; 512]
+    local sigLen = signWith(&cr.key, s.scheme, &content[0], cl, &sig[0])
+    if sigLen == 0 { return TLS_ERR_SIGNATURE }
+    n = 0
+    emit(tmp, &n, 15)
+    emit24(tmp, &n, 4 + sigLen)
+    emit16(tmp, &n, s.scheme)
+    emit16(tmp, &n, sigLen)
+    emitBytes(tmp, &n, &sig[0], sigLen)
+    if !sendHs(c, h, tmp, n) { return TLS_ERR_IO }
+
+    local fin: [u8; 4 + 48]
+    fin[0] = 20
+    fin[1] = 0
+    fin[2] = 0
+    fin[3] = hl as u8
+    trHash(&h.th, &th[0])
+    finished13(c.hashAlg, &ks.sHs[0], &th[0], &fin[4])
+    if !sendHs(c, h, &fin[0], 4 + hl) { return TLS_ERR_IO }
+
+    // ---- application secrets; our writes switch now, reads after the client Finished
+    local cAp: [u8; 48]
+    local sAp: [u8; 48]
+    trHash(&h.th, &th[0])
+    appSecrets13(&ks, &th[0], &cAp[0], &sAp[0])
+    install13(c, &sAp[0], true)
+    local err: i32 = TLS_OK
+    local m = nextHs(c, h, &err)
+    if m == nil { return err }
+    if m[0] != 20 || h.msgLen != 4 + hl { return TLS_ERR_PROTOCOL }
+    local want: [u8; 48]
+    finished13(c.hashAlg, &ks.cHs[0], &th[0], &want[0])
+    if !ctEq(&want[0], &m[4], hl) { return TLS_ERR_FINISHED }
+    install13(c, &cAp[0], false)
+    return TLS_OK
+}

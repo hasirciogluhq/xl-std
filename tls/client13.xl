@@ -1,0 +1,91 @@
+// std/tls/client13: the TLS 1.3 client after ServerHello (RFC 8446 section 2, full handshake without PSK):
+// EncryptedExtensions, [CertificateRequest], Certificate, CertificateVerify, Finished from the server; then the
+// compatibility ChangeCipherSpec (appendix D.4), an empty Certificate when one was requested (client certificates
+// are not supported), and the client Finished.
+from "../crypto/x509/x509" import Cert
+from "conn" import TlsConn, TLS_OK, TLS_ERR_IO, TLS_ERR_PROTOCOL, TLS_ERR_SIGNATURE, TLS_ERR_FINISHED, TLS_ERR_UNSUPPORTED
+from "keys" import Schedule13, schedule13, appSecrets13, finished13, trHash, trUpdate
+from "record" import install13
+from "handshake" import Hs, ClientHs, MAX_CERTS, nextHs, sendHs, sendCcs, kexShared, readChain
+from "sign" import schemeAlg, verifySigned, verifyContent13
+from "wire" import get16, get24, ctEq
+
+export fn client13(c: *TlsConn, h: *Hs, ch: *ClientHs) -> i32 {
+    local shared: [u8; 32]
+    if kexShared(&ch.x, &ch.share[0], ch.shareLen, &shared[0]) == 0 { return TLS_ERR_PROTOCOL }
+    local th: [u8; 48]
+    local hl = trHash(&h.th, &th[0])
+    local k: Schedule13
+    schedule13(&k, c.hashAlg, &shared[0], 32, &th[0])
+    if !sendCcs(c) { return TLS_ERR_IO }                      // before any protected record of ours
+    install13(c, &k.sHs[0], false)
+    install13(c, &k.cHs[0], true)
+
+    local chain: [Cert; MAX_CERTS]
+    local chainLen: usize = 0
+    local sawCert = false
+    local sawVerify = false
+    local certRequested = false
+    local err: i32 = TLS_OK
+    while true {
+        local m = nextHs(c, h, &err)
+        if m == nil { return err }
+        local mb = &m[4]
+        local bl = h.msgLen - 4
+        if m[0] == 8 {
+            // EncryptedExtensions: nothing offered changes what we do
+        } else if m[0] == 13 {
+            certRequested = true
+        } else if m[0] == 11 {
+            if bl < 4 { return TLS_ERR_PROTOCOL }
+            local p = 1 + (mb[0] as usize)                     // skip certificate_request_context
+            if p + 3 > bl || p + 3 + get24(&mb[p]) != bl { return TLS_ERR_PROTOCOL }
+            local r = readChain(c, &mb[p + 3], bl - p - 3, true, ch.host, &chain[0], &chainLen)
+            if r != TLS_OK { return r }
+            sawCert = true
+        } else if m[0] == 15 {
+            if !sawCert || bl < 4 { return TLS_ERR_PROTOCOL }
+            local scheme = get16(&mb[0])
+            local sl = get16(&mb[2])
+            if 4 + sl != bl { return TLS_ERR_PROTOCOL }
+            if schemeAlg(scheme, &chain[0], true) == 0 { return TLS_ERR_UNSUPPORTED }
+            local content: [u8; 98 + 48]
+            trHash(&h.th, &th[0])
+            local cl = verifyContent13(&th[0], hl, &content[0])
+            if !verifySigned(&chain[0], scheme, true, &content[0], cl, &mb[4], sl) { return TLS_ERR_SIGNATURE }
+            sawVerify = true
+        } else if m[0] == 20 {
+            if !sawVerify || bl != hl { return TLS_ERR_PROTOCOL }
+            local want: [u8; 48]
+            trHash(&h.th, &th[0])
+            finished13(c.hashAlg, &k.sHs[0], &th[0], &want[0])
+            if !ctEq(&want[0], mb, hl) { return TLS_ERR_FINISHED }
+            trUpdate(&h.th, m, h.msgLen)
+            break
+        } else {
+            return TLS_ERR_PROTOCOL
+        }
+        trUpdate(&h.th, m, h.msgLen)
+    }
+
+    // application secrets from the transcript through the server Finished, then our flight
+    local cAp: [u8; 48]
+    local sAp: [u8; 48]
+    trHash(&h.th, &th[0])
+    appSecrets13(&k, &th[0], &cAp[0], &sAp[0])
+    if certRequested {
+        local empty: [u8; 8] = [11, 0, 0, 4, 0, 0, 0, 0]
+        if !sendHs(c, h, &empty[0], 8) { return TLS_ERR_IO }
+    }
+    local fin: [u8; 4 + 48]
+    fin[0] = 20
+    fin[1] = 0
+    fin[2] = 0
+    fin[3] = hl as u8
+    trHash(&h.th, &th[0])
+    finished13(c.hashAlg, &k.cHs[0], &th[0], &fin[4])
+    if !sendHs(c, h, &fin[0], 4 + hl) { return TLS_ERR_IO }
+    install13(c, &cAp[0], true)
+    install13(c, &sAp[0], false)
+    return TLS_OK
+}
