@@ -13,6 +13,7 @@
 
 ## Workflow
 
+0. Once per clone: `./scripts/install-hooks.sh` turns on the pre-commit tag check (see [STD-TAGS.md](STD-TAGS.md)).
 1. Fork, branch from `main`, keep the change focused.
 2. Run the tests of what you changed, then the full suites once:
    ```

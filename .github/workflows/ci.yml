@@ -36,6 +36,20 @@ env:
   GH_TOKEN: ${{ secrets.XLC_TOKEN || github.token }}
 
 jobs:
+  # The comment tags follow the rules of STD-TAGS.md, and the collected view is the one the
+  # source produces. Runs on one host: it is a text scan, not a compile.
+  tags:
+    name: comment tags
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        run: ./scripts/tags.sh check
+      - name: collected view is up to date
+        run: |
+          ./scripts/tags.sh sync
+          git diff --exit-code -- STD-TAGS.md
+
   # The whole stdlib must type-check for every target it supports, whatever the host is.
   check:
     name: type-check (${{ matrix.target }})

@@ -15,6 +15,7 @@ src/
 test/
   unit/           `*.test.xl` suites (std/testing), platform independent (no OS access); run.sh builds and runs them
   e2e/            platform-related programs (OS, CPU, network); tests.txt is the table, run.sh and runner.xl run it
+scripts/          tags.sh (STD-TAGS.md) and install-hooks.sh
 .github/          CI and release workflows, and the script that installs the compiler
 ```
 
@@ -66,9 +67,22 @@ Both scripts take the compiler as the first argument (default `$XLC`, then `xlc`
 
 A release is a version tag: `git tag v1.2.0 && git push origin v1.2.0`. `.github/workflows/release.yml` checks the tag (`vMAJOR.MINOR.PATCH`, a suffix after `-` makes it a pre-release), runs the CI workflow, and attaches `xl-std_<version>.tar.gz` and its checksum to a GitHub release. A tag never moves.
 
+## Comment tags
+
+`STD-TAGS.md` defines the tags a doc comment above a declaration may carry: `@contract`, `@ownership`, `@errno`, `@platform`, `@spec`, `@cost`, `@todo`, `@safety` and `@init`. Each one answers a question a reader of this library asks and the code alone does not answer, and each is greppable with one `grep -rn "@contract" .`.
+
+```
+./scripts/install-hooks.sh      # once, after cloning: turns on .githooks/pre-commit
+./scripts/tags.sh list          # every tag line, grouped by tag then file
+./scripts/tags.sh check         # validate the tags (CI runs this too)
+./scripts/tags.sh sync          # rewrite the collected view inside STD-TAGS.md
+```
+
+The pre-commit hook runs `check`, then `sync`, and stages `STD-TAGS.md` so the view lands in the same commit as the tag it came from. `XLANG_SKIP_HOOKS=1` skips it. The tags of the compiler (`@grammar`, `@layout`, `@abi` and the rest) are not used here; a fact about the language is recorded in [`xlc`](https://github.com/hasirciogluhq/xlc).
+
 ## Contributing
 
-The library is a pyramid (the compiler owns `str`, slices, arrays and pointers; the library builds `String`, `Vec`, `Option`, `Result` on them), signatures take `*String` and return `String`, OS code stays in `src/sys/`, and every OS feature is written for Linux, macOS and Windows. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+The library is a pyramid (the compiler owns `str`, slices, arrays and pointers; the library builds `String`, `Vec`, `Option`, `Result` on them), signatures take `*String` and return `String`, OS code stays in `sys/`, and every OS feature is written for Linux, macOS and Windows. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
