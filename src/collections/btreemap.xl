@@ -1,8 +1,13 @@
 // BTreeMap<K, V>: an ordered map kept as a `Vec` of entries sorted by key, searched with binary
 // search. It gives deterministic, always-sorted iteration (the reason to pick it over `HashMap`)
 // at `O(log n)` lookup and `O(n)` insert/remove, which is the right trade for the small maps the
-// stdlib and user code keep in a fixed order. The key order is the explicit
-// `fn(*K, *K) -> i32` comparator, never a value operator, so a droppable key (`String`) works.
+// stdlib and user code keep in a fixed order.
+//
+// The key order is an explicit `fn(*K, *K) -> i32` comparator passed to `BTreeMap(cmp)`, not the key's `<`: a generic
+// `K` cannot be constrained to "has a `<`", and a map built from a comparator states its one order once, at
+// construction, instead of relying on whatever the key type happens to define. `HashMap` works the same way with its
+// `HashKey` interface. A caller with a sortable key passes the same comparator `Vec.sortBy` takes
+// (`str/string.compareString` for `String`, a two-line function for an integer).
 from "vec" import Vec
 from "option" import Option
 

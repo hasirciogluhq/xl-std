@@ -5,7 +5,7 @@
 // request target (path and query, RFC 9112 section 3.2 origin-form). User info and the fragment are dropped: the client never sends them.
 // IPv6 literals (`[::1]`) are not supported (the resolver is IPv4 only).
 from "../str/string" import String, split
-from "../str/fmt" import format, toString
+from "../str/fmtspec" import format, toString
 from "../collections/vec" import Vec
 from "../collections/result" import Result
 

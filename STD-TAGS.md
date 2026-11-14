@@ -163,13 +163,13 @@ which keeps the view in the same commit as the tag it came from.
 <!-- written by scripts/tags.sh sync; every line below is a tag found in the .xl
      sources, grouped by tag and then by file. Do not edit inside the markers. -->
 
-### @contract (41)
+### @contract (45)
 
 ```
 ./collections/arc.xl:19:/// @contract `inner` is non-nil and `inner.strong` counts the live `Arc` handles on it.
 ./collections/binaryheap.xl:9:/// @contract for every `i`, `cmp(parent(i), i) >= 0`, so the greatest element is at index `0`.
 ./collections/box.xl:6:/// @contract `ptr` points to one live `T` (or the `Box` was moved out and is never used again).
-./collections/btreemap.xl:16:/// @contract `entries` is sorted by `cmp` and holds no two keys that compare `0`.
+./collections/btreemap.xl:21:/// @contract `entries` is sorted by `cmp` and holds no two keys that compare `0`.
 ./collections/deque.xl:11:/// @contract `len` elements live in the `cap` slots of `slots` starting at `head`, wrapping once.
 ./collections/deque.xl:12:/// @contract `cap` is a power of two or `0`, so the wrap is a mask.
 ./collections/hash.xl:88:/// @contract every byte of `data` and both key words affect the tag; the same input and key give
@@ -192,24 +192,28 @@ which keeps the view in the same commit as the tag it came from.
 ./collections/result.xl:50:    /// @contract result the caller believes successful is a program error, not a value.
 ./collections/result.xl:60:    /// @contract the success value of an `Ok`; panics on an `Err` with a message ending in `msg`,
 ./collections/result.xl:61:    /// @contract which should name what the caller expected.
-./collections/slice.xl:57:/// @contract `cmp` must be a consistent total order; the sort keeps equal elements in their order.
-./collections/slice.xl:80:/// @contract the slice must be sorted by the order `cmp` describes, or the result is meaningless.
-./collections/slice.xl:99:/// @contract only adjacent equal elements collapse, so a full dedup needs `sortSlice` first.
+./collections/slice.xl:74:/// @contract `cmp` must be a consistent total order; the sort keeps equal elements in their order.
+./collections/slice.xl:97:/// @contract the slice must be sorted by the order `cmp` describes, or the result is meaningless.
+./collections/slice.xl:116:/// @contract only adjacent equal elements collapse, so a full dedup needs `sortSlice` first.
 ./collections/vec.xl:229:    /// @contract the relative order of elements that compare equal is kept, so a `sort` after a
 ./collections/vec.xl:230:    /// @contract `sortBy` on another field uses that field as the tiebreak.
 ./collections/vec.xl:242:    /// @contract `cmp` must be a consistent total order; an order that is not transitive leaves the
 ./collections/vec.xl:243:    /// @contract result unspecified, because the merge assumes a consistent answer.
-./collections/vec.xl:314:    /// @contract the vector must be sorted by the order `cmp` describes; otherwise the result is
-./collections/vec.xl:315:    /// @contract meaningless. On ties the leftmost matching index is returned.
-./collections/vec.xl:333:    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
-./collections/vec.xl:353:    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
-./collections/vec.xl:375:    /// @contract only *adjacent* equal elements collapse, so a full dedup needs a `sort`/`sortBy`
-./collections/vec.xl:376:    /// @contract first; without it the result keeps every element that differs from its predecessor.
-./collections/vec.xl:377:    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
-./collections/vec.xl:399:    /// @contract only adjacent elements are compared; sort by the same key first for a full dedup.
+./collections/vec.xl:292:    /// @contract the vector must be sorted by the element's `fn <`; otherwise the result is meaningless.
+./collections/vec.xl:332:    /// @contract only *adjacent* equal elements collapse, so a full dedup needs a `sort`/`sortBy` first; without it
+./collections/vec.xl:333:    /// @contract the result keeps every element that differs from its predecessor.
+./str/dec.xl:21:/// @contract `digits` has no leading zero and no trailing zero, and `point` places them so that the value is
+./str/dec.xl:22:/// @contract `0.<digits> * 10^point`; a zero value has no digits and a zero point.
+./str/fmt.xl:33:/// @contract `write` reports the count of bytes it accepted — the length of `s` for a writer that never fills up — and
+./str/fmt.xl:34:/// @contract a negative return means closed or failed; the caller does not retry a partial accept.
+./str/fmt.xl:48:/// @contract `display` appends the whole text of `self` and nothing else, allocates only if the type's own text does,
+./str/fmt.xl:49:/// @contract and never panics on a value the type allows.
+./str/num.xl:48:/// @contract `s` as the nearest `f64`, ties to even. Returns false, and leaves `out` alone, when `s` is not a number
+./str/num.xl:49:/// @contract in the grammar the file header states, or when it rounds past DBL_MAX; a value under half the smallest
+./str/num.xl:50:/// @contract subnormal gives a signed zero.
 ```
 
-### @ownership (58)
+### @ownership (75)
 
 ```
 ./collections/arc.xl:20:/// @ownership dropping the last handle drops the value and frees the block.
@@ -221,8 +225,8 @@ which keeps the view in the same commit as the tag it came from.
 ./collections/box.xl:27:    /// @ownership `v` is moved in and is dropped by the `Box`.
 ./collections/box.xl:49:    /// @ownership the caller owns the returned value and drops it.
 ./collections/box.xl:60:/// @ownership `v` is moved in and is dropped by the returned `Box`.
-./collections/btreemap.xl:76:    /// @ownership `k` is dropped when an equal key was already present; `v` replaces the old value.
-./collections/btreemap.xl:94:    /// @ownership the removed key is dropped; the caller owns the returned value.
+./collections/btreemap.xl:81:    /// @ownership `k` is dropped when an equal key was already present; `v` replaces the old value.
+./collections/btreemap.xl:99:    /// @ownership the removed key is dropped; the caller owns the returned value.
 ./collections/deque.xl:66:    /// @ownership `v` is moved in.
 ./collections/deque.xl:79:    /// @ownership `v` is moved in.
 ./collections/deque.xl:93:    /// @ownership the caller owns the returned element and drops it.
@@ -263,25 +267,54 @@ which keeps the view in the same commit as the tag it came from.
 ./collections/result.xl:147:    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
 ./collections/result.xl:160:    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
 ./collections/slice.xl:15:/// @ownership elements are moved through one temporary, so each is moved twice and dropped once.
-./collections/slice.xl:58:/// @ownership elements are moved by swapping, never cloned, and nothing is dropped.
-./collections/slice.xl:100:/// @ownership the removed elements are dropped in place, once each.
+./collections/slice.xl:75:/// @ownership elements are moved by swapping, never cloned, and nothing is dropped.
+./collections/slice.xl:117:/// @ownership the removed elements are dropped in place, once each.
 ./collections/vec.xl:231:    /// @ownership the elements are moved, never cloned, so a droppable `T` is dropped exactly once.
 ./collections/vec.xl:244:    /// @ownership elements are moved, never cloned; `cmp` borrows each element and must not move
 ./collections/vec.xl:245:    /// @ownership or free it.
-./collections/vec.xl:378:    /// @ownership each removed element is dropped in place, so every element is dropped once.
-./collections/vec.xl:400:    /// @ownership each removed element is dropped in place, so every element is dropped once.
+./collections/vec.xl:334:    /// @ownership each removed element is dropped in place, so every element is dropped once.
+./encoding/utf8.xl:113:/// @ownership `s` is borrowed; nothing is copied.
+./encoding/utf8.xl:150:/// @ownership `s` is borrowed and grows by at most four bytes.
+./str/dec.xl:23:/// @ownership owns its digit text; nothing is borrowed.
+./str/fmt.xl:35:/// @ownership `s` is borrowed for the call only: the writer copies what it keeps and never frees or keeps it.
+./str/fmt.xl:50:/// @ownership `out` is borrowed and grows; `self` is borrowed for the call.
+./str/fmt.xl:58:/// @ownership `p` is borrowed for the call; the writer copies what it keeps.
+./str/fmt.xl:67:/// @ownership owns nothing; `fd` stays the caller's to close.
+./str/fmt.xl:85:/// @ownership owns nothing: the buffer and the target `String` stay the caller's.
+./str/fmtspec.xl:691:/// @ownership writes at most `cap - at` bytes to `buf` and grows `at`; false when the value is out of its range.
+./str/fmtspec.xl:1226:/// @ownership `out` is borrowed and grows; the arguments are borrowed for the call.
+./str/fmtspec.xl:1234:/// @ownership the arguments are borrowed for the call; the result is a fresh String.
+./str/num.xl:51:/// @ownership `s` is borrowed; the result is written through `out`.
+./str/string.xl:362:/// @ownership `parts` is borrowed; the result is a fresh String that the caller frees.
+./str/string.xl:395:/// @ownership `s` is borrowed; the result is a fresh String that the caller frees.
+./str/string.xl:407:/// @ownership `s` is borrowed; the result is a fresh String that the caller frees.
+./str/unicode.xl:83:/// @ownership the iterator borrows the bytes of `s`; `s` must outlive the loop and must not change while it runs.
+./str/unicode.xl:101:/// @ownership `s` is borrowed for the loop; the iterator never outlives it.
+./str/unicode.xl:110:/// @ownership `s` is borrowed and grows by at most four bytes.
 ```
 
-### @spec (4)
+### @spec (16)
 
 ```
 ./collections/hash.xl:58:// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2.3 for the four initial values.
 ./collections/hash.xl:90:/// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2 for the construction; the test
 ./collections/hash.xl:91:/// @spec suite checks the output against the reference implementation's SipHash-1-3 vectors.
 ./collections/hash.xl:148:/// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2 for the algorithm.
+./str/chars.xl:40:/// @spec https://www.rfc-editor.org/rfc/rfc5234#section-2.3 for the digit set.
+./str/chars.xl:47:/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-2 for the six characters.
+./str/chars.xl:54:/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-7 for the control-byte rule.
+./str/chars.xl:66:/// @spec https://www.rfc-editor.org/rfc/rfc4648#section-8 for the uppercase-only base16 alphabet.
+./str/dec.xl:15:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form must satisfy.
+./str/fmtspec.xl:375:// @spec https://tc39.es/ecma262/#sec-number.prototype.tostring for the shortest form and its two notations.
+./str/fmtspec.xl:376:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form satisfies.
+./str/num.xl:25:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the number grammar.
+./str/num.xl:26:// @spec https://dl.acm.org/doi/10.1145/93542.93559 (Clinger, PLDI 1990) for the correctly rounded conversion.
+./str/unicode.xl:16:/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-6 for the decoder's substitution rule.
+./str/unicode.xl:62:/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-3 for the sequence lengths counted.
+./str/unicode.xl:111:/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-3 for the encoding of a scalar value.
 ```
 
-### @cost (96)
+### @cost (117)
 
 ```
 ./collections/arc.xl:21:/// @cost `O(1)` clone and drop, one allocation.
@@ -305,18 +338,18 @@ which keeps the view in the same commit as the tag it came from.
 ./collections/box.xl:43:    /// @cost `O(1)`.
 ./collections/box.xl:50:    /// @cost `O(1)` plus one free.
 ./collections/box.xl:61:/// @cost one allocation.
-./collections/btreemap.xl:17:/// @cost `O(log n)` lookup, `O(n)` insert and remove, `O(n)` to build from sorted pairs.
-./collections/btreemap.xl:30:    /// @cost `O(1)`.
-./collections/btreemap.xl:36:    /// @cost `O(1)`.
-./collections/btreemap.xl:42:    /// @cost `O(log n)` calls to `cmp`.
-./collections/btreemap.xl:60:    /// @cost `O(log n)` calls to `cmp`.
-./collections/btreemap.xl:70:    /// @cost `O(log n)` calls to `cmp`.
-./collections/btreemap.xl:77:    /// @cost `O(n)` to move the later entries up by one.
-./collections/btreemap.xl:95:    /// @cost `O(n)` to move the later entries down by one.
-./collections/btreemap.xl:107:    /// @cost `O(1)`.
-./collections/btreemap.xl:114:    /// @cost `O(1)`.
-./collections/btreemap.xl:121:    /// @cost `O(n)` drops.
-./collections/btreemap.xl:127:    /// @cost `O(1)` to build, one entry per round.
+./collections/btreemap.xl:22:/// @cost `O(log n)` lookup, `O(n)` insert and remove, `O(n)` to build from sorted pairs.
+./collections/btreemap.xl:35:    /// @cost `O(1)`.
+./collections/btreemap.xl:41:    /// @cost `O(1)`.
+./collections/btreemap.xl:47:    /// @cost `O(log n)` calls to `cmp`.
+./collections/btreemap.xl:65:    /// @cost `O(log n)` calls to `cmp`.
+./collections/btreemap.xl:75:    /// @cost `O(log n)` calls to `cmp`.
+./collections/btreemap.xl:82:    /// @cost `O(n)` to move the later entries up by one.
+./collections/btreemap.xl:100:    /// @cost `O(n)` to move the later entries down by one.
+./collections/btreemap.xl:112:    /// @cost `O(1)`.
+./collections/btreemap.xl:119:    /// @cost `O(1)`.
+./collections/btreemap.xl:126:    /// @cost `O(n)` drops.
+./collections/btreemap.xl:132:    /// @cost `O(1)` to build, one entry per round.
 ./collections/deque.xl:13:/// @cost `O(1)` at either end, one grow over the whole ring.
 ./collections/deque.xl:30:    /// @cost `O(1)`.
 ./collections/deque.xl:36:    /// @cost `O(1)`.
@@ -359,61 +392,79 @@ which keeps the view in the same commit as the tag it came from.
 ./collections/result.xl:63:    /// @cost one `String` built only on the panic path, so the happy path allocates nothing.
 ./collections/result.xl:92:    /// @cost one move of the payload through `f`; a droppable `T` is dropped once, at the end.
 ./collections/slice.xl:16:/// @cost `n / 2` swaps and no allocation.
-./collections/slice.xl:31:/// @cost up to `n` comparisons, stopping at the first match.
-./collections/slice.xl:41:/// @cost up to `n` calls to `pred`, stopping at the first match.
-./collections/slice.xl:50:/// @cost up to `n` comparisons, stopping at the first match.
-./collections/slice.xl:59:/// @cost `O(n^2)` comparisons: for a slice longer than a hundred elements sort a `Vec` instead,
-./collections/slice.xl:60:/// @cost whose merge sort is `n log n`.
-./collections/slice.xl:81:/// @cost `log n` calls to `cmp`.
-./collections/slice.xl:101:/// @cost one pass and one move per kept element.
+./collections/slice.xl:32:/// @cost up to `n` comparisons, stopping at the first match.
+./collections/slice.xl:42:/// @cost up to `n` comparisons, stopping at the first match.
+./collections/slice.xl:52:/// @cost up to `n` comparisons.
+./collections/slice.xl:65:/// @cost up to `n` calls to `pred`, stopping at the first match.
+./collections/slice.xl:76:/// @cost `O(n^2)` comparisons: for a slice longer than a hundred elements sort a `Vec` instead,
+./collections/slice.xl:77:/// @cost whose merge sort is `n log n`.
+./collections/slice.xl:98:/// @cost `log n` calls to `cmp`.
+./collections/slice.xl:118:/// @cost one pass and one move per kept element.
 ./collections/vec.xl:232:    /// @cost `n log n` comparisons and one auxiliary buffer of `n` elements; a run of 8 or fewer
 ./collections/vec.xl:233:    /// @cost elements is insertion-sorted in place with no buffer.
 ./collections/vec.xl:246:    /// @cost `n log n` calls to `cmp` and one buffer of `n` elements; nothing is allocated for a
 ./collections/vec.xl:247:    /// @cost vector of 8 or fewer elements.
-./collections/vec.xl:291:    /// @cost `log n` comparisons.
-./collections/vec.xl:316:    /// @cost `log n` calls to `cmp`.
-./collections/vec.xl:334:    /// @cost up to `n` comparisons, stopping at the first match.
-./collections/vec.xl:344:    /// @cost up to `n` calls to `pred`, stopping at the first match.
-./collections/vec.xl:354:    /// @cost up to `n` comparisons, stopping at the first match.
-./collections/vec.xl:365:    /// @cost up to `n` calls to `pred`, stopping at the first match.
-./collections/vec.xl:379:    /// @cost one pass and one move per kept element.
-./collections/vec.xl:401:    /// @cost one pass and one call to `eq` per element after the first.
-./str/string.xl:439:/// @cost `O(min(len))` byte comparisons.
-./str/string.xl:445:/// @cost `O(min(len))` byte comparisons.
+./collections/vec.xl:293:    /// @cost `log n` comparisons.
+./collections/vec.xl:313:    /// @cost up to `n` comparisons, stopping at the first match.
+./collections/vec.xl:322:    /// @cost up to `n` comparisons, stopping at the first match.
+./collections/vec.xl:335:    /// @cost one pass and one comparison per element after the first.
+./encoding/utf8.xl:114:/// @cost one sequence decode.
+./encoding/utf8.xl:128:/// @cost one pass, no allocation.
+./encoding/utf8.xl:134:/// @cost one pass, no allocation.
+./encoding/utf8.xl:151:/// @cost one grow of at most four bytes.
+./str/dec.xl:24:/// @cost one `BigInt` multiply and one `BigInt` to decimal, no allocation beyond those two.
+./str/dec.xl:91:    /// @cost `O(1)`.
+./str/dec.xl:97:    /// @cost `O(1)`.
+./str/dec.xl:104:    /// @cost `O(n)` over the tail.
+./str/dec.xl:114:    /// @cost `O(1)`.
+./str/fmt.xl:68:/// @cost one system call per `write`, no allocation.
+./str/fmtspec.xl:692:/// @cost a few integer operations, no allocation.
+./str/fmtspec.xl:1182:/// @cost one allocation of the worst-case length of the value, no more than 400 bytes.
+./str/fmtspec.xl:1235:/// @cost one allocation for the text, which grows as it is built.
+./str/fmtspec.xl:1254:/// @cost the same work as `format`, an allocation only for a pad wider than the 512-byte stack buffer.
+./str/num.xl:52:/// @cost a few multiplications for an ordinary number; a wide-integer binary search otherwise, no allocation beyond
+./str/num.xl:53:/// @cost `BigInt`'s limb vector.
+./str/string.xl:247:    /// @cost one pass over the bytes, one allocation.
+./str/string.xl:253:    /// @cost one pass over the bytes, one allocation.
+./str/string.xl:363:/// @cost `O(total bytes)` copies and one grow of the output, which is reserved once when
+./str/string.xl:364:/// @cost `parts.length() * 8` is already a lower bound on the text.
+./str/string.xl:396:/// @cost one pass over the bytes, one allocation of `s.len` bytes.
+./str/string.xl:408:/// @cost one pass over the bytes, one allocation of `s.len` bytes.
+./str/string.xl:515:/// @cost `O(min(len))` byte comparisons.
+./str/string.xl:521:/// @cost `O(min(len))` byte comparisons.
+./str/unicode.xl:63:/// @cost one pass, no allocation.
+./str/unicode.xl:102:/// @cost one pass over the bytes, no allocation.
 ```
 
-### @todo (17)
+### @todo (9)
 
 ```
 ./collections/option.xl:78:    /// @todo `f` is a plain `fn(*T) -> U`, not a generic `F`, because a `U` reached only through an
 ./collections/option.xl:79:    /// @todo `F` parameter is not inferred (`E0724`); a capturing closure must be a named function.
 ./collections/result.xl:93:    /// @todo `f` is a plain `fn(*T) -> U`, not a generic `F`, because a `U` reached only through an
 ./collections/result.xl:94:    /// @todo `F` parameter is not inferred (`E0724`); a capturing closure must be a named function.
-./collections/slice.xl:32:/// @todo needs `fn ==(T, T)`; a type without one uses `indexOfBySlice`.
-./collections/slice.xl:51:/// @todo needs `fn ==(T, T)`, like `indexOfSlice`.
-./collections/slice.xl:61:/// @todo this is the quadratic variant because a mutable slice has no room for the merge buffer
-./collections/slice.xl:62:/// @todo the `Vec` sort allocates; a caller with many elements copies into a `Vec` first.
-./collections/slice.xl:102:/// @todo needs `fn ==(T, T)` for the element type.
+./collections/slice.xl:78:/// @todo this is the quadratic variant because a mutable slice has no room for the merge buffer
+./collections/slice.xl:79:/// @todo the `Vec` sort allocates; a caller with many elements copies into a `Vec` first.
+./collections/slice.xl:119:/// @todo needs `fn ==(T, T)` for the element type.
 ./collections/vec.xl:234:    /// @todo the element type needs `fn <`, found because this module imports `str/string`; a type
 ./collections/vec.xl:235:    /// @todo declared elsewhere without such an import does not resolve here, so it uses `sortBy`.
-./collections/vec.xl:292:    /// @todo an element without `fn <` must use `binarySearchBy` with an explicit comparator.
-./collections/vec.xl:335:    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `containsBy`.
-./collections/vec.xl:355:    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `indexOfBy`.
-./collections/vec.xl:380:    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `dedupBy`.
-./collections/vec.xl:426:/// @todo the language cannot declare `fn <(a: *T, b: *T)` (a pointer operator is `E0709`), and a
-./collections/vec.xl:427:/// @todo generic `T` has no borrow, so this split cannot be closed inside the stdlib.
 ```
 
-### @safety (6)
+### @safety (11)
 
 ```
 ./collections/deque.xl:42:    /// @safety `i` must be below `len`; every public method bounds it first.
 ./collections/hash.xl:44:    /// @safety `other` must point to a value of the implementing type; a table only ever passes a
 ./collections/hash.xl:45:    /// @safety lookup key of the same `K`, so the cast inside an implementation is sound.
 ./collections/hash.xl:136:/// @safety `at + 8` must not exceed the length of `data`; the only caller tests `i + 8 <= n`.
-./collections/vec.xl:435:/// @safety `i` must be within the array `p` points to; the merge below bounds it by the run end.
-./collections/vec.xl:442:/// @safety `lo <= mid <= hi <= len`; `sortBy` computes the three from the pass width.
+./collections/vec.xl:361:/// @safety `i` must be within the array `p` points to; the merge below bounds it by the run end.
+./collections/vec.xl:368:/// @safety `lo <= mid <= hi <= len`; `sortBy` computes the three from the pass width.
+./str/fmt.xl:59:/// @safety `p` must point to `n` readable bytes, and a `Writer` must only read its argument (the `Writer` contract).
+./str/fmtspec.xl:1253:/// @safety `buf` must hold `cap` writable bytes.
+./str/unicode.xl:22:/// @safety `at` must be below `s.len`; every caller checks the position before the call.
+./str/unicode.xl:49:/// @safety `k` must be the length `validSeqLen` returned for `at`, so the continuation bytes exist.
+./str/unicode.xl:70:/// @safety `at` must be at or below `s.length()`.
 ```
 
-Total: 222 tag lines.
+Total: 273 tag lines.
 <!-- END COLLECTED TAGS -->

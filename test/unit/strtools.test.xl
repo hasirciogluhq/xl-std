@@ -64,7 +64,8 @@ fn checks(t: *T) {
     local acc: String = String("x=")
     fmtAppend(&acc, "{} {{}} {}", -7, true)
     check("fmtAppend with braces and bool", acc.equals("x=-7 {} true"))
-    check("format float", format("{}", 2.5).equals("2.500000"))
+    // `{}` is the shortest text that reads back as the same value, not a fixed six places.
+    check("format float", format("{}", 2.5).equals("2.5"))
 
     expectEq(t, failures as i64, 0)
 }

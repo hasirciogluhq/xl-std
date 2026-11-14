@@ -9,7 +9,8 @@ from "../time/date" import DateTime, civilFromDays
 from "../str/str" import fromParts, fromC, eq
 from "../str/string" import String
 from "../collections/vec" import Vec
-from "util" import lower, formatUInt
+from "util" import formatUInt
+from "../str/chars" import hexValue, toLower
 from "multipart" import MultipartPart, multipartFind, multipartBoundary
 
 /// A request handler or middleware: it takes the context of the exchange and answers through its methods.
@@ -377,14 +378,6 @@ fn decodeField(v: str) -> String {
     return out
 }
 
-/// The value of a hex digit, or -1.
-fn hexValue(c: u8) -> i32 {
-    if c >= 48 && c <= 57 { return (c - 48) as i32 }
-    if c >= 65 && c <= 70 { return (c - 55) as i32 }
-    if c >= 97 && c <= 102 { return (c - 87) as i32 }
-    return -1
-}
-
 /// The value of header `name` in a header block ("Name: value\r\n..."), trimmed; "" when absent. Names compare case-insensitively.
 fn headerValue(block: str, name: str) -> str {
     local i: usize = 0
@@ -410,7 +403,7 @@ fn eqCI(a: str, b: str) -> bool {
     if a.len != b.len { return false }
     local i: usize = 0
     while i < a.len {
-        if lower(a[i]) != lower(b[i]) { return false }
+        if toLower(a[i]) != toLower(b[i]) { return false }
         i = i + 1
     }
     return true

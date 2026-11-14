@@ -1,0 +1,118 @@
+// std/str/dec: the exact decimal of a `f64` — the digits a double really has, which is what a formatter must round
+// rather than the digits a fixed-point multiplication in `f64` invents. A double is `significand * 2^exponent` with an
+// integer significand, so its decimal expansion is finite and exact: it is `significand * 5^k` with the scale moved by
+// `k` decimal places when the exponent is negative (`x / 2^k == x * 5^k / 10^k`), and `significand * 2^e` when it is
+// positive. Both factors are whole numbers, so `BigInt` holds them and every digit is correct.
+//
+// A `Dec` is that expansion and nothing else: `digits` holds the significant digits with no leading zero, and `point`
+// is how many of them sit left of the decimal point, so the value is `0.<digits> * 10^point`. A formatter rounds from
+// there; this module never rounds.
+//
+// Why not multiply in `f64`: `x * 10^N` is itself rounded, so `putFraction` read a wrong digit near a carry
+// (`0.95` at one place gave `0.0`) and saturated a `u64` for any value at or above 2^64 (`1e300` printed
+// `18446744073709551615.551615`). The exact expansion has neither failure.
+//
+// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form must satisfy.
+from "../math/big" import BigInt
+from "../math/float" import f64Bits
+from "string" import String
+
+/// The exact decimal of the finite, non-negative `x`.
+/// @contract `digits` has no leading zero and no trailing zero, and `point` places them so that the value is
+/// @contract `0.<digits> * 10^point`; a zero value has no digits and a zero point.
+/// @ownership owns its digit text; nothing is borrowed.
+/// @cost one `BigInt` multiply and one `BigInt` to decimal, no allocation beyond those two.
+export class Dec {
+    digits: String
+    point: i32
+
+    fn init(self) {
+        self.digits = String()
+        self.point = 0
+    }
+}
+
+impl Dec {
+    /// Fills `self` with the exact decimal of `x`, which must be finite and non-negative.
+    fn fromValue(self: *Dec, x: f64) {
+    self.digits.clear()
+    self.point = 0
+    local bits: u64 = f64Bits(x)
+    local expBits: u64 = (bits >> 52) & 0x7ff
+    local frac: u64 = bits & 0xfffffffffffff
+    if expBits == 0x7ff { return }
+    local mant: u64 = frac
+    local binExp: i32 = 0 - 1074
+    if expBits != 0 {
+        mant = frac | 0x10000000000000
+        binExp = (expBits as i32) - 1075
+    }
+    if mant == 0 { return }
+    // Trailing zero bits are factors of two the decimal does not need; dropping them keeps `BigInt` small, and an even
+    // significand shifts right while the exponent moves up by the same amount, so the value is unchanged.
+    local shift: usize = 0
+    while shift < 63 && ((mant >> (shift as u64)) & 1) == 0 {
+        shift = shift + 1
+    }
+    mant = mant >> (shift as u64)
+    binExp = binExp + (shift as i32)
+    local m: BigInt = BigInt(mant)
+    if binExp >= 0 {
+        // value = mant * 2^binExp: the digits are that whole number.
+        local t: BigInt = BigInt()
+        m.shiftLeft(binExp as usize, &t)
+        t.copy(&m)
+        self.digits = m.toDecimal()
+        self.point = self.digits.length() as i32
+        return
+    }
+    // value = mant / 2^k = mant * 5^k / 10^k. `5^k` is at most 5^1074 (about 2494 bits) and `mant` at most 2^60, so the
+    // product is under `BigInt`'s 4160-bit bound.
+    local k: usize = (0 - binExp) as usize
+    local base: BigInt = BigInt(5)
+    local factor: BigInt = BigInt(1)
+    base.pow(k as u64, &factor)
+    local scaled: BigInt = BigInt()
+    m.mul(&factor, &scaled)
+    self.digits = scaled.toDecimal()
+    self.point = (self.digits.length() as i32) - (k as i32)
+    }
+}
+
+/// The exact decimal of the finite, non-negative `x`.
+export fn decimalOf(x: f64) -> Dec {
+    local d: Dec = Dec()
+    d.fromValue(x)
+    return d
+}
+
+impl Dec {
+    /// The number of significant digits.
+    /// @cost `O(1)`.
+    fn length(self: *Dec) -> usize {
+        return self.digits.length()
+    }
+
+    /// The digit at `at` as a value 0..9; 0 past the end, which is what rounding treats a missing digit as.
+    /// @cost `O(1)`.
+    fn digit(self: *Dec, at: usize) -> u8 {
+        if at >= self.digits.length() { return 0 }
+        return self.digits.at(at) - 48
+    }
+
+    /// True when any digit at or past `at` is non-zero: the sticky flag of a rounding.
+    /// @cost `O(n)` over the tail.
+    fn restNonZero(self: *Dec, at: usize) -> bool {
+        for i in at..self.digits.length() {
+            if self.digits.at(i) != 48 { return true }
+        }
+        return false
+    }
+
+    /// The power of ten the value needs when it is written as `d.ddd * 10^exponent`: that is `point - 1`, the position
+    /// of the decimal point counted from the first significant digit.
+    /// @cost `O(1)`.
+    fn exponent(self: *Dec) -> i32 {
+        return self.point - 1
+    }
+}

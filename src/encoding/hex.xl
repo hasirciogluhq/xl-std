@@ -3,6 +3,7 @@
 // cases; `base16Decode` accepts only uppercase, the strict form of RFC 4648 section 8.
 // Decoders return the number of bytes written, or -1 for an odd length or a non-hex character. Nothing allocates.
 // https://www.rfc-editor.org/rfc/rfc4648#section-8
+from "../str/chars" import hexValue
 
 /// Characters written by `hexEncode` / `base16Encode` for `n` bytes.
 export fn hexEncodedLen(n: usize) -> usize {
@@ -28,20 +29,6 @@ fn encodeWith(data: *u8, n: usize, out: *u8, upper: bool) -> usize {
         i = i + 1
     }
     return n * 2
-}
-
-/// Value 0..15 of a hex digit in either case, -1 when `c` is not one.
-fn hexValue(c: u8) -> i32 {
-    if c >= 48 && c <= 57 {
-        return (c - 48) as i32
-    }
-    if c >= 97 && c <= 102 {
-        return (c - 87) as i32
-    }
-    if c >= 65 && c <= 70 {
-        return (c - 55) as i32
-    }
-    return -1
 }
 
 fn decodeWith(text: *u8, n: usize, out: *u8, upperOnly: bool) -> isize {

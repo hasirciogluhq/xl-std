@@ -4,6 +4,7 @@
 // holds pointers into the DER buffer it was parsed from, which must outlive it.
 // Not handled: nameConstraints, policies, extended key usage, critical-extension rejection.
 from "../hash/digest" import digest, digestLen, DIGEST_SHA256, DIGEST_SHA384, DIGEST_SHA512
+from "../../str/chars" import toLower
 from "../sig/rsa" import rsaVerifyPkcs1, rsaVerifyPss
 from "../sig/ecdsa" import ecdsaVerify, ECDSA_P256, ECDSA_P384
 
@@ -502,11 +503,6 @@ export fn x509IssuedBy(c: *Cert, parent: *Cert) -> bool {
 
 // ---- names -------------------------------------------------------------------------------------
 
-fn lower(c: u8) -> u8 {
-    if c >= 65 && c <= 90 { return c + 32 }
-    return c
-}
-
 /// Does the dNSName `pat[0..plen]` match `host[0..hlen]`? Case-insensitive; a leading `*.` matches
 /// exactly one label (and the pattern must have at least two more labels).
 fn dnsMatch(pat: *u8, plen: usize, host: *u8, hlen: usize) -> bool {
@@ -528,7 +524,7 @@ fn dnsMatch(pat: *u8, plen: usize, host: *u8, hlen: usize) -> bool {
     }
     if plen - pi != hlen - hi { return false }
     while pi < plen {
-        if lower(pat[pi]) != lower(host[hi]) { return false }
+        if toLower(pat[pi]) != toLower(host[hi]) { return false }
         pi = pi + 1
         hi = hi + 1
     }

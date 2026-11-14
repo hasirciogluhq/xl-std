@@ -1,24 +1,95 @@
-// std/fmt: the placeholder engine and the text of values. Text goes to one of three sinks: a fd
-// sink, a buffer sink (snprintf) and a String sink. Only the String sink allocates, so printing and
-// snprintf make no allocator calls. std/io and std/vec build on this module.
+// std/str/fmt: where formatted text goes — the declarations of the text layer. `Writer` is the one sink interface of
+// the library: a destination takes the text it must write and reports how much of it it took. `Display` is the one
+// interface a value implements to print itself, so `{}` works for a `String`, a `DateTime` and a user struct alike.
+// `FmtSink` implements `Writer` for the three destinations the standard library itself needs (a file descriptor, a
+// fixed caller buffer and a `String`), and so do `String` (`str/string`) and `FdWriter` below.
+//
+// The module cycle: `String` implements `Writer` and `Display`, so `str/string` imports this module. A module may not
+// import one that imports it back, yet `FmtSink` must call `String.append` for its `FmtString` kind. The seam is the
+// `Writer` interface: `FmtSink.out` is a `*Writer` the caller fills with a `String`, and appending goes through
+// `write`, so this module names the interface and never the class. Where a `String` is still named in a signature
+// (`Writer.write`, `Display.display`, `byteView`) it is a parameter type only: no value of the kind is built here.
+//
+// The engine — the placeholder parser, the per-type text, `format`/`sprintf`/`toString` — is `fmtspec`, which imports
+// both this module and `str/string` and so may build one. `str/index.xl` re-exports both, so `import "std"` brings in
+// all of it.
 from "../sys" import sysWrite
 from "str" import fromC, fromParts, view
 from "string" import String
 
-export const FmtFd = 0
-export const FmtBuffer = 1
-export const FmtString = 2
+/// The kind of an `FmtSink`: a file descriptor. A `switch` case needs a `define` constant, so these are macros rather
+/// than `const`s; a caller passes them to `FmtSink(...)` and never writes the number.
+export define FmtFd = 0
+/// The kind of an `FmtSink`: a fixed caller buffer that `snprintf` writes into.
+export define FmtBuffer = 1
+/// The kind of an `FmtSink`: a `String` that grows.
+export define FmtString = 2
 
-/// Where formatted text goes. A fd sink writes each piece to the fd. A buffer sink writes into the
-/// caller's buffer, never past cap - 1, and counts the full length in `total`. A string sink
-/// appends to `out`.
+/// Where bytes go: the minimal stream contract of the library, which phase 5 builds `Reader`, `File` and the buffered
+/// streams on top of. `write` takes text borrowed for the call and returns the number of bytes taken; a negative
+/// return means the stream is closed or failed and the caller stops. A writer that never fills up returns the length
+/// of `s`.
+///
+/// @contract `write` reports the count of bytes it accepted — the length of `s` for a writer that never fills up — and
+/// @contract a negative return means closed or failed; the caller does not retry a partial accept.
+/// @ownership `s` is borrowed for the call only: the writer copies what it keeps and never frees or keeps it.
+export interface Writer {
+    fn write(self, s: *String) -> isize
+}
+
+/// The text of a value, for `{}` and for every format string. A type implements `display` beside itself and the
+/// method appends its own text to `out`, so a user struct prints the same way as a number.
+///
+/// Generic code cannot call an interface method on a bare `T` (E0404, see `xlang-docs/known-limitations.md`), so the
+/// engine does not take a generic argument for this interface: a value is wrapped at the call site with
+/// `local d: Display = &value`, then passed as `*Display`. An interface value is a fat pointer over an addressable
+/// value, so the local is needed; a temporary is not addressable.
+///
+/// @contract `display` appends the whole text of `self` and nothing else, allocates only if the type's own text does,
+/// @contract and never panics on a value the type allows.
+/// @ownership `out` is borrowed and grows; `self` is borrowed for the call.
+export interface Display {
+    fn display(self, out: *String)
+}
+
+/// A `String`, a `FmtSink` or any other `Writer` takes the bytes at `p[0..n]` without a copy. The bytes are lent as a
+/// `String` view built in this frame: the words `{ ptr, len, cap = 0 }` of `String`'s layout, alive for the whole
+/// `write` call. The view is never dropped, so nothing is freed.
+/// @ownership `p` is borrowed for the call; the writer copies what it keeps.
+/// @safety `p` must point to `n` readable bytes, and a `Writer` must only read its argument (the `Writer` contract).
+export fn writeBytes(w: *Writer, p: *u8, n: usize) -> isize {
+    local view: [usize; 3] = [p as usize, n, 0]
+    return w.write(&view[0] as *String)
+}
+
+/// A writer over one file descriptor: what `stdout()` and `stderr()` are built from, and the cheapest destination.
+/// One `write` system call per `write`; no buffering, so a caller that formats many pieces should build a `String`.
+/// @ownership owns nothing; `fd` stays the caller's to close.
+/// @cost one system call per `write`, no allocation.
+export class FdWriter {
+    fd: i32
+
+    fn init(self, fd: i32) {
+        self.fd = fd
+    }
+
+    fn write(self, s: *String) -> isize {
+        local t: str = s.asStr()
+        if t.len == 0 { return 0 }
+        return sysWrite(self.fd, t.ptr, t.len)
+    }
+}
+
+/// A writer sink of three kinds: a file descriptor, a fixed caller buffer, or a `String`. Only the `String` kind
+/// reaches an allocator, so printing and `snprintf` make no allocator calls.
+/// @ownership owns nothing: the buffer and the target `String` stay the caller's.
 export class FmtSink {
     kind: i32
     fd: i32
     buf: *u8     // FmtBuffer: the caller's buffer
     cap: usize    // FmtBuffer: its size in bytes
     total: usize  // FmtBuffer: bytes the full text needs
-    out: *String  // FmtString: the String that is appended to
+    out: *String  // FmtString: the target, reached through its `Writer`
 
     fn init(self, kind: i32, fd: i32, buf: *u8, cap: usize, out: *String) {
         self.kind = kind
@@ -29,343 +100,41 @@ export class FmtSink {
         self.out = out
     }
 
-    /// Writes the piece `s`. A fd sink makes one write call for it.
-    fn write(self, s: str) {
-        if self.kind == FmtFd {
-            if s.len > 0 {
-                sysWrite(self.fd, s.ptr, s.len)
-            }
-        } else if self.kind == FmtBuffer {
-            local i: usize = 0
-            while i < s.len {
-                if self.total + 1 < self.cap {
-                    self.buf[self.total] = s[i]
-                }
+    /// Writes the piece `s`. A fd sink makes one write call for it; a buffer sink copies what fits and counts the
+    /// rest in `total`; a string sink appends through the `Writer` of the target.
+    fn writeBytes(self, s: str) {
+        switch self.kind {
+        case FmtFd {
+            if s.len > 0 { sysWrite(self.fd, s.ptr, s.len) }
+        }
+        case FmtBuffer {
+            for i in 0..s.len {
+                // One slot is kept for the terminating NUL, so a full buffer loses the last byte of the text.
+                if self.total + 1 < self.cap { self.buf[self.total] = s[i] }
                 self.total = self.total + 1
-                i = i + 1
             }
-        } else {
-            self.out.append(s)
+        }
+        default {
+            local w: Writer = self.out
+            writeBytes(&w, s.ptr, s.len)
+        }
         }
     }
 
-    /// Ends a buffer sink: writes the NUL at the byte after the text, or at the last byte if the
-    /// text does not fit. Does nothing for the other sinks or a zero-sized buffer.
+    /// The `Writer` contract over `writeBytes`: every byte is accepted.
+    fn write(self, s: *String) -> isize {
+        local t: str = s.asStr()
+        self.writeBytes(t)
+        return t.len as isize
+    }
+
+    /// Ends a buffer sink: writes the NUL at the byte after the text, or at the last byte when the text does not fit.
+    /// Does nothing for the other kinds or a zero-sized buffer.
     fn finish(self) {
         if self.kind == FmtBuffer && self.cap > 0 {
             local at: usize = self.total
-            if at >= self.cap {
-                at = self.cap - 1
-            }
+            if at >= self.cap { at = self.cap - 1 }
             self.buf[at] = 0
         }
     }
-}
-
-// ---- placeholders ---------------------------------------------------------------------------
-
-/// Number of `{}` placeholders (`{{` and `}}` are escapes and do not count).
-fn placeholders(text: str) -> usize {
-    local n: usize = 0
-    local i: usize = 0
-    while i + 1 < text.len {
-        if (text[i] == 123 && text[i + 1] == 123) || (text[i] == 125 && text[i + 1] == 125) {
-            i = i + 2
-        } else if text[i] == 123 && text[i + 1] == 125 {
-            n = n + 1
-            i = i + 2
-        } else {
-            i = i + 1
-        }
-    }
-    return n
-}
-
-/// Writes `s` at `buf[at]`; returns the position after it.
-fn putStr(buf: *u8, at: usize, s: str) -> usize {
-    local k: usize = 0
-    while k < s.len {
-        buf[at + k] = s[k]
-        k = k + 1
-    }
-    return at + s.len
-}
-
-/// Writes the decimal digits of `v` at `buf[at]`; returns the position after them.
-fn putDecimal(buf: *u8, at: usize, v: u64) -> usize {
-    local digits: usize = 1
-    local t: u64 = v
-    while t >= 10 {
-        t = t / 10
-        digits = digits + 1
-    }
-    local k: usize = at + digits
-    local n: u64 = v
-    while k > at {
-        k = k - 1
-        buf[k] = ((n % 10) as u8) + 48
-        n = n / 10
-    }
-    return at + digits
-}
-
-/// Panics for a format whose placeholder count differs from its argument count. The message names
-/// the format text, cut to 160 bytes, and is built on the stack.
-fn mismatchPanic(n: usize, arity: usize, text: str) {
-    local buf: [u8; 256]
-    local at: usize = putStr(&buf[0], 0, "format: ")
-    at = putDecimal(&buf[0], at, n as u64)
-    at = putStr(&buf[0], at, " placeholders, got ")
-    at = putDecimal(&buf[0], at, arity as u64)
-    at = putStr(&buf[0], at, " arguments in \"")
-    local shown: usize = text.len
-    if shown > 160 {
-        shown = 160
-    }
-    at = putStr(&buf[0], at, view(text, 0, shown))
-    at = putStr(&buf[0], at, "\"")
-    buf[at] = 0
-    panic(&buf[0])
-}
-
-/// A format being written: `at` is the next byte of `text` not yet written.
-class Format {
-    sink: *FmtSink
-    text: str
-    at: usize
-
-    fn init(self, sink: *FmtSink, text: str) {
-        self.sink = sink
-        self.text = text
-        self.at = 0
-    }
-
-    /// Checks that the format has exactly `arity` placeholders; panics otherwise.
-    fn check(self, arity: usize) {
-        local n: usize = placeholders(self.text)
-        if n != arity {
-            mismatchPanic(n, arity, self.text)
-        }
-    }
-
-    /// Writes the text up to the next placeholder (or the end). `{{` and `}}` write one brace.
-    fn literal(self) {
-        local start: usize = self.at
-        while self.at < self.text.len {
-            local c: u8 = self.text[self.at]
-            local next: u8 = 0
-            if self.at + 1 < self.text.len {
-                next = self.text[self.at + 1]
-            }
-            if c == 123 && next == 125 {
-                break
-            }
-            if (c == 123 || c == 125) && next == c {
-                self.sink.write(view(self.text, start, self.at - start + 1))
-                self.at = self.at + 2
-                start = self.at
-            } else {
-                self.at = self.at + 1
-            }
-        }
-        self.sink.write(view(self.text, start, self.at - start))
-    }
-
-    fn finish(self) {
-        self.literal()
-    }
-}
-
-/// Writes the literal text, then the argument for the placeholder that follows it.
-fn formatArg<A>(f: *Format, v: A) {
-    f.literal()
-    f.at = f.at + 2
-    fmtWrite(f.sink, v)
-}
-
-// ---- the text of values ---------------------------------------------------------------------
-
-/// Writes an unsigned integer in decimal.
-fn writeUInt(sink: *FmtSink, v: u64) {
-    local buf: [u8; 24]
-    local end: usize = putDecimal(&buf[0], 0, v)
-    sink.write(fromParts(&buf[0], end))
-}
-
-fn writeInt(sink: *FmtSink, v: i64) {
-    local buf: [u8; 24]
-    local at: usize = 0
-    local mag: u64 = v as u64
-    if v < 0 {
-        buf[0] = 45
-        at = 1
-        mag = (0 - v) as u64
-    }
-    at = putDecimal(&buf[0], at, mag)
-    sink.write(fromParts(&buf[0], at))
-}
-
-/// Six decimals, rounded half up, written as one piece.
-fn writeFloat(sink: *FmtSink, v: f64) {
-    local buf: [u8; 40]
-    local at: usize = 0
-    local x: f64 = v
-    if x < 0.0 {
-        buf[0] = 45
-        at = 1
-        x = 0.0 - x
-    }
-    local whole: u64 = x as u64
-    local scaled: u64 = ((x - (whole as f64)) * 1000000.0 + 0.5) as u64
-    if scaled >= 1000000 {
-        whole = whole + 1
-        scaled = scaled - 1000000
-    }
-    at = putDecimal(&buf[0], at, whole)
-    buf[at] = 46
-    at = at + 1
-    local k: usize = 6
-    while k > 0 {
-        k = k - 1
-        buf[at + k] = ((scaled % 10) as u8) + 48
-        scaled = scaled / 10
-    }
-    at = at + 6
-    sink.write(fromParts(&buf[0], at))
-}
-
-/// The text for one value, with the same types as the plain print overloads.
-export fn fmtWrite(out: *FmtSink, s: str) {
-    out.write(s)
-}
-
-export fn fmtWrite(out: *FmtSink, p: *u8) {
-    out.write(fromC(p))
-}
-
-export fn fmtWrite(out: *FmtSink, v: i64) {
-    writeInt(out, v)
-}
-
-export fn fmtWrite(out: *FmtSink, v: u64) {
-    writeUInt(out, v)
-}
-
-export fn fmtWrite(out: *FmtSink, v: f64) {
-    writeFloat(out, v)
-}
-
-export fn fmtWrite(out: *FmtSink, b: bool) {
-    if b {
-        out.write("true")
-    } else {
-        out.write("false")
-    }
-}
-
-export fn fmtWrite(out: *FmtSink, s: *String) {
-    out.write(s.asStr())
-}
-
-// ---- the engine entry points ----------------------------------------------------------------
-// fmtEmit writes `fmt` with one argument per placeholder to the sink. It is the only way in. The
-// pack is unrolled per argument type, so no argument is boxed or allocated.
-
-/// Writes `fmt` to the sink; the arguments fill the placeholders in order.
-export fn fmtEmit(sink: *FmtSink, fmt: str, ..args) {
-    local f: Format = Format(sink, fmt)
-    f.check(args.len as usize)
-    for a in args {
-        formatArg(&f, a)
-    }
-    f.finish()
-}
-
-// ---- strings --------------------------------------------------------------------------------
-
-/// A String of the text of one value.
-export fn toString(v: i64) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: u64) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: f64) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: bool) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: str) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(p: *u8) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtWrite(&sink, p)
-    return out
-}
-
-/// Appends `fmt` to `out`; each `{}` takes the next argument and `{{` and `}}` are braces.
-export fn fmtAppend(out: *String, fmt: str, ..args) {
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, out)
-    fmtEmit(&sink, fmt, ..args)
-}
-
-/// A new String holding `fmt` with its placeholders replaced.
-export fn sprintf(fmt: str, ..args) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtEmit(&sink, fmt, ..args)
-    return out
-}
-
-/// The same as `sprintf`; `format` is the documented primary name.
-export fn format(fmt: str, ..args) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
-    fmtEmit(&sink, fmt, ..args)
-    return out
-}
-
-/// Writes `fmt` into `buf` (`cap` bytes) with its placeholders replaced. The text is cut to
-/// `cap - 1` bytes and NUL-terminated when `cap > 0`. Returns the length the full text needs.
-export fn snprintf(buf: *u8, cap: usize, fmt: str, ..args) -> usize {
-    local sink: FmtSink = FmtSink(FmtBuffer, 0, buf, cap, nil)
-    fmtEmit(&sink, fmt, ..args)
-    sink.finish()
-    return sink.total
-}
-
-// ---- Vec ------------------------------------------------------------------------------------
-
-/// Panics with "Vec: index I out of range for length L". Built on the stack, so it allocates nothing.
-export fn fmtIndexPanic(i: usize, n: usize) {
-    local buf: [u8; 96]
-    local at: usize = putStr(&buf[0], 0, "Vec: index ")
-    at = putDecimal(&buf[0], at, i as u64)
-    at = putStr(&buf[0], at, " out of range for length ")
-    at = putDecimal(&buf[0], at, n as u64)
-    buf[at] = 0
-    panic(&buf[0])
 }

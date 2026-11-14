@@ -6,6 +6,7 @@
 from "../sys" import sysUdpSocket, sysTcpConnect, sysSetRecvTimeout, sysClose, sysRead, sysWrite
 from "../mem/memory" import strlen
 from "../io/fs" import fsReadAll
+from "../str/chars" import isDigit, isSpace, toLower
 
 /// Server used when `/etc/resolv.conf` has no usable `nameserver` line (1.1.1.1).
 define DNS_FALLBACK_SERVER = 16843009
@@ -14,19 +15,6 @@ define DNS_ATTEMPTS = 3
 define DNS_TYPE_A = 1
 
 global queryId: u32 = 19000
-
-fn lower(c: u8) -> u8 {
-    if c >= 65 && c <= 90 { return c + 32 }
-    return c
-}
-
-fn isSpace(c: u8) -> bool {
-    return c == 32 || c == 9 || c == 13
-}
-
-fn isDigit(c: u8) -> bool {
-    return c >= 48 && c <= 57
-}
 
 /// Parses a dotted-quad IPv4 literal that ends at NUL, whitespace or newline. Returns the index just
 /// past it, or 0 when `s` is not an IPv4 literal.
@@ -66,7 +54,7 @@ export fn dnsParseIPv4(s: *u8, out: *u32) -> bool {
 fn tokenEquals(s: *u8, at: usize, name: *u8) -> bool {
     local i: usize = 0
     while name[i] != 0 {
-        if lower(s[at + i]) != lower(name[i]) { return false }
+        if toLower(s[at + i]) != toLower(name[i]) { return false }
         i = i + 1
     }
     local c: u8 = s[at + i]

@@ -1,10 +1,7 @@
 // std/encoding/json: read-only access to the top-level members of a JSON object held in a NUL-terminated
 // buffer. Nothing is allocated and the text is never modified; each lookup scans the object once.
 // Not covered: nested paths (find the member, then pass its text on), `\u` escapes, validation.
-
-fn isSpace(c: u8) -> bool {
-    return c == 32 || c == 9 || c == 10 || c == 13
-}
+from "../str/chars" import isSpace
 
 fn skipSpace(s: *u8, i: usize) -> usize {
     local p: usize = i

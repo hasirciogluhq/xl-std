@@ -1,22 +1,12 @@
-// std/str/compare: three-way comparison, ASCII case-insensitive equality, byte set membership, the ASCII
-// whitespace predicate and glob matching for the `str` view. Everything is byte-wise on unsigned bytes. Case
-// rules are ASCII only (A-Z and a-z): no Unicode folding, no normalization. Whitespace is the ASCII set: space,
-// tab, newline, vertical tab, form feed and carriage return.
+// std/str/compare: three-way comparison, ASCII case-insensitive equality, byte set membership and glob matching
+// for the `str` view. Everything is byte-wise on unsigned bytes. Case rules are ASCII only (A-Z and a-z): no
+// Unicode folding, no normalization. The ASCII character classes and the byte transformations (`isSpace`, `toLower`,
+// `isDigit`, ...) live in `chars` beside this file, because they answer a different question than a comparison.
 //
 // Glob syntax (`globMatch`): `*` matches any run of bytes, including an empty run; `?` matches exactly one
 // byte; every other byte matches itself. There is no bracket class and no escape character: a literal `*` or
 // `?` cannot be matched by a glob. The rules are the common shell-style subset; see xlang-docs/known-limitations.md.
-
-/// ASCII whitespace: space, tab, newline, vertical tab, form feed and carriage return.
-export fn isSpace(c: u8) -> bool {
-    return c == 32 || (c >= 9 && c <= 13)
-}
-
-/// ASCII lowercase of one byte: A-Z become a-z, every other byte is unchanged.
-fn lowerAscii(c: u8) -> u8 {
-    if c >= 65 && c <= 90 { return c + 32 }
-    return c
-}
+from "chars" import toLower
 
 /// Three-way byte-wise comparison: -1 when `a` sorts first, 0 when equal, 1 when `a` sorts after.
 /// Bytes compare as unsigned values; a proper prefix sorts before its extensions, so "ab" < "abc".
@@ -41,7 +31,7 @@ export fn equalIgnoreCase(a: str, b: str) -> bool {
     if a.len != b.len { return false }
     local i: usize = 0
     while i < a.len {
-        if lowerAscii(a[i]) != lowerAscii(b[i]) { return false }
+        if toLower(a[i]) != toLower(b[i]) { return false }
         i = i + 1
     }
     return true

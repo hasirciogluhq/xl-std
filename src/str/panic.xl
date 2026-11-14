@@ -1,0 +1,55 @@
+// std/str/panic: the panic messages a container needs, each built on the stack so the failing path allocates nothing.
+// They live beside `fmt` rather than inside it because `collections/vec` imports them while `fmt` imports `String`,
+// which imports `Vec`: keeping them here is what lets `fmt` declare the `Writer` interface that `String` implements
+// (a module may not import one that imports it). The text is plain ASCII; the number is written by hand, so no
+// `format` call happens on a path that is already failing.
+
+/// Writes the decimal digits of `v` at `buf[at]`; returns the position after them.
+fn putDecimal(buf: *u8, at: usize, v: u64) -> usize {
+    local digits: usize = 1
+    local t: u64 = v
+    while t >= 10 {
+        t = t / 10
+        digits = digits + 1
+    }
+    local k: usize = at + digits
+    local n: u64 = v
+    while k > at {
+        k = k - 1
+        buf[k] = ((n % 10) as u8) + 48
+        n = n / 10
+    }
+    return at + digits
+}
+
+/// Copies the bytes of `s` to `buf[at]`; returns the position after them.
+fn putText(buf: *u8, at: usize, s: str) -> usize {
+    for i in 0..s.len {
+        buf[at + i] = s[i]
+    }
+    return at + s.len
+}
+
+/// Panics with "Vec: index I out of range for length L". Built on the stack, so it allocates nothing.
+export fn fmtIndexPanic(i: usize, n: usize) {
+    local buf: [u8; 96]
+    local at: usize = putText(&buf[0], 0, "Vec: index ")
+    at = putDecimal(&buf[0], at, i as u64)
+    at = putText(&buf[0], at, " out of range for length ")
+    at = putDecimal(&buf[0], at, n as u64)
+    buf[at] = 0
+    panic(&buf[0])
+}
+
+/// Panics with "String: no room for BUFFER" style text: `what` names the buffer that a write did not fit in and
+/// `need` is the byte count it asked for. A writer with a fixed capacity (`FmtBuffer`) calls it instead of a
+/// `format`, so a full buffer reports the size it needed.
+export fn fmtOverflowPanic(what: str, need: usize) {
+    local buf: [u8; 128]
+    local at: usize = putText(&buf[0], 0, what)
+    at = putText(&buf[0], at, ": the text needs ")
+    at = putDecimal(&buf[0], at, need as u64)
+    at = putText(&buf[0], at, " bytes")
+    buf[at] = 0
+    panic(&buf[0])
+}

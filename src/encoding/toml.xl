@@ -12,15 +12,8 @@
 define TOML_MAX_DEPTH = 64
 
 from "../str/str" import fromParts, eq
+from "../str/chars" import isDigit, isHex
 from "../str/string" import String
-
-fn isDigit(c: u8) -> bool {
-    return c >= 48 && c <= 57
-}
-
-fn isHex(c: u8) -> bool {
-    return isDigit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
-}
 
 fn isBare(c: u8) -> bool {
     return isDigit(c) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95

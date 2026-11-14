@@ -55,7 +55,7 @@ fn check(name: *u8, ok: bool) {
     local u: String = toString(7 as u64)
     check("toString u64", u.equals("7"))
     local v: String = toString(2.5)
-    check("toString f64", v.equals("2.500000"))
+    check("toString f64", v.equals("2.5"))
     local w: String = toString(false)
     check("toString bool", w.equals("false"))
     local x: String = toString("text")

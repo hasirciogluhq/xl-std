@@ -13,7 +13,7 @@
 //   the idempotent methods (RFC 9110 section 9.2.2: all but POST and PATCH). Nothing is retried once the head was read.
 // - Every request is sent with `Connection: close` on a fresh connection; no Accept-Encoding is sent, so bodies arrive as they are.
 from "../str/string" import String
-from "../str/fmt" import format
+from "../str/fmtspec" import format
 from "../collections/result" import Result
 from "url" import Url, HttpError, parseUrl, decimal
 from "headers" import Headers

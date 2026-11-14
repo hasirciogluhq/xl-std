@@ -4,7 +4,7 @@
 // input, a failed `test`, a missing path, an index past the end, or a `move` into its own child (RFC 6902 section 4.4).
 // Member order is kept and a new member goes last (RFC 6902 section 4.1: member order is not significant).
 from "../str/string" import String
-from "../str/fmt" import toString
+from "../str/fmtspec" import toString
 from "../collections/vec" import Vec
 from "jsonfull" import JsonSpan, JsonWriter, jsonValid, jsonValueAt, jsonMembers, jsonPointerGet, jsonText, jsonPointerToken
 

@@ -240,10 +240,14 @@ fn vecAlgorithmChecks(t: *T) {
         if *v.get(i) != i as i32 { sorted = false }
     }
     check("Vec.sort orders", sorted)
-    check("Vec.binarySearch finds", v.binarySearch(7).unwrap() == 7)
-    check("Vec.binarySearch misses", v.binarySearch(100).isNone())
-    check("Vec.contains", v.contains(3) && !v.contains(100))
-    check("Vec.indexOf", v.indexOf(4).unwrap() == 4)
+    local probe7: i32 = 7
+    local probe100: i32 = 100
+    local probe3: i32 = 3
+    local probe4: i32 = 4
+    check("Vec.binarySearch finds", v.binarySearch(&probe7).unwrap() == 7)
+    check("Vec.binarySearch misses", v.binarySearch(&probe100).isNone())
+    check("Vec.contains", v.contains(&probe3) && !v.contains(&probe100))
+    check("Vec.indexOf", v.indexOf(&probe4).unwrap() == 4)
     v.reverse()
     check("Vec.reverse", *v.get(0) == 9 && *v.get(9) == 0)
     v.sort()
@@ -252,15 +256,32 @@ fn vecAlgorithmChecks(t: *T) {
     dup.dedup()
     check("Vec.dedup of adjacent runs", dup.length() == 3 && *dup.get(1) == 2 && *dup.get(2) == 3)
 
-    // A String element uses the ...By forms with a borrowed comparator.
+    // A `String` element sorts, searches and dedups with the plain methods: the operators read through pointers, so
+    // no element is moved into a comparison or dropped there.
     local strs: Vec<String> = Vec<String>()
     strs.push(String("pear"))
     strs.push(String("apple"))
     strs.push(String("fig"))
-    strs.sortBy(s.compareString)
-    check("Vec<String>.sortBy", strs.get(0).equals("apple") && strs.get(2).equals("pear"))
-    check("Vec<String>.containsBy", strs.containsBy(isApple))
-    check("Vec<String>.indexOfBy", strs.indexOfBy(isFig).unwrap() == 1)
+    strs.push(String("apple"))
+    strs.sort()
+    check("Vec<String>.sort", strs.get(0).equals("apple") && strs.get(3).equals("pear"))
+    local probeApple: String = String("apple")
+    local probeFig: String = String("fig")
+    local probeKiwi: String = String("kiwi")
+    check("Vec<String>.contains", strs.contains(&probeApple) && !strs.contains(&probeKiwi))
+    check("Vec<String>.indexOf", strs.indexOf(&probeFig).unwrap() == 2)
+    check("Vec<String>.binarySearch", strs.binarySearch(&probeFig).unwrap() == 2)
+    strs.dedup()
+    check("Vec<String>.dedup", strs.length() == 3 && strs.get(0).equals("apple"))
+}
+
+fn twoOrdered() -> bool {
+    local v: Vec<String> = Vec<String>()
+    v.push(String("pear"))
+    v.push(String("apple"))
+    v.push(String("fig"))
+    v.sortBy(s.compareString)
+    return v.get(0).equals("apple") && v.get(2).equals("pear")
 }
 
 fn cmpI32Pair(a: *i32, b: *i32) -> i32 { return cmpI32(a, b) }
@@ -272,14 +293,18 @@ fn sliceChecks(t: *T) {
     local a: [i32; 8] = [5, 3, 9, 1, 7, 2, 8, 4]
     sl.sortSlice<i32>(a[0..8], cmpI32Pair)
     check("sortSlice orders", a[0] == 1 && a[7] == 9)
-    check("containsSlice", sl.containsSlice<i32>(a[0..8], 7) && !sl.containsSlice<i32>(a[0..8], 100))
-    check("indexOfSlice", sl.indexOfSlice<i32>(a[0..8], 7) == 5)
+    local probe: i32 = 7
+    local miss: i32 = 100
+    check("containsSlice", sl.containsSlice<i32>(a[0..8], &probe) && !sl.containsSlice<i32>(a[0..8], &miss))
+    check("indexOfSlice", sl.indexOfSlice<i32>(a[0..8], &probe) == 5)
     check("indexOfBySlice", sl.indexOfBySlice<i32>(a[0..8], even) == 1)
+    check("hasAdjacentDuplicates", !sl.hasAdjacentDuplicates<i32>(a[0..8]))
     sl.reverseSlice<i32>(a[0..8])
     check("reverseSlice", a[0] == 9 && a[7] == 1)
     sl.sortSlice<i32>(a[0..8], cmpI32Pair)
     sl.dedupSlice<i32>(a[0..8])
     check("dedupSlice keeps the length of a distinct run", a[0] == 1 && a[7] == 9)
+    check("Vec<String>.sortBy keeps a custom order", twoOrdered())
 }
 
 fn iterChecks(t: *T) {

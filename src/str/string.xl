@@ -5,7 +5,10 @@ from "../mem/mem" import currentAllocator
 from "../mem/memory" import memcpy
 from "../collections/vec" import Vec
 from "str" import fromParts, view, eq, find, findLast, contains, startsWith, endsWith
-from "compare" import compare, equalIgnoreCase, globMatch, isSpace
+from "chars" import isSpace, toLower, toUpper
+from "compare" import compare, equalIgnoreCase, globMatch
+from "fmt" import Writer, Display
+from "unicode" import Chars, chars, charCount
 
 export class String {
     ptr: *u8     // nil when cap == 0
@@ -204,6 +207,54 @@ export class String {
         return trimEnd(self.asStr())
     }
 
+    /// A new String without the leading and trailing ASCII whitespace (see `trim`).
+    fn trim(self) -> String {
+        return trim(self.asStr())
+    }
+
+    /// The pieces of the content between occurrences of `sep`, each a new String (see `split`).
+    fn split(self, sep: str) -> Vec<String> {
+        return split(self.asStr(), sep)
+    }
+
+    /// The pieces of the content between runs of ASCII whitespace (see `splitAsciiWhitespace`).
+    fn splitAsciiWhitespace(self) -> Vec<String> {
+        return splitAsciiWhitespace(self.asStr())
+    }
+
+    /// The lines of the content (see `lines`).
+    fn lines(self) -> Vec<String> {
+        return lines(self.asStr())
+    }
+
+    /// The number of code points of the content, or -1 when it is not valid UTF-8 (see `std/str/unicode`).
+    fn charCount(self) -> i64 {
+        return charCount(self)
+    }
+
+    /// The code point iterator of the content (see `chars`).
+    fn chars(self) -> Chars {
+        return chars(self)
+    }
+
+    /// The content written to `w`, a `std/str/fmt` `Writer` (a `FmtSink`, a `String`, a file). Returns the number of
+    /// bytes the writer took, or a negative code the writer defines.
+    fn writeTo(self, w: *Writer) -> isize {
+        return w.write(self)
+    }
+
+    /// A new String with the ASCII letters A to Z made lowercase; other bytes are unchanged.
+    /// @cost one pass over the bytes, one allocation.
+    fn toLowerAscii(self) -> String {
+        return toLowerAscii(self.asStr())
+    }
+
+    /// A new String with the ASCII letters a to z made uppercase; other bytes are unchanged.
+    /// @cost one pass over the bytes, one allocation.
+    fn toUpperAscii(self) -> String {
+        return toUpperAscii(self.asStr())
+    }
+
     /// A new String with the first occurrence of `needle` replaced by `replacement` (see `replace`).
     fn replace(self, needle: str, replacement: str) -> String {
         return replace(self.asStr(), needle, replacement)
@@ -222,36 +273,6 @@ export class String {
     /// True when this string, used as a glob pattern (`*` and `?`), matches all of `text`.
     fn globMatch(self, text: str) -> bool {
         return globMatch(self.asStr(), text)
-    }
-
-    /// A new String with the ASCII letters A to Z made lowercase; other bytes are unchanged.
-    fn toLowerAscii(self) -> String {
-        local out: String = String()
-        local i: usize = 0
-        while i < self.len {
-            local c: u8 = self.ptr[i]
-            if c >= 65 && c <= 90 {
-                c = c + 32
-            }
-            out.push(c)
-            i = i + 1
-        }
-        return out
-    }
-
-    /// A new String with the ASCII letters a to z made uppercase; other bytes are unchanged.
-    fn toUpperAscii(self) -> String {
-        local out: String = String()
-        local i: usize = 0
-        while i < self.len {
-            local c: u8 = self.ptr[i]
-            if c >= 97 && c <= 122 {
-                c = c - 32
-            }
-            out.push(c)
-            i = i + 1
-        }
-        return out
     }
 }
 
@@ -315,11 +336,46 @@ export fn split(s: str, sep: str) -> Vec<String> {
     return parts
 }
 
+/// The lines of `s`: every piece between `\n` bytes, with a `\r` directly before the `\n` dropped. A piece of its own
+/// is returned for a trailing `\n` or an empty line, so `"a\n\nb"` gives `[a, \n, b]` and `"a\n"` gives `[a, \n]`
+/// (`len` 2, the last piece empty), matching the way a text file's line terminators read. An empty input gives one
+/// empty line. The bytes are copied, so every line is an owned `String`.
+export fn lines(s: str) -> Vec<String> {
+    local out: Vec<String> = Vec<String>()
+    local start: usize = 0
+    for i in 0..s.len {
+        if s[i] == 10 {
+            local end: usize = i
+            if end > start && s[end - 1] == 13 { end = end - 1 }
+            out.push(slice(s, start, end - start))
+            start = i + 1
+        }
+    }
+    if start < s.len {
+        out.push(slice(s, start, s.len - start))
+    }
+    return out
+}
+
+/// The elements of `parts` written in order with `sep` between them: `[a, b, c]` with `", "` gives `"a, b, c"`. An empty
+/// vector gives an empty String and a one-element vector gives that element alone. No trailing separator is written.
+/// @ownership `parts` is borrowed; the result is a fresh String that the caller frees.
+/// @cost `O(total bytes)` copies and one grow of the output, which is reserved once when
+/// @cost `parts.length() * 8` is already a lower bound on the text.
+export fn join(parts: *Vec<String>, sep: str) -> String {
+    local out: String = String()
+    for part, i in parts {
+        if i > 0 { out.append(sep) }
+        out.append(part)
+    }
+    return out
+}
+
 /// The pieces of `s` between runs of ASCII whitespace, each a new String. A run of whitespace of any length is one
 /// separator, so no empty piece is produced by it, and leading and trailing whitespace produce none: `"  a b  "`
 /// gives `[a, b]`. Whitespace is the ASCII set of `isSpace` (space, tab, newline, vertical tab, form feed, carriage
 /// return); every other byte, including the bytes of a multi-byte UTF-8 character, is part of a piece. An input made
-/// only of whitespace gives an empty Vec.
+/// only of whitespace gives an empty Vec. This is the field list and the word split of a parser.
 export fn splitAsciiWhitespace(s: str) -> Vec<String> {
     local parts: Vec<String> = Vec<String>()
     local i: usize = 0
@@ -333,6 +389,30 @@ export fn splitAsciiWhitespace(s: str) -> Vec<String> {
         }
     }
     return parts
+}
+
+/// `s` with every ASCII letter A to Z made lowercase; other bytes are unchanged. A new String, so `s` is borrowed.
+/// @ownership `s` is borrowed; the result is a fresh String that the caller frees.
+/// @cost one pass over the bytes, one allocation of `s.len` bytes.
+export fn toLowerAscii(s: str) -> String {
+    local out: String = String()
+    out.reserve(s.len)
+    for i in 0..s.len {
+        out.push(toLower(s[i]))
+    }
+    return out
+}
+
+/// `s` with every ASCII letter a to z made uppercase; other bytes are unchanged.
+/// @ownership `s` is borrowed; the result is a fresh String that the caller frees.
+/// @cost one pass over the bytes, one allocation of `s.len` bytes.
+export fn toUpperAscii(s: str) -> String {
+    local out: String = String()
+    out.reserve(s.len)
+    for i in 0..s.len {
+        out.push(toUpper(s[i]))
+    }
+    return out
 }
 
 /// Copies at most `cap` bytes of `s` to `dst` and returns how many were written. When `s` is longer, the copy stops
@@ -417,25 +497,21 @@ export fn repeat(s: str, n: usize) -> String {
 // The comparison operators live beside the type, because a generic function (`Vec.sort`,
 // `Vec.contains`, `binarySearch`) reaches an operator only when the module that declares it is
 // imported by the generic's own module. `collections/vec` imports this module for exactly that.
-//
-// A `String` owns its bytes, so an operator that takes it by value moves it into the operator and
-// drops it there: using `a < b` and then reading `a` again reads freed storage. A `Vec<String>` is
-// therefore ordered and searched with `compareString`/`equalsString` on element pointers.
+// A `String` owns its bytes and is compared by address, so `a == b` and `a < b` read both operands through their
+// pointers and neither is moved or dropped: any `Vec<String>` sorts, searches and dedups with the plain operators.
 
-/// `==` on two owned `String`s: byte equality. The operands are consumed, so this is for a value
-/// that will not be read again; a borrowed comparison uses `equalsString` or `String.equals`.
-fn ==(a: String, b: String) -> bool {
+/// `==` on two owned `String`s: byte equality. Both operands are read in place.
+fn ==(a: *String, b: *String) -> bool {
     return eq(a.asStr(), b.asStr())
 }
 
-/// `<` on two owned `String`s: byte order. The operands are consumed; see `compareString`.
-fn <(a: String, b: String) -> bool {
+/// `<` on two owned `String`s: byte order. Both operands are read in place.
+fn <(a: *String, b: *String) -> bool {
     return compare(a.asStr(), b.asStr()) < 0
 }
 
-/// Three-way byte-order comparison of two `String`s read through pointers: the comparator
-/// `Vec<String>.sortBy`, `binarySearchBy` and `indexOfBy` take, and the only safe way to compare
-/// Strings a container still owns.
+/// Three-way byte-order comparison of two `String`s read through pointers, the comparator `Vec<String>.sortBy` takes
+/// for a custom order. The plain `sort` and `binarySearch` use the `<` operator above.
 /// @cost `O(min(len))` byte comparisons.
 export fn compareString(a: *String, b: *String) -> i32 {
     return compare(a.asStr(), b.asStr())
@@ -445,4 +521,21 @@ export fn compareString(a: *String, b: *String) -> i32 {
 /// @cost `O(min(len))` byte comparisons.
 export fn equalsString(a: *String, b: *String) -> bool {
     return eq(a.asStr(), b.asStr())
+}
+
+// A `String` is a `Writer`: appending text is the whole of its write. It is the sink `format` itself uses, so a
+// function taking `*Writer` can be handed a `FmtSink`, a `String` or a file without a box or an allocation.
+impl Writer for String {
+    fn write(self, s: *String) -> isize {
+        self.append(s.asStr())
+        return s.length() as isize
+    }
+}
+
+// A `String` is a `Display`: its text is itself, appended verbatim. This is what lets a `String` sit in a field of a
+// user type whose own `display` walks its fields, and what makes `fmtWrite(out, *Display)` accept one.
+impl Display for String {
+    fn display(self, out: *String) {
+        out.append(self)
+    }
 }

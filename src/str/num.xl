@@ -1,0 +1,331 @@
+// std/str/num: parsing a number out of text. The integer forms live in `str/str` (`toI64`, `toU64`) because they share
+// `toU64`'s overflow check; a float needs its own routine, since the digits of a decimal fraction are not exact in
+// binary and the last one decides the rounding.
+//
+// The accepted grammar is `[+-]digits[.digits][e[+-]digits]` with at least one digit, no spaces and no underscores:
+// the number grammar of JSON (RFC 8259 section 6) without its rule that a fraction needs an integer part, so `.5` and
+// `5.` parse. The `inf`/`nan` names and a hex float are not accepted; a caller that needs them tests for them first.
+// Returns false and leaves `out` alone for anything that is not a number, and for a value that rounds past DBL_MAX;
+// a value below half the smallest subnormal rounds to a zero of its sign, as IEEE 754 rounding gives.
+//
+// Correct rounding, by the two paths of Clinger (Proc. PLDI 1990, "How to read floating point numbers accurately"):
+//
+//   1. Exact path. When the significand is below 2^53 and the power of ten is at most 22 in either direction, both
+//      factors are exactly representable, so `(f64)significand * p10` or `(f64)significand / p10` is one correctly
+//      rounded operation, and the result is the nearest double. This covers most hand-written and JSON numbers.
+//   2. Exact fallback. Otherwise the decimal value is a rational `significand / 10^d` (or `significand * 10^d`) and the
+//      answer is found by a binary search over the 2048 bit patterns of the positive doubles. A candidate `c` is
+//      compared by holding both sides as exact integers: `significand * 10^(k-d)` against `c as a whole number`. The
+//      search widens the integers by `10^d` rather than scaling the value, so nothing overflows beyond `BigInt`'s
+//      4160-bit bound for the inputs this file accepts.
+//
+// Both paths use `BigInt`, so the answer is exact for every input whose digits fit; a significand longer than
+// `BigInt` holds parses false, which is a documented limit rather than a wrong answer.
+//
+// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the number grammar.
+// @spec https://dl.acm.org/doi/10.1145/93542.93559 (Clinger, PLDI 1990) for the correctly rounded conversion.
+from "chars" import isDigit
+from "string" import String
+from "../math/big" import BigInt
+from "../math/float" import f64Bits, f64FromBits
+
+/// The largest exact power of ten in a `f64`: 10^22 (10^23 is the first one that needs more than 53 bits).
+define POW10_EXACT = 22
+
+/// The most digits the exact path keeps. `BigInt` holds 4160 bits, which is about 1250 decimal digits, and the binary
+/// search multiplies that by `10^400`, so 800 digits leave room for every input the search can compare.
+define MAX_DIGITS = 800
+
+/// The powers of ten from 10^0 to 10^22, each exactly representable. Read by `toF64`'s exact path.
+fn pow10Exact(n: usize) -> f64 {
+    local r: f64 = 1.0
+    for k in 0..n {
+        r = r * 10.0
+    }
+    return r
+}
+
+/// @contract `s` as the nearest `f64`, ties to even. Returns false, and leaves `out` alone, when `s` is not a number
+/// @contract in the grammar the file header states, or when it rounds past DBL_MAX; a value under half the smallest
+/// @contract subnormal gives a signed zero.
+/// @ownership `s` is borrowed; the result is written through `out`.
+/// @cost a few multiplications for an ordinary number; a wide-integer binary search otherwise, no allocation beyond
+/// @cost `BigInt`'s limb vector.
+export fn toF64(s: str, out: *f64) -> bool {
+    if s.len == 0 { return false }
+    local i: usize = 0
+    local negative: bool = false
+    if s[0] == 45 || s[0] == 43 {
+        negative = s[0] == 45
+        i = 1
+    }
+    // The digits themselves, so the exact path keeps every one of them; `significand` is the fast path's 19-digit
+    // value and is only consulted while `significant` is under that bound.
+    local digits: [u8; MAX_DIGITS]
+    local kept: usize = 0
+    local significand: u64 = 0
+    local significant: usize = 0   // digits, counted without leading zeros
+    local exponentTen: i32 = 0
+    local anyDigit: bool = false
+    // A digit past the kept ones is dropped; `dropped` remembers whether any of them was non-zero, so the exact path
+    // can tell a value that sits exactly on a rounding tie from one just above it.
+    local dropped: bool = false
+    while i < s.len && isDigit(s[i]) {
+        anyDigit = true
+        // A leading zero moves nothing; every later digit extends the significand by one decimal place.
+        if significant == 0 && s[i] == 48 {
+            i = i + 1
+            continue
+        }
+        // Past 19 digits the significand no longer fits a u64; only the exact path is meaningful then.
+        if significant < 19 {
+            significand = significand * 10 + (s[i] - 48) as u64
+        }
+        if kept < MAX_DIGITS - 1 {
+            digits[kept] = s[i]
+            kept = kept + 1
+        } else {
+            // An integer digit that is not kept still scales the value by ten.
+            exponentTen = exponentTen + 1
+            dropped = dropped || s[i] != 48
+        }
+        significant = significant + 1
+        i = i + 1
+    }
+    if i < s.len && s[i] == 46 {
+        i = i + 1
+        while i < s.len && isDigit(s[i]) {
+            anyDigit = true
+            if significant == 0 && s[i] == 48 {
+                // A leading zero of the fraction moves the point, not the significand.
+                exponentTen = exponentTen - 1
+                i = i + 1
+                continue
+            }
+            if significant < 19 {
+                significand = significand * 10 + (s[i] - 48) as u64
+            }
+            if kept < MAX_DIGITS - 1 {
+                digits[kept] = s[i]
+                kept = kept + 1
+                exponentTen = exponentTen - 1
+            } else {
+                // A fraction digit that is not kept changes neither the scale nor the kept value.
+                dropped = dropped || s[i] != 48
+            }
+            significant = significant + 1
+            i = i + 1
+        }
+    }
+    if !anyDigit { return false }
+    if i < s.len && (s[i] == 101 || s[i] == 69) {
+        i = i + 1
+        local expNegative: bool = false
+        if i < s.len && (s[i] == 45 || s[i] == 43) {
+            expNegative = s[i] == 45
+            i = i + 1
+        }
+        if i >= s.len || !isDigit(s[i]) { return false }
+        local e: i32 = 0
+        while i < s.len && isDigit(s[i]) {
+            if e < 100000 {
+                e = e * 10 + (s[i] - 48) as i32
+            }
+            i = i + 1
+        }
+        if expNegative {
+            exponentTen = exponentTen - e
+        } else {
+            exponentTen = exponentTen + e
+        }
+    }
+    if i != s.len { return false }
+    // A value of only zeros is 0, whatever its exponent, and keeps the sign of the input (`-0.0` is `-0.0`).
+    if significant == 0 {
+        if negative {
+            *out = f64FromBits(0x8000000000000000)
+        } else {
+            *out = 0.0
+        }
+        return true
+    }
+    // The exact path, when the significand fits 53 bits and the power of ten is an exact double.
+    if significant <= 15 && exponentTen <= POW10_EXACT && exponentTen >= (0 - POW10_EXACT) {
+        local value: f64 = significand as f64
+        if exponentTen > 0 {
+            value = value * pow10Exact(exponentTen as usize)
+        } else if exponentTen < 0 {
+            value = value / pow10Exact((0 - exponentTen) as usize)
+        }
+        if negative {
+            value = 0.0 - value
+        }
+        *out = value
+        return true
+    }
+    return toF64Exact(out, &digits[0], kept, exponentTen, negative, dropped)
+}
+
+/// The bit pattern of the double `2^e`, clamped: `0` below the smallest subnormal `2^-1074`, infinity above `2^1023`.
+/// Used to bracket the binary search, so it only has to be on the right side of the value, not exact.
+fn powerOfTwoBits(e: i32) -> u64 {
+    if e > 1023 { return 0x7ff0000000000000 }
+    if e >= -1022 { return ((e + 1023) as u64) << 52 }
+    if e >= -1074 { return (1 as u64) << ((e + 1074) as u64) }
+    return 0
+}
+
+/// The exact path of `toF64`: the double nearest to `significand * 10^exponentTen`, ties to even, found by a binary
+/// search over the bit patterns of the non-negative doubles.
+///
+/// Every candidate `c` is compared on a common integer scale. A decimal `m * 10^d` and a double `s * 2^b` are both
+/// multiplied by `10^max(0, -d) * 2^max(0, -b)`: the decimal side gains the binary factor and the double side the
+/// decimal one, so both become plain integers and `BigInt.cmp` decides.
+///
+/// The search is bracketed to a few binary exponents around the value (from its decimal magnitude), so a candidate's
+/// `2^b` stays close to `m * 10^d` and both sides stay under `BigInt`'s 4160 bits: with at most 800 digits and the
+/// magnitude bounds below, `|d| <= 1124` and each side is under about 3800 bits.
+fn toF64Exact(out: *f64, digits: *u8, kept: usize, exponentTen: i32, negative: bool, dropped: bool) -> bool {
+    local n: usize = kept
+    local d: i32 = exponentTen
+    // Dropped non-zero digits make the value slightly larger than the kept ones say. One extra `1` digit stands for
+    // them: it is below any tie the kept digits can express (a tie needs at most 767 significant digits), so it moves
+    // a value off an exact tie and never across one.
+    if dropped {
+        digits[n] = 49
+        n = n + 1
+        d = d - 1
+    }
+    // The value is in [10^(top-1), 10^top). Above 10^309 it is past DBL_MAX (about 1.8e308); below 10^-324 it is
+    // under half the smallest subnormal (4.9e-324) and rounds to zero.
+    local top: i32 = (n as i32) + d
+    if top > 309 { return false }
+    if top < -323 {
+        *out = negative ? f64FromBits(0x8000000000000000) : 0.0
+        return true
+    }
+    local text: String = String()
+    for k in 0..n {
+        text.push(digits[k])
+    }
+    local m: BigInt = BigInt()
+    if !m.fromDecimal(text.asStr(), &m) { return false }
+    // log2(10) is 3.32193; 3401/1024 is just below it and 1701/512 just above, and the margin of 4 absorbs both the
+    // truncating division of a negative product and the leftover error, so `lo <= value < hi` holds.
+    // The bracket: the largest double at or below 10^(top-1) and the smallest one above 10^top, each widened by 4
+    // binary exponents. `powerOfTwoBits` clamps at zero and at infinity, so the interval always exists, and a value
+    // that sits above DBL_MAX still gets a `hi` at or past it rather than one below.
+    local lo: u64 = powerOfTwoBits(((top - 1) * 3401) / 1024 - 4)
+    local hi: u64 = powerOfTwoBits((top * 1701) / 512 + 4)
+    if hi <= lo { hi = lo + 1 }
+    while hi - lo > 1 {
+        local mid: u64 = lo + (hi - lo) / 2
+        if decimalBelow(&m, d, mid) {
+            hi = mid
+        } else {
+            lo = mid
+        }
+    }
+    // `lo` is the largest double at or below the value and `hi` the next pattern above it, so the value is in
+    // `[lo, hi)`. The nearer one wins; an exact tie goes to the even pattern, the f64 rounding rule. When `hi` is the
+    // infinity pattern it stands for 2^1024, so a value at or past DBL_MAX plus half an ulp rounds to infinity,
+    // which is out of range.
+    local bits: u64 = lo
+    local order: i32 = compareTie(&m, d, lo, hi)
+    if order > 0 { bits = hi }
+    if bits == 0x7ff0000000000000 { return false }
+    if negative { bits = bits | 0x8000000000000000 }
+    *out = f64FromBits(bits)
+    return true
+}
+
+/// A decimal `m * 10^d` and a double `bits` brought to one integer scale, as an integer pair.
+/// Returns the decimal side in `lo` and the double side in `hi`; they never overflow `BigInt`.
+fn alignSides(m: *BigInt, d: i32, bits: u64, dec: *BigInt, dbl: *BigInt) {
+    m.copy(dec)
+    local sig: BigInt = doubleToInteger(bits)
+    sig.copy(dbl)
+    // The decimal is `m * 10^d`, so `10^|d|` moves to whichever side does not carry it: a positive d is already in
+    // `m`, and the double side is multiplied to match; a negative d divides it, so the double side carries it instead.
+    local tenPower: i32 = d
+    if tenPower < 0 { tenPower = 0 - tenPower }
+    if tenPower > 0 {
+        local base: BigInt = BigInt(10)
+        local ten: BigInt = BigInt(1)
+        base.pow(tenPower as u64, &ten)
+        if d > 0 {
+            local t: BigInt = BigInt()
+            dec.mul(&ten, &t)
+            t.copy(dec)
+        } else {
+            local t: BigInt = BigInt()
+            dbl.mul(&ten, &t)
+            t.copy(dbl)
+        }
+    }
+    // The double is `significand * 2^b`. A negative b moves the decimal side up by 2^-b; a positive b the double side.
+    local b: i32 = doubleExponent(bits)
+    if b >= 0 {
+        local t: BigInt = BigInt()
+        dbl.shiftLeft(b as usize, &t)
+        t.copy(dbl)
+    } else {
+        local t: BigInt = BigInt()
+        dec.shiftLeft((0 - b) as usize, &t)
+        t.copy(dec)
+    }
+}
+
+/// A decimal `m * 10^d` against a double `bits`: -1, 0 or 1.
+fn compareDecimal(m: *BigInt, d: i32, bits: u64) -> i32 {
+    local dec: BigInt = BigInt()
+    local dbl: BigInt = BigInt()
+    alignSides(m, d, bits, &dec, &dbl)
+    return dec.cmp(&dbl)
+}
+
+/// Which of `lo` and `hi` the decimal `m * 10^d` is nearer: 1 for `hi`, -1 for `lo`, 0 for an exact tie, which is
+/// resolved to the even bit pattern, the f64 rounding rule of IEEE 754 section 4.3.1.
+fn compareTie(m: *BigInt, d: i32, lo: u64, hi: u64) -> i32 {
+    local value: BigInt = BigInt()
+    local below: BigInt = BigInt()
+    local above: BigInt = BigInt()
+    alignSides(m, d, lo, &value, &below)
+    local ignored: BigInt = BigInt()
+    alignSides(m, d, hi, &ignored, &above)
+    // The value is in `(lo, hi]` for every input inside the f64 range, but a caller may hand in a value above the
+    // bracket (a decimal past DBL_MAX); that one is nearer `hi`, and `value - below` would be the only side to build.
+    if value.cmp(&above) >= 0 { return 1 }
+    local down: BigInt = BigInt()
+    local up: BigInt = BigInt()
+    value.sub(&below, &down)
+    above.sub(&value, &up)
+    // Equal distances: the even pattern wins. `lo` and `hi` are adjacent, so exactly one of them is even.
+    if down.equals(&up) {
+        if (hi & 1) == 0 { return 1 }
+        return 0 - 1
+    }
+    if down.cmp(&up) < 0 { return 0 - 1 }
+    return 1
+}
+
+/// True when the decimal `m * 10^d` is strictly below the double `bits`.
+fn decimalBelow(m: *BigInt, d: i32, bits: u64) -> bool {
+    return compareDecimal(m, d, bits) < 0
+}
+
+/// The significand of the double `bits` as an integer (the implicit leading one included).
+fn doubleToInteger(bits: u64) -> BigInt {
+    local expBits: u64 = (bits >> 52) & 0x7ff
+    local frac: u64 = bits & 0xfffffffffffff
+    if expBits == 0 { return BigInt(frac) }
+    return BigInt(frac | 0x10000000000000)
+}
+
+/// The power of two of the double `bits`: its value is `doubleToInteger(bits) * 2^this`.
+fn doubleExponent(bits: u64) -> i32 {
+    local expBits: u64 = (bits >> 52) & 0x7ff
+    if expBits == 0 { return 0 - 1074 }
+    return (expBits as i32) - 1075
+}
+

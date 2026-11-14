@@ -1,0 +1,90 @@
+// std/str/chars: the ASCII character classes of one byte, and the two byte transformations a parser needs
+// (case folding and a hex digit's value). Every class is the ASCII set of the name: `isAlpha` is A-Z and a-z,
+// never a Unicode letter, because a byte above 0x7f is a piece of a multi-byte UTF-8 character and not a
+// character of its own. A caller that needs Unicode property tables works on code points (`std/str/unicode`);
+// a caller that reads a byte stream (a parser, a header field, a numeric literal) uses these.
+//
+// The ranges are the ones C's `ctype.h` in the "C" locale defines (https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/ctype.h.html),
+// written out rather than looked up in a table, so the classes agree with the RFCs that quote them.
+//
+// A transformation (`toLower`, `toUpper`) is `fn(u8) -> u8` either way, so a caller writes one function name and cannot
+// confuse "this byte's class" with "this text, lowercased": the text forms are `String.toLowerAscii` and
+// `String.toUpperAscii`.
+
+/// A decimal digit: 0-9.
+export fn isDigit(c: u8) -> bool {
+    return c >= b'0' && c <= b'9'
+}
+
+/// A lowercase letter: a-z.
+export fn isLower(c: u8) -> bool {
+    return c >= b'a' && c <= b'z'
+}
+
+/// An uppercase letter: A-Z.
+export fn isUpper(c: u8) -> bool {
+    return c >= b'A' && c <= b'Z'
+}
+
+/// An ASCII letter: A-Z or a-z. A byte of a multi-byte UTF-8 character is not a letter.
+export fn isAlpha(c: u8) -> bool {
+    return isLower(c) || isUpper(c)
+}
+
+/// An ASCII letter or a decimal digit.
+export fn isAlnum(c: u8) -> bool {
+    return isAlpha(c) || isDigit(c)
+}
+
+/// A hexadecimal digit: 0-9, a-f or A-F, the digit set RFC 5234 section 2.3 ("HEXDIG") names.
+/// @spec https://www.rfc-editor.org/rfc/rfc5234#section-2.3 for the digit set.
+export fn isHex(c: u8) -> bool {
+    return isDigit(c) || (c >= b'A' && c <= b'F') || (c >= b'a' && c <= b'f')
+}
+
+/// ASCII whitespace: space, tab, newline, vertical tab, form feed and carriage return (0x09-0x0d and 0x20).
+/// This is the set JSON (RFC 8259 section 2) and the HTTP field grammar (RFC 9110 section 5.6.3) call whitespace.
+/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-2 for the six characters.
+export fn isSpace(c: u8) -> bool {
+    return c == b' ' || (c >= b'\t' && c <= b'\r')
+}
+
+/// A visible character: the printable range of ASCII, space (0x20) to `~` (0x7e). A parser that has to reject a
+/// control byte (JSON's "unescaped control character", RFC 8259 section 7) asks `isControl` instead.
+/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-7 for the control-byte rule.
+export fn isPrint(c: u8) -> bool {
+    return c >= b' ' && c <= b'~'
+}
+
+/// A C0 control byte: below 0x20, and DEL (0x7f).
+export fn isControl(c: u8) -> bool {
+    return c < b' ' || c == 0x7f
+}
+
+/// A hexadecimal digit an uppercase literal may use: 0-9 and A-F only, the alphabet RFC 4648 section 8 (base16)
+/// allows.
+/// @spec https://www.rfc-editor.org/rfc/rfc4648#section-8 for the uppercase-only base16 alphabet.
+export fn isUpperHex(c: u8) -> bool {
+    return isDigit(c) || (c >= b'A' && c <= b'F')
+}
+
+/// `c` with A-Z folded to a-z; every other byte, including a byte of a multi-byte character, is unchanged.
+export fn toLower(c: u8) -> u8 {
+    if isUpper(c) { return c + (b'a' - b'A') }
+    return c
+}
+
+/// `c` with a-z folded to A-Z; every other byte is unchanged.
+export fn toUpper(c: u8) -> u8 {
+    if isLower(c) { return c - (b'a' - b'A') }
+    return c
+}
+
+/// The value of the ASCII hex digit `c` (0-15), or -1 when `c` is not one. The single place a hex parser takes a
+/// digit's value from, so the case rule is written once.
+export fn hexValue(c: u8) -> i32 {
+    if isDigit(c) { return (c - b'0') as i32 }
+    if c >= b'a' && c <= b'f' { return (c - b'a') as i32 + 10 }
+    if c >= b'A' && c <= b'F' { return (c - b'A') as i32 + 10 }
+    return -1
+}

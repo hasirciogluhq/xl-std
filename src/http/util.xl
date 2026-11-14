@@ -1,6 +1,7 @@
 // std/http/util: string, number and header-block helpers shared by the HTTP server and client.
 // Everything here works on NUL-terminated byte strings and caller-provided buffers.
 from "../mem/memory" import strlen
+from "../str/chars" import toLower
 
 export fn cstrEq(a: *u8, b: *u8) -> bool {
     local i: usize = 0
@@ -8,23 +9,18 @@ export fn cstrEq(a: *u8, b: *u8) -> bool {
     return a[i] == b[i]
 }
 
-export fn lower(c: u8) -> u8 {
-    if c >= 65 && c <= 90 { return c + 32 }
-    return c
-}
-
 /// Case-insensitive equality of two NUL-terminated strings.
 export fn eqCI(a: *u8, b: *u8) -> bool {
     local i: usize = 0
-    while a[i] != 0 && lower(a[i]) == lower(b[i]) { i = i + 1 }
-    return lower(a[i]) == lower(b[i])
+    while a[i] != 0 && toLower(a[i]) == toLower(b[i]) { i = i + 1 }
+    return toLower(a[i]) == toLower(b[i])
 }
 
 /// Does `s` start with `prefix` (case-insensitive)?
 export fn startsCI(s: *u8, prefix: *u8) -> bool {
     local i: usize = 0
     while prefix[i] != 0 {
-        if lower(s[i]) != lower(prefix[i]) { return false }
+        if toLower(s[i]) != toLower(prefix[i]) { return false }
         i = i + 1
     }
     return true
@@ -131,7 +127,7 @@ export fn headerLookup(block: *u8, name: *u8) -> *u8 {
     p = p + 1
     while block[p] != 0 {
         local k: usize = 0
-        while k < nl && lower(block[p + k]) == lower(name[k]) { k = k + 1 }
+        while k < nl && toLower(block[p + k]) == toLower(name[k]) { k = k + 1 }
         if k == nl && block[p + nl] == 58 {
             local v: usize = p + nl + 1
             while block[v] == 32 || block[v] == 9 { v = v + 1 }

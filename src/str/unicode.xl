@@ -1,0 +1,114 @@
+// std/str/unicode: the code point view of UTF-8 text. `std/encoding/utf8` validates and decodes one sequence at a
+// byte level and owns the two whole-text answers (`utf8CharCount`, `utf8PushChar`); this module is the `String` face of
+// them (`charCount`, `pushChar`) plus the iterator, so a `String` method can call it without a cycle back into
+// `encoding`. Nothing here is a second implementation: the encoder and the counter are the `utf8` ones.
+//
+// A code point is an `i32`: a UTF-8 stream can be invalid, and the value that says so is -1, which no code point has.
+// Iteration follows the decoder of RFC 3629 (https://www.rfc-editor.org/rfc/rfc3629): a valid sequence yields its code
+// point as a `u32` (never above U+10FFFF), and every invalid or truncated sequence yields exactly one U+FFFD
+// REPLACEMENT CHARACTER for its first byte. The stream therefore always terminates and loses no count of the input
+// it cannot decode; `charCount` reports the same text as invalid with -1 instead of substituting.
+from "../encoding/utf8" import utf8SeqLen, utf8EncodedLen, utf8Count, utf8PushChar
+from "string" import String
+from "../collections/option" import Option
+
+/// U+FFFD REPLACEMENT CHARACTER, the scalar value every invalid byte of `chars` yields.
+/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-6 for the decoder's substitution rule.
+define REPLACEMENT = 0xfffd
+
+/// The length of the valid UTF-8 sequence at `s[at..]`, or 0 when the bytes there are not one: an invalid lead byte,
+/// a continuation byte in the wrong place, an overlong form, a surrogate or a value above U+10FFFF. The rules are the
+/// minimal-form and range rules of RFC 3629 section 3.
+/// @safety `at` must be below `s.len`; every caller checks the position before the call.
+fn validSeqLen(s: str, at: usize) -> usize {
+    local c: u8 = s[at]
+    local k: usize = utf8SeqLen(c)
+    if k == 0 || at + k > s.len { return 0 }
+    if k == 1 { return 1 }
+    // A continuation byte is 10xxxxxx; the first one bounds the code point enough to reject overlongs, surrogates
+    // and values above U+10FFFF without building it.
+    local c1: u8 = s[at + 1]
+    if (c1 & 0xc0) != 0x80 { return 0 }
+    if k == 2 {
+        // 0xc2..0xdf already exclude the overlong two-byte forms (0xc0, 0xc1), so the continuation is the only test.
+        return 2
+    }
+    if k == 3 {
+        if c == 0xe0 && c1 < 0xa0 { return 0 }        // overlong: below U+0800
+        if c == 0xed && c1 > 0x9f { return 0 }        // surrogate: U+D800..U+DFFF
+        if (s[at + 2] & 0xc0) != 0x80 { return 0 }
+        return 3
+    }
+    if c1 < 0x90 { return 0 }                          // overlong: below U+10000
+    if c == 0xf4 && c1 > 0x8f { return 0 }             // above U+10FFFF
+    if (s[at + 2] & 0xc0) != 0x80 || (s[at + 3] & 0xc0) != 0x80 { return 0 }
+    return 4
+}
+
+/// The code point of the valid sequence of length `k` at `s[at..]`.
+/// @safety `k` must be the length `validSeqLen` returned for `at`, so the continuation bytes exist.
+fn decodeSeq(s: str, at: usize, k: usize) -> u32 {
+    if k == 1 { return s[at] as u32 }
+    local cp: u32 = (s[at] as u32) & (0xff >> (k + 1)) as u32
+    for j in 1..k {
+        cp = (cp << 6) | ((s[at + j] as u32) & 0x3f)
+    }
+    return cp
+}
+
+/// The number of code points of `s`, or -1 when it is not entirely valid UTF-8. A valid stream counts one per
+/// sequence, so "a\u{e9}\u{1f600}" is 3, and a truncated sequence makes the whole answer -1 rather than a count of
+/// replacement characters; `utf8Valid` in `encoding/utf8` is the boolean form of the same question.
+/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-3 for the sequence lengths counted.
+/// @cost one pass, no allocation.
+export fn charCount(s: *String) -> i64 {
+    return utf8Count(s)
+}
+
+/// The code point at `s[at..]`, and its byte length in `len`: an invalid lead byte gives (`REPLACEMENT`, 1), so a loop
+/// always advances at least one byte.
+/// @safety `at` must be at or below `s.length()`.
+fn charAt(s: str, at: usize, len: *usize) -> u32 {
+    local k: usize = validSeqLen(s, at)
+    if k == 0 {
+        *len = 1
+        return REPLACEMENT as u32
+    }
+    *len = k
+    return decodeSeq(s, at, k)
+}
+
+/// The code point iterator `for cp in s.chars()` drives: `next` yields the next `u32` code point and `None` at the end.
+/// Its element is a value, not a pointer, so the loop body holds a number.
+/// @ownership the iterator borrows the bytes of `s`; `s` must outlive the loop and must not change while it runs.
+export struct Chars {
+    s: str
+    at: usize
+}
+
+impl Chars {
+    fn next(self: *Chars) -> Option<u32> {
+        if self.at >= self.s.len { return Option.None }
+        local k: usize = 0
+        local cp: u32 = charAt(self.s, self.at, &k)
+        self.at = self.at + k
+        return Option.Some(cp)
+    }
+}
+
+/// The code point iterator of `s` (see `Chars`). An invalid or truncated sequence yields one U+FFFD per byte, so the
+/// body sees every byte accounted for.
+/// @ownership `s` is borrowed for the loop; the iterator never outlives it.
+/// @cost one pass over the bytes, no allocation.
+export fn chars(s: *String) -> Chars {
+    return Chars { s: s.asStr(), at: 0 }
+}
+
+/// Appends the UTF-8 encoding of `cp` and returns the number of bytes written, or 0 (writing nothing) when `cp` is not
+/// a scalar value: negative, a surrogate, or above U+10FFFF. The one encoder of the library: `utf8PushChar` in
+/// `encoding/utf8` is this function, so the longest-sequence rule is written once.
+/// @ownership `s` is borrowed and grows by at most four bytes.
+/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-3 for the encoding of a scalar value.
+export fn pushChar(s: *String, cp: i32) -> usize {
+    return utf8PushChar(s, cp)
+}

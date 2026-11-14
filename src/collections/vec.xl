@@ -4,7 +4,7 @@
 // no element is ever duplicated by a call to get, first or last.
 from "../mem/mem" import currentAllocator
 from "../mem/memory" import memcpy
-from "../str/fmt" import fmtIndexPanic
+from "../str/panic" import fmtIndexPanic
 from "../str/string" import String
 from "option" import Option
 
@@ -287,124 +287,58 @@ impl<T> Vec<T> {
         currentAllocator.free(buf as *void)
     }
 
-    /// `binarySearch` against the vector's own `fn <`, which must be the order it is sorted in.
+    /// `binarySearch` against the vector's own `fn <`, which must be the order it is sorted in. Both sides are compared
+    /// in place, so a droppable `T` such as `String` searches with this method too.
+    /// @contract the vector must be sorted by the element's `fn <`; otherwise the result is meaningless.
     /// @cost `log n` comparisons.
-    /// @todo an element without `fn <` must use `binarySearchBy` with an explicit comparator.
-    fn binarySearch(self: *Vec<T>, v: T) -> Option<usize> {
-        // The search is written out rather than built on `binarySearchBy`, because a closure that
-        // captures the probe cannot be passed where a `fn(*T) -> i32` pointer is expected (`E0773`).
+    fn binarySearch(self: *Vec<T>, v: *T) -> Option<usize> {
         local lo: usize = 0
         local hi: usize = self.len
         while lo < hi {
             local mid: usize = lo + (hi - lo) / 2
-            if __builtin_read(self.slot(mid)) < v {
+            if *self.slot(mid) < *v {
                 lo = mid + 1
             } else {
                 hi = mid
             }
         }
-        if lo < self.len && !(__builtin_read(self.slot(lo)) < v) && !(v < __builtin_read(self.slot(lo))) {
+        if lo < self.len && !(*self.slot(lo) < *v) && !(*v < *self.slot(lo)) {
             return Option.Some(lo)
         }
         return Option.None
     }
 
-    /// The index of the first element for which `cmp(element)` returns `0`, assuming the vector is
-    /// already ordered by the same comparator, or `None` when no element matches.
-    /// @contract the vector must be sorted by the order `cmp` describes; otherwise the result is
-    /// @contract meaningless. On ties the leftmost matching index is returned.
-    /// @cost `log n` calls to `cmp`.
-    fn binarySearchBy(self: *Vec<T>, cmp: fn(*T) -> i32) -> Option<usize> {
-        local lo: usize = 0
-        local hi: usize = self.len
-        while lo < hi {
-            local mid: usize = lo + (hi - lo) / 2
-            if cmp(self.slot(mid)) < 0 {
-                lo = mid + 1
-            } else {
-                hi = mid
-            }
-        }
-        if lo < self.len && cmp(self.slot(lo)) == 0 { return Option.Some(lo) }
-        return Option.None
-    }
-
-    /// `true` when some element equals `v` by the element's `fn ==`.
-    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+    /// `true` when some element equals `*v` by the element's `fn ==`. Both sides are compared in place, so a droppable
+    /// element type (`String`, a `class`) is found this way too.
     /// @cost up to `n` comparisons, stopping at the first match.
-    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `containsBy`.
-    fn contains(self: *Vec<T>, v: T) -> bool {
+    fn contains(self: *Vec<T>, v: *T) -> bool {
         for i in 0..self.len {
-            if __builtin_read(self.slot(i)) == v { return true }
+            if *self.slot(i) == *v { return true }
         }
         return false
     }
 
-    /// `true` when `pred` holds for some element: the form every element type can use.
-    /// @cost up to `n` calls to `pred`, stopping at the first match.
-    fn containsBy(self: *Vec<T>, pred: fn(*T) -> bool) -> bool {
-        for i in 0..self.len {
-            if pred(self.slot(i)) { return true }
-        }
-        return false
-    }
-
-    /// The index of the first element equal to `v` by the element's `fn ==`, or `None`.
-    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+    /// The index of the first element equal to `*v` by the element's `fn ==`, or `None`.
     /// @cost up to `n` comparisons, stopping at the first match.
-    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `indexOfBy`.
-    fn indexOf(self: *Vec<T>, v: T) -> Option<usize> {
+    fn indexOf(self: *Vec<T>, v: *T) -> Option<usize> {
         for i in 0..self.len {
-            if __builtin_read(self.slot(i)) == v { return Option.Some(i) }
+            if *self.slot(i) == *v { return Option.Some(i) }
         }
         return Option.None
     }
 
-    /// The index of the first element for which `pred(element)` is true, or `None`: the form a type
-    /// without `fn ==` uses in place of `indexOf`.
-    /// @cost up to `n` calls to `pred`, stopping at the first match.
-    fn indexOfBy(self: *Vec<T>, pred: fn(*T) -> bool) -> Option<usize> {
-        for i in 0..self.len {
-            if pred(self.slot(i)) { return Option.Some(i) }
-        }
-        return Option.None
-    }
-
-    /// Removes each run of adjacent elements that are equal by `fn ==`, keeping the first of the
-    /// run and dropping the rest.
-    /// @contract only *adjacent* equal elements collapse, so a full dedup needs a `sort`/`sortBy`
-    /// @contract first; without it the result keeps every element that differs from its predecessor.
-    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+    /// Removes each run of adjacent elements that are equal by `fn ==`, keeping the first of the run and dropping the
+    /// rest.
+    /// @contract only *adjacent* equal elements collapse, so a full dedup needs a `sort`/`sortBy` first; without it
+    /// @contract the result keeps every element that differs from its predecessor.
     /// @ownership each removed element is dropped in place, so every element is dropped once.
-    /// @cost one pass and one move per kept element.
-    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `dedupBy`.
+    /// @cost one pass and one comparison per element after the first.
     fn dedup(self: *Vec<T>) {
         if self.len < 2 { return }
         local kept: usize = 1
         local i: usize = 1
         while i < self.len {
-            if __builtin_read(self.slot(i)) == __builtin_read(self.slot(kept - 1)) {
-                local dropped: T = __builtin_read(self.slot(i))
-            } else {
-                if kept != i { __builtin_write(self.slot(kept), __builtin_read(self.slot(i))) }
-                kept++
-            }
-            i++
-        }
-        self.len = kept
-    }
-
-    /// `dedup` with an explicit equality: two adjacent elements collapse when `eq(left, right)` is
-    /// true. The form a droppable element type uses, e.g. `str/string.equalsString`.
-    /// @contract only adjacent elements are compared; sort by the same key first for a full dedup.
-    /// @ownership each removed element is dropped in place, so every element is dropped once.
-    /// @cost one pass and one call to `eq` per element after the first.
-    fn dedupBy(self: *Vec<T>, eq: fn(*T, *T) -> bool) {
-        if self.len < 2 { return }
-        local kept: usize = 1
-        local i: usize = 1
-        while i < self.len {
-            if eq(self.slot(kept - 1), self.slot(i)) {
+            if *self.slot(i) == *self.slot(kept - 1) {
                 local dropped: T = __builtin_read(self.slot(i))
             } else {
                 if kept != i { __builtin_write(self.slot(kept), __builtin_read(self.slot(i))) }
@@ -416,22 +350,14 @@ impl<T> Vec<T> {
     }
 }
 
-/// The three-way comparator `sort` uses: the element's own `fn <`.
-///
-/// `compareDefault` is safe only for an element type with no drop: `fn <` takes its operands by
-/// value, so a droppable `T` (`String`, a `class`) is moved into the operator and dropped there,
-/// which frees storage the vector still points at. Such an element type is ordered with
-/// `sortBy`/`binarySearchBy` and a comparator that reads through the pointers, e.g.
-/// `str/string.compareString`.
-/// @todo the language cannot declare `fn <(a: *T, b: *T)` (a pointer operator is `E0709`), and a
-/// @todo generic `T` has no borrow, so this split cannot be closed inside the stdlib.
+/// The three-way comparator `sort` and `binarySearch` use: the element's own `fn <`, read through the pointers it
+/// takes (E0779). No operand is moved or dropped, so an element type with a drop glue (`String`, a `class`) is safe
+/// here — the same `sort` and `binarySearch` work for it as for an integer.
 fn compareDefault<T>(a: *T, b: *T) -> i32 {
-    if __builtin_read(a) < __builtin_read(b) { return -1 }
-    if __builtin_read(b) < __builtin_read(a) { return 1 }
+    if *a < *b { return -1 }
+    if *b < *a { return 1 }
     return 0
 }
-
-/// The address of element `i` of the raw array `p`, with the element size of `T` applied.
 /// @safety `i` must be within the array `p` points to; the merge below bounds it by the run end.
 fn atPtr<T>(p: *T, i: usize) -> *T {
     return (p as usize + i * sizeOf(T)) as *T

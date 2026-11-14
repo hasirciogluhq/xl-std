@@ -3,6 +3,7 @@
 // scalar and nonce. Nothing here is constant-time. Points are uncompressed affine big-endian
 // coordinates; hashes are passed in already computed.
 from "../../math/bignum" import Mont, montInit, montMul, montTo, montFrom, montPow, modAdd, modSub
+from "../../str/chars" import hexValue
 from "../../math/bignum" import bnZero, bnCopy, bnIsZero, bnCmp, bnSub, bnFromBytes, bnToBytes
 from "../../random/entropy" import randomBytes
 
@@ -26,17 +27,12 @@ struct Pt {
     z: [u32; 18]
 }
 
-fn hexVal(c: u8) -> u8 {
-    if c >= 97 { return c - 87 }
-    return c - 48
-}
-
 /// Parses a hex string of 2*`bytes` digits into `n` limbs.
 fn hexLimbs(out: *u32, n: usize, hex: *u8, bytes: usize) {
     local buf: [u8; 66]
     local i: usize = 0
     while i < bytes {
-        buf[i] = (hexVal(hex[i * 2]) * 16) + hexVal(hex[i * 2 + 1])
+        buf[i] = ((hexValue(hex[i * 2]) * 16) + hexValue(hex[i * 2 + 1])) as u8
         i = i + 1
     }
     bnFromBytes(out, n, &buf[0], bytes)

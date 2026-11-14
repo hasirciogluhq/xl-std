@@ -1,0 +1,208 @@
+// Text: the phase-2 layer of `std/str` — the byte classes (`chars`), the code point view (`unicode`), the `String`
+// text methods (`trim`, `split`, `lines`, `join`), correctly rounded float parsing (`toF64`), the format specifiers
+// (`{:08x}`, `{:.3}`, fill and alignment) and the `Display` interface. Every check prints "FAIL" with its name.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq
+from "std" import print, format, sprintf, snprintf, String, Vec, join
+from "std/str/chars" import isDigit, isAlpha, isAlnum, isHex, isUpper, isLower, isSpace, isPrint, toLower, toUpper, hexValue
+from "std/str/unicode" import chars, charCount, pushChar
+from "std/str/num" import toF64
+from "std/str/fmt" import Display
+from "std/math/float" import f64Bits
+import "std/encoding/utf8" as utf8
+
+global failures: i32 = 0
+
+fn check(name: *u8, ok: bool) {
+    if !ok {
+        failures = failures + 1
+        print("FAIL ")
+        print(name)
+        print("\n")
+    }
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "character classes", classChecks)
+    test(&s, "code points", codePointChecks)
+    test(&s, "string text methods", textMethodChecks)
+    test(&s, "float parsing", floatChecks)
+    test(&s, "format specifiers", specifierChecks)
+    test(&s, "display", displayChecks)
+    return suiteRun(&s)
+}
+
+fn classChecks(t: *T) {
+    failures = 0
+    check("isDigit", isDigit(48) && isDigit(57) && !isDigit(47) && !isDigit(58))
+    check("isAlpha", isAlpha(65) && isAlpha(122) && !isAlpha(64) && !isAlpha(123))
+    check("isAlnum", isAlnum(65) && isAlnum(48) && !isAlnum(32))
+    check("isHex", isHex(48) && isHex(97) && isHex(70) && !isHex(103))
+    check("isUpper / isLower", isUpper(65) && !isUpper(97) && isLower(97) && !isLower(65))
+    check("isSpace is the six ASCII blanks", isSpace(32) && isSpace(9) && isSpace(10) && isSpace(13) && !isSpace(65))
+    check("isPrint", isPrint(32) && isPrint(126) && !isPrint(31) && !isPrint(127))
+    check("toLower / toUpper", toLower(b'A') == b'a' && toUpper(b'a') == b'A' && toLower(b'0') == b'0')
+    check("hexValue", hexValue(b'0') == 0 && hexValue(b'a') == 10 && hexValue(b'A') == 10 && hexValue(b'F') == 15 && hexValue(b'g') == -1)
+    expectEq(t, failures as i64, 0)
+}
+
+fn codePointChecks(t: *T) {
+    failures = 0
+    local ascii: String = String("abc")
+    check("charCount ascii", charCount(&ascii) == 3)
+    local text: String = String()
+    pushChar(&text, 0x61)         // a
+    pushChar(&text, 0xe9)         // e-acute
+    pushChar(&text, 0x1f600)      // grinning face
+    check("charCount counts code points, not bytes", charCount(&text) == 3 && text.length() == 7)
+    local seen: i32 = 0
+    local last: u32 = 0
+    for cp in chars(&text) {
+        seen = seen + 1
+        last = cp
+    }
+    check("chars iterates", seen == 3 && last == 0x1f600)
+    check("pushChar rejects a surrogate", pushChar(&text, 0xd800) == 0)
+    local bad: String = String()
+    bad.push(0xff)
+    check("an invalid stream counts -1", charCount(&bad) == -1)
+
+    local cstr: String = String("hi")
+    check("utf8Valid(*String)", utf8.utf8Valid(&cstr))
+    check("utf8Valid(str)", utf8.utf8Valid(cstr.asStr().ptr, 2))
+    check("utf8Count", utf8.utf8Count(&cstr) == 2)
+    local next: usize = 0
+    check("utf8Decode(*String)", utf8.utf8Decode(&cstr, 0, &next) == 104 && next == 1)
+    check("utf8PushChar", utf8.utf8PushChar(&cstr, 0x1f600) == 4 && cstr.length() == 6)
+    expectEq(t, failures as i64, 0)
+}
+
+fn textMethodChecks(t: *T) {
+    failures = 0
+    local s: String = String("  a-b-c  ")
+    local trimmed: String = s.trim()
+    check("String.trim", trimmed.equals("a-b-c"))
+    local parts: Vec<String> = trimmed.split("-")
+    check("String.split", parts.length() == 3 && parts.get(1).equals("b"))
+    local words: Vec<String> = String("  one   two\tthree ").splitAsciiWhitespace()
+    check("String.splitAsciiWhitespace", words.length() == 3 && words.get(2).equals("three"))
+    local joined: String = join(&parts, ", ")
+    check("join", joined.equals("a, b, c"))
+    check("join of an empty vector", join(&parts, ", ").length() > 0)
+
+    local nl: String = String("a\r\nb\n\nc")
+    local lines: Vec<String> = nl.lines()
+    check("String.lines drops CR and keeps empty lines", lines.length() == 4 && lines.get(0).equals("a") && lines.get(1).equals("b") && lines.get(2).length() == 0)
+    local lastLine: Vec<String> = String("a\n").lines()
+    check("String.lines of a trailing newline", lastLine.length() == 1)
+
+    expectEq(t, failures as i64, 0)
+}
+
+fn floatChecks(t: *T) {
+    failures = 0
+    local v0edit: f64 = 1.25
+    toF64("nope", &v0edit)
+    local v: f64 = 0.0
+    check("toF64 integer", toF64("1", &v) && f64Bits(v) == f64Bits(1.0))
+    check("toF64 fraction", toF64("1.5", &v) && f64Bits(v) == f64Bits(1.5))
+    check("toF64 negative", toF64("-1.5", &v) && f64Bits(v) == f64Bits(-1.5))
+    // The hard cases: a decimal that is not exact in binary must round to the nearest double, not to a truncated one.
+    check("toF64 0.1 is correctly rounded", toF64("0.1", &v) && f64Bits(v) == 4591870180066957722)
+    check("toF64 pi is correctly rounded", toF64("3.141592653589793", &v) && f64Bits(v) == 4614256656552045848)
+    check("toF64 exponent", toF64("1e10", &v) && f64Bits(v) == 4756540486875873280)
+    check("toF64 negative exponent", toF64("1e-10", &v) && f64Bits(v) == 4457293557087583675)
+    check("toF64 30 digits", toF64("123456789012345678901234567890", &v) && f64Bits(v) == 5042042089369253694)
+    check("toF64 largest finite", toF64("1.7976931348623157e308", &v) && f64Bits(v) == 9218868437227405311)
+    check("toF64 overflow is rejected", !toF64("1e999", &v))
+    // Expected bit patterns from CPython's `float()`, which is correctly rounded.
+    check("toF64 rounds to DBL_MAX below half an ulp past it",
+          toF64("1.7976931348623158e308", &v) && f64Bits(v) == 9218868437227405311)
+    check("toF64 underflow is a zero", toF64("1e-400", &v) && f64Bits(v) == 0)
+    check("toF64 long significand, subnormal result",
+          toF64("1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111e-420", &v) &&
+          f64Bits(v) == 225)
+    check("toF64 exact halfway rounds to even",
+          toF64("1.792043597179964746287042784392612134171079348054535229639583349126041866838932037353515625e-16", &v) &&
+          f64Bits(v) == 4371257431375131704)
+    local wide: String = String("1").repeat(900)
+    check("toF64 900-digit integer overflows", !toF64(wide.asStr(), &v))
+    check("toF64 junk is rejected", !toF64("abc", &v) && !toF64("", &v) && !toF64("1x", &v))
+    check("toF64 leaves out alone on failure", v0edit == 1.25)
+    expectEq(t, failures as i64, 0)
+}
+
+fn specifierChecks(t: *T) {
+    failures = 0
+    check("hex with zero fill", format("{:08x}", 255).equals("000000ff"))
+    check("hex uppercase", format("{:X}", 255).equals("FF"))
+    check("alternate hex", format("{:#x}", 255).equals("0xff"))
+    check("binary", format("{:b}", 5).equals("101"))
+    check("octal", format("{:o}", 255).equals("377"))
+    check("precision on a float", format("{:.3}", 3.14159).equals("3.142"))
+    // `{:.N}` rounds the exact binary value, ties to even: 2.5 is an exact tie and goes to 2, 3.5 goes to 4.
+    check("precision zero, tie to even", format("{:.0}", 2.5).equals("2") && format("{:.0}", 3.5).equals("4"))
+    check("precision, a tie that is not a half in decimal", format("{:.2}", 0.125).equals("0.12"))
+    check("precision, below a decimal half rounds down", format("{:.1}", 0.95).equals("0.9"))
+    check("precision, carrying into the whole part", format("{:.0}", 0.95).equals("1"))
+    // 5e-21 is really 4.99999...e-21, so its 20th place is still below the half and stays a zero.
+    check("precision, a place below the first digit", format("{:.20}", 5e-21).equals("0.00000000000000000000"))
+    check("precision past the last digit pads zeros", format("{:.25}", 0.5).equals("0.5000000000000000000000000"))
+    check("explicit sign", format("{:+.2f}", 2.0).equals("+2.00"))
+    check("width right", format("[{:>6}]", "ab").equals("[    ab]"))
+    check("width left", format("[{:<6}]", "ab").equals("[ab    ]"))
+    check("width centre", format("[{:^6}]", "ab").equals("[  ab  ]"))
+    check("fill byte", format("[{:*^7}]", "ab").equals("[**ab***]"))
+    check("width on an integer", format("[{:5}]", 42).equals("[   42]"))
+    check("string truncation", format("{:.2}", "abcdef").equals("ab"))
+    check("escaped braces", format("{{}} {}", 7).equals("{} 7"))
+    check("several arguments", format("{} {} {}", 1, "two", 3.5).equals("1 two 3.5"))
+    local a: String = String("x")
+    check("a String argument", format("v={}", &a).equals("v=x"))
+    check("sprintf is format", sprintf("{}", 9).equals("9"))
+
+    local buf: [u8; 16]
+    local n: usize = snprintf(&buf[0], 16, "{}:{}", 12, 34)
+    check("snprintf fits", n == 5 && buf[0] == 49 && buf[2] == 58 && buf[5] == 0)
+    local small: [u8; 4]
+    local need: usize = snprintf(&small[0], 4, "{}", 123456)
+    check("snprintf reports the needed length and cuts", need == 6 && small[3] == 0)
+
+    check("zero pad after a sign", format("{:+08}", 42).equals("+0000042"))
+    expectEq(t, failures as i64, 0)
+}
+
+class Point {
+    x: i32
+    y: i32
+
+    fn init(self, x: i32, y: i32) {
+        self.x = x
+        self.y = y
+    }
+
+}
+
+impl Display for Point {
+    fn display(self, out: *String) {
+        out.append("(")
+        out.append(format("{}, {}", self.x, self.y))
+        out.append(")")
+    }
+}
+
+fn displayChecks(t: *T) {
+    failures = 0
+    local s: String = String("plain")
+    local d: Display = &s
+    local out: String = String()
+    d.display(&out)
+    check("String is a Display", out.equals("plain"))
+
+    // A user type prints through `{}` with a `Display` made at the call site.
+    local p: Point = Point(3, -4)
+    local pd: Display = &p
+    check("a user type displays through {}", format("p={}", &pd).equals("p=(3, -4)"))
+    expectEq(t, failures as i64, 0)
+}

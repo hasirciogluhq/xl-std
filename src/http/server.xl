@@ -5,7 +5,8 @@ from "../sys" import sysTcpSocket, sysTcpListen, sysTcpAccept, sysClose, sysRead
 from "../mem/memory" import mapGrow, strlen
 from "../io/io" import eprint
 from "../tls/tls" import TlsConn, TlsCredentials, tlsRead, tlsWrite, tlsClose, tlsListen, tlsAccept
-from "util" import cstrEq, lower, headerEnd, terminateLines
+from "util" import cstrEq, headerEnd, terminateLines
+from "../str/chars" import toLower
 from "context" import Context
 from "../str/str" import fromParts, fromC, eq
 
@@ -26,7 +27,7 @@ fn headerAt(s: *u8, end: usize, name: *u8) -> isize {
     i = i + 2
     while i + nlen <= end {
         local k: usize = 0
-        while k < nlen && lower(s[i + k]) == name[k] { k = k + 1 }
+        while k < nlen && toLower(s[i + k]) == name[k] { k = k + 1 }
         if k == nlen {
             local p: usize = i + nlen
             while p < end && (s[p] == 32 || s[p] == 9) { p = p + 1 }
@@ -82,7 +83,7 @@ fn contentLengthConflict(s: *u8, end: usize) -> bool {
     while at + 15 <= end {
         local k: usize = 0
         local name: *u8 = "content-length:"
-        while k < 15 && lower(s[at + k]) == name[k] { k = k + 1 }
+        while k < 15 && toLower(s[at + k]) == name[k] { k = k + 1 }
         if k == 15 {
             local v: usize = contentLength(&s[at], end - at)
             if seen && v != first { return true }
@@ -105,8 +106,8 @@ fn targetValid(s: *u8, end: usize) -> bool {
     if s[i] == 47 || s[i] == 42 { return true }
     local h: *u8 = "http://"
     local k: usize = 0
-    while k < 7 && i + k < end && lower(s[i + k]) == h[k] { k = k + 1 }
-    return k == 7 || (k == 6 && i + 6 < end && lower(s[i + 6]) == 115)
+    while k < 7 && i + k < end && toLower(s[i + k]) == h[k] { k = k + 1 }
+    return k == 7 || (k == 6 && i + 6 < end && toLower(s[i + 6]) == 115)
 }
 
 /// Whether the connection stays open after this request (RFC 9112 section 9.3): HTTP/1.1 defaults to persistent, HTTP/1.0 only
@@ -116,7 +117,7 @@ fn keepAliveWanted(s: *u8, end: usize) -> bool {
     if conn >= 0 {
         local close: *u8 = "close"
         local k: usize = 0
-        while k < 5 && lower(s[(conn as usize) + k]) == close[k] { k = k + 1 }
+        while k < 5 && toLower(s[(conn as usize) + k]) == close[k] { k = k + 1 }
         if k == 5 { return false }
     }
     if isHttp11(s, end) { return true }
@@ -393,7 +394,7 @@ fn expectsContinue(buf: *u8, end: usize) -> bool {
     local v: *u8 = "100-continue"
     local k: usize = 0
     while k < 12 {
-        if lower(buf[(p as usize) + k]) != v[k] { return false }
+        if toLower(buf[(p as usize) + k]) != v[k] { return false }
         k = k + 1
     }
     return true
@@ -447,7 +448,7 @@ fn transferIsChunked(buf: *u8, p: usize) -> bool {
     local v: *u8 = "chunked"
     local k: usize = 0
     while k < 7 {
-        if lower(buf[p + k]) != v[k] { return false }
+        if toLower(buf[p + k]) != v[k] { return false }
         k = k + 1
     }
     return buf[p + 7] == 13 || buf[p + 7] == 10 || buf[p + 7] == 32 || buf[p + 7] == 9

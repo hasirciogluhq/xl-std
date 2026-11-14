@@ -231,8 +231,8 @@ impl HashKey for I32Key {
         return same
     }
 }
-fn ==(a: I32Key, b: I32Key) -> bool { return a.v == b.v }
-fn <(a: I32Key, b: I32Key) -> bool { return a.v < b.v }
+fn ==(a: *I32Key, b: *I32Key) -> bool { return a.v == b.v }
+fn <(a: *I32Key, b: *I32Key) -> bool { return a.v < b.v }
 
 /// A `u64` as a table key.
 export struct U64Key { v: u64 }
@@ -245,8 +245,8 @@ impl HashKey for U64Key {
         return same
     }
 }
-fn ==(a: U64Key, b: U64Key) -> bool { return a.v == b.v }
-fn <(a: U64Key, b: U64Key) -> bool { return a.v < b.v }
+fn ==(a: *U64Key, b: *U64Key) -> bool { return a.v == b.v }
+fn <(a: *U64Key, b: *U64Key) -> bool { return a.v < b.v }
 
 /// An `i64` as a table key (the bits are the hash input, so `-1` and `u64` max differ).
 export struct I64Key { v: i64 }
@@ -259,8 +259,8 @@ impl HashKey for I64Key {
         return same
     }
 }
-fn ==(a: I64Key, b: I64Key) -> bool { return a.v == b.v }
-fn <(a: I64Key, b: I64Key) -> bool { return a.v < b.v }
+fn ==(a: *I64Key, b: *I64Key) -> bool { return a.v == b.v }
+fn <(a: *I64Key, b: *I64Key) -> bool { return a.v < b.v }
 
 impl HashKey for String {
     fn hashKey(self, seed: u64) -> u64 { return hashStr(self.asStr(), seed) }

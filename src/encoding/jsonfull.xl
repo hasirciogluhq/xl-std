@@ -3,6 +3,7 @@
 // values are not converted into a tree. A value is located by its raw text (a view of the input), and strings are decoded
 // on request. Nesting deeper than 512 levels is rejected to bound the recursion.
 from "../str/str" import fromParts
+from "../str/chars" import hexValue
 from "../str/string" import String
 from "utf8" import utf8Encode
 from "../collections/vec" import Vec
@@ -13,13 +14,6 @@ fn skipWs(text: *u8, n: usize, pos: *usize) {
     while *pos < n && (text[*pos] == 32 || text[*pos] == 9 || text[*pos] == 10 || text[*pos] == 13) {
         *pos = *pos + 1
     }
-}
-
-fn hexVal(c: u8) -> i32 {
-    if c >= 48 && c <= 57 { return (c - 48) as i32 }
-    if c >= 97 && c <= 102 { return (c - 87) as i32 }
-    if c >= 65 && c <= 70 { return (c - 55) as i32 }
-    return -1
 }
 
 /// Parses a string literal at `pos` (the opening quote). Checks the escapes and returns true; `pos` moves past the closing
@@ -41,7 +35,7 @@ fn skipString(text: *u8, n: usize, pos: *usize) -> bool {
                 if *pos + 6 > n { return false }
                 local k: usize = 0
                 while k < 4 {
-                    if hexVal(text[*pos + 2 + k]) < 0 { return false }
+                    if hexValue(text[*pos + 2 + k]) < 0 { return false }
                     k = k + 1
                 }
                 *pos = *pos + 6
@@ -292,7 +286,7 @@ export fn jsonStringDecode(raw: str) -> String {
                 local cp: i32 = 0
                 local k: usize = 0
                 while k < 4 {
-                    cp = (cp << 4) | hexVal(raw[i + 2 + k])
+                    cp = (cp << 4) | hexValue(raw[i + 2 + k])
                     k = k + 1
                 }
                 i = i + 6
@@ -300,7 +294,7 @@ export fn jsonStringDecode(raw: str) -> String {
                     local lo: i32 = 0
                     k = 0
                     while k < 4 {
-                        lo = (lo << 4) | hexVal(raw[i + 2 + k])
+                        lo = (lo << 4) | hexValue(raw[i + 2 + k])
                         k = k + 1
                     }
                     if lo >= 0xdc00 && lo <= 0xdfff {

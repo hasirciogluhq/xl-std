@@ -1,6 +1,12 @@
-// std/str: the read-only `str` helpers (`str`), the owned growable `String` (`string`) and the
-// placeholder engine (`fmt`).
+// std/str: the byte classes (`chars`), the `str` helpers (`str`, `compare`), the owned `String` (`string`), the
+// UTF-8 code point layer (`unicode`), the panic text builders (`panic`), and the text layer: `fmt` declares the
+// `Writer` and `Display` interfaces and the sink, `fmtspec` is its engine.
+export * from "chars"
 export * from "str"
 export * from "compare"
 export * from "string"
+export * from "unicode"
+export * from "num"
+export * from "panic"
 export * from "fmt"
+export * from "fmtspec"

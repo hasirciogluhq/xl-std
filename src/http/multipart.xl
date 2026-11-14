@@ -4,6 +4,8 @@
 // request (RFC 2046 section 5.1.1: a quoted or unquoted value). The result views point into the request body.
 from "../str/str" import fromParts, eq
 from "../str/string" import String
+from "../str/compare" import equalIgnoreCase
+from "../str/chars" import toLower
 
 export class MultipartPart {
     found: bool
@@ -17,7 +19,7 @@ export class MultipartPart {
 export fn multipartBoundary(contentType: str) -> str {
     local i: usize = 0
     while i + 9 <= contentType.len {
-        if lowerAt(contentType, i) == 98 && eq(fromParts(&contentType.ptr[i], 9), "boundary=") {
+        if toLower(contentType[i]) == 98 && eq(fromParts(&contentType.ptr[i], 9), "boundary=") {
             local s: usize = i + 9
             if s < contentType.len && contentType[s] == 34 {
                 s = s + 1
@@ -32,12 +34,6 @@ export fn multipartBoundary(contentType: str) -> str {
         i = i + 1
     }
     return ""
-}
-
-fn lowerAt(s: str, i: usize) -> u8 {
-    local c: u8 = s[i]
-    if c >= 65 && c <= 90 { return c + 32 }
-    return c
 }
 
 /// Finds the part of `body` whose Content-Disposition name is `name`. `found` is false when no part has that name.
@@ -98,7 +94,7 @@ fn headerLine(headers: str, lowerName: str) -> str {
         while eol < headers.len && headers[eol] != 13 { eol = eol + 1 }
         local colon: usize = i
         while colon < eol && headers[colon] != 58 { colon = colon + 1 }
-        if colon - i == lowerName.len && lowerEq(fromParts(&headers.ptr[i], colon - i), lowerName) {
+        if colon - i == lowerName.len && equalIgnoreCase(fromParts(&headers.ptr[i], colon - i), lowerName) {
             local s: usize = colon + 1
             while s < eol && headers[s] == 32 { s = s + 1 }
             return fromParts(&headers.ptr[s], eol - s)
@@ -131,12 +127,3 @@ fn dispositionParam(headers: str, param: str) -> str {
     return ""
 }
 
-fn lowerEq(a: str, b: str) -> bool {
-    if a.len != b.len { return false }
-    local i: usize = 0
-    while i < a.len {
-        if lowerAt(a, i) != lowerAt(b, i) { return false }
-        i = i + 1
-    }
-    return true
-}

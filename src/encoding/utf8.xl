@@ -3,6 +3,11 @@
 // continuation bytes match the length, the code point is the shortest form (no overlong encodings), it is not a
 // surrogate (U+D800 to U+DFFF), and it is at most U+10FFFF. Decoding returns the code point and the byte length.
 // Invalid input is reported, never replaced: the caller decides what to do with it.
+//
+// Both forms are offered: the byte form (`*u8` + length) is what a buffer, a slice or an `std/sys` read hands over;
+// the `String` form at the end of this file is what the rest of this library passes, so no caller does pointer
+// arithmetic on a `String` just to validate it.
+from "../str/string" import String
 
 /// The number of bytes of the UTF-8 sequence that starts with `c`, or 0 when `c` cannot start one (a continuation byte,
 /// 0xC0, 0xC1, or 0xF5 and above).
@@ -90,6 +95,65 @@ export fn utf8Encode(cp: i32, out: *u8) -> usize {
         out[1] = (0x80 | ((cp >> 12) & 0x3f)) as u8
         out[2] = (0x80 | ((cp >> 6) & 0x3f)) as u8
         out[3] = (0x80 | (cp & 0x3f)) as u8
+    }
+    return k
+}
+
+// ---- the `String` forms ------------------------------------------------------------------------
+//
+// Every function above takes raw bytes and a length, the shape a byte buffer has. Text in this library is a `String`
+// (see `std/str/string`), so the same four questions get an overload that takes one and reads its bytes: no pointer
+// arithmetic at the call site, and no way to pass a length that disagrees with the buffer.
+//
+// The overloads cannot live in `str/string` or `str/unicode`: `String` imports nothing from `encoding`, and
+// `str/unicode` already imports `utf8SeqLen` from here, so the `String` forms belong on this side of the dependency.
+
+/// The code point at `at` in `s`, with `next` set to the index after the sequence. -1 with `next = at + 1` for an
+/// invalid or truncated sequence.
+/// @ownership `s` is borrowed; nothing is copied.
+/// @cost one sequence decode.
+export fn utf8Decode(s: *String, at: usize, next: *usize) -> i32 {
+    local n: usize = s.length()
+    if at >= n {
+        *next = at
+        return -1
+    }
+    local len: usize = 0
+    local cp: i32 = utf8Decode((&s.ptr[at]), n - at, &len)
+    *next = at + len
+    return cp
+}
+
+/// True when `s` is entirely valid UTF-8.
+/// @cost one pass, no allocation.
+export fn utf8Valid(s: *String) -> bool {
+    return utf8Valid(s.ptr, s.length())
+}
+
+/// The number of code points of `s`, or -1 when it is not entirely valid UTF-8 (the `String` form of `charCount`).
+/// @cost one pass, no allocation.
+export fn utf8Count(s: *String) -> i64 {
+    local n: usize = s.length()
+    local at: usize = 0
+    local count: i64 = 0
+    while at < n {
+        local len: usize = 0
+        if utf8Decode((&s.ptr[at]), n - at, &len) < 0 { return -1 }
+        at = at + len
+        count = count + 1
+    }
+    return count
+}
+
+/// Appends the UTF-8 encoding of `cp` to `s` and returns the bytes written, or 0 for a value that is not a scalar
+/// (negative, a surrogate, above U+10FFFF).
+/// @ownership `s` is borrowed and grows by at most four bytes.
+/// @cost one grow of at most four bytes.
+export fn utf8PushChar(s: *String, cp: i32) -> usize {
+    local buf: [u8; 4]
+    local k: usize = utf8Encode(cp, &buf[0])
+    for j in 0..k {
+        s.push(buf[j])
     }
     return k
 }

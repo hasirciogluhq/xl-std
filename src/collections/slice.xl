@@ -27,14 +27,38 @@ export fn reverseSlice<T>(s: []mut T) {
     }
 }
 
-/// The index of the first element equal to `v` by the element's `fn ==`, or `-1` when none matches.
+/// The index of the first element equal to `*v` by the element's `fn ==`, or `-1` when none matches. Both sides are read
+/// through pointers, so a droppable element type (`String`, a `class`) compares in place and is never moved.
 /// @cost up to `n` comparisons, stopping at the first match.
-/// @todo needs `fn ==(T, T)`; a type without one uses `indexOfBySlice`.
-export fn indexOfSlice<T>(s: []T, v: T) -> i64 {
+export fn indexOfSlice<T>(s: []T, v: *T) -> i64 {
     for i in 0..s.len {
-        if s[i] == v { return i as i64 }
+        local e: *T = &s[i]
+        if *e == *v { return i as i64 }
     }
     return -1
+}
+
+/// Whether some element equals `*v` by the element's `fn ==`.
+/// @cost up to `n` comparisons, stopping at the first match.
+export fn containsSlice<T>(s: []T, v: *T) -> bool {
+    for i in 0..s.len {
+        local e: *T = &s[i]
+        if *e == *v { return true }
+    }
+    return false
+}
+
+/// Whether any pair of adjacent elements are equal by `fn ==`, the check `dedupSlice` is written for.
+/// @cost up to `n` comparisons.
+export fn hasAdjacentDuplicates<T>(s: []T) -> bool {
+    local i: usize = 1
+    while i < s.len {
+        local a: *T = &s[i]
+        local b: *T = &s[i - 1]
+        if *a == *b { return true }
+        i = i + 1
+    }
+    return false
 }
 
 /// The index of the first element for which `pred` is true, or `-1` when none matches.
@@ -44,13 +68,6 @@ export fn indexOfBySlice<T>(s: []T, pred: fn(*T) -> bool) -> i64 {
         if pred(&s[i]) { return i as i64 }
     }
     return -1
-}
-
-/// Whether some element equals `v` by the element's `fn ==`.
-/// @cost up to `n` comparisons, stopping at the first match.
-/// @todo needs `fn ==(T, T)`, like `indexOfSlice`.
-export fn containsSlice<T>(s: []T, v: T) -> bool {
-    return indexOfSlice<T>(s, v) >= 0
 }
 
 /// Sorts `s` with `cmp` using a stable insertion sort.
@@ -105,7 +122,9 @@ export fn dedupSlice<T>(s: []mut T) -> usize {
     local kept: usize = 1
     local i: usize = 1
     while i < s.len {
-        if s[i] == s[kept - 1] {
+        local a: *T = &s[i]
+        local b: *T = &s[kept - 1]
+        if *a == *b {
             // Drop the duplicate by overwriting it with itself read out of the slot.
             local removed: T = s[i]
         } else {
