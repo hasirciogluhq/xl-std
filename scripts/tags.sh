@@ -165,8 +165,10 @@ cmd_sync() {
         echo
         total=0
         for tag in $known; do
+            # `grep -r` walks directories in filesystem order (APFS and ext4 differ), so the hits
+            # are sorted by file, then line number, for one view on every host.
             hits=$(cd "$root" && grep -rn "@$tag " --include='*.xl' --exclude-dir=test \
-        --exclude-dir=archive . 2>/dev/null || true)
+        --exclude-dir=archive . 2>/dev/null | LC_ALL=C sort -t: -k1,1 -k2,2n || true)
             [ -n "$hits" ] || continue
             count=$(echo "$hits" | wc -l | tr -d ' ')
             total=$((total + count))
