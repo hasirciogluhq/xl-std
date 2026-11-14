@@ -16,51 +16,155 @@
 //         case Result.Ok(v) { /* continue with v */ }
 //     }
 //
-// The helpers below read a `Result` without a `switch`: `resultOrElse` returns the value or a
-// fallback, `resultIsOk` tests the variant, and `resultTake`/`resultTakeErr` move the success or
-// the error value out through an out pointer and report which variant was live.
+// The methods below read a `Result` without a `switch`: `isOk`/`isErr` test the variant,
+// `unwrap`/`expect` take the success value or panic, `unwrapOr` returns a fallback, `map`/`andThen`
+// transform it, `okOption`/`errOption` drop the other side, and `mapErr` rewrites the error.
+from "option" import Option
+from "../str/string" import String
 
 export enum Result<T, E> {
     Ok(T)
     Err(E)
 }
 
-/// The value of an `Ok`, or `fallback` for an `Err`.
-export fn resultOrElse<T, E>(r: Result<T, E>, fallback: T) -> T {
-    switch r {
-        case Result.Ok(v) { return v }
-        case Result.Err(e) { return fallback }
-    }
-}
-
-/// Whether `r` is an `Ok`.
-export fn resultIsOk<T, E>(r: Result<T, E>) -> bool {
-    local ok: bool = false
-    switch r {
-        case Result.Ok(v) { ok = true }
-        case Result.Err(e) { }
-    }
-    return ok
-}
-
-/// The success value written through `out`, or `false` when `r` is an `Err`.
-export fn resultTake<T, E>(r: *Result<T, E>, out: *T) -> bool {
-    switch *r {
-        case Result.Ok(v) {
-            *out = v
-            return true
+impl<T, E> Result<T, E> {
+    /// Whether the value is an `Ok`.
+    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+    fn isOk(self: *Result<T, E>) -> bool {
+        switch *self {
+            case Result.Ok(v) { return true }
+            case Result.Err(e) { return false }
         }
-        case Result.Err(e) { return false }
     }
-}
 
-/// The error value written through `out`, or `false` when `r` is an `Ok`.
-export fn resultTakeErr<T, E>(r: *Result<T, E>, out: *E) -> bool {
-    switch *r {
-        case Result.Ok(v) { return false }
-        case Result.Err(e) {
-            *out = e
-            return true
+    /// Whether the value is an `Err`.
+    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+    fn isErr(self: *Result<T, E>) -> bool {
+        switch *self {
+            case Result.Ok(v) { return false }
+            case Result.Err(e) { return true }
+        }
+    }
+
+    /// @contract the success value of an `Ok`; panics on an `Err` with a fixed message, because a
+    /// @contract result the caller believes successful is a program error, not a value.
+    /// @ownership the value is moved out of `self`, and the error payload (if any) is dropped here,
+    /// @ownership so an `Ok` payload is owned by the caller exactly once.
+    fn unwrap(self) -> T {
+        switch self {
+            case Result.Ok(v) { return v }
+            case Result.Err(e) { panic("Result: unwrap of Err") }
+        }
+    }
+
+    /// @contract the success value of an `Ok`; panics on an `Err` with a message ending in `msg`,
+    /// @contract which should name what the caller expected.
+    /// @ownership the value is moved out exactly as `unwrap` moves it.
+    /// @cost one `String` built only on the panic path, so the happy path allocates nothing.
+    fn expect(self, msg: str) -> T {
+        switch self {
+            case Result.Ok(v) { return v }
+            case Result.Err(e) {
+                local text: String = String("Result: expect on Err: ")
+                text.append(msg)
+                panic(text.cstr())
+            }
+        }
+    }
+
+    /// The success value of an `Ok`, or `fallback` for an `Err`.
+    fn unwrapOr(self, fallback: T) -> T {
+        switch self {
+            case Result.Ok(v) { return v }
+            case Result.Err(e) { return fallback }
+        }
+    }
+
+    /// The success value of an `Ok`, or the error of an `Err`.
+    fn unwrapErr(self) -> E {
+        switch self {
+            case Result.Ok(v) { panic("Result: unwrapErr of Ok") }
+            case Result.Err(e) { return e }
+        }
+    }
+
+    /// `Ok(f(value))` for an `Ok`, `Err` unchanged for an `Err`.
+    /// @cost one move of the payload through `f`; a droppable `T` is dropped once, at the end.
+    /// @todo `f` is a plain `fn(*T) -> U`, not a generic `F`, because a `U` reached only through an
+    /// @todo `F` parameter is not inferred (`E0724`); a capturing closure must be a named function.
+    fn map<U>(self: *Result<T, E>, f: fn(*T) -> U) -> Result<U, E> {
+        local out: Result<U, E>
+        switch *self {
+            case Result.Ok(v) { out = Result.Ok(f(&v)) }
+            case Result.Err(e) { out = Result.Err(e) }
+        }
+        return out
+    }
+
+    /// `f(value)` for an `Ok`, `Err` unchanged for an `Err`: the chain stops at the first `Err`.
+    fn andThen<U>(self: *Result<T, E>, f: fn(*T) -> Result<U, E>) -> Result<U, E> {
+        switch *self {
+            case Result.Ok(v) { return f(&v) }
+            case Result.Err(e) {
+                local out: Result<U, E> = Result.Err(e)
+                return out
+            }
+        }
+    }
+
+    /// `f(err)` for an `Err`, `Ok` unchanged for an `Ok`.
+    fn mapErr<G>(self: *Result<T, E>, f: fn(*E) -> G) -> Result<T, G> {
+        local out: Result<T, G>
+        switch *self {
+            case Result.Ok(v) { out = Result.Ok(v) }
+            case Result.Err(e) { out = Result.Err(f(&e)) }
+        }
+        return out
+    }
+
+    /// The success value as a `Some`, or `None` for an `Err`, which is dropped.
+    fn okOption(self) -> Option<T> {
+        local out: Option<T>
+        switch self {
+            case Result.Ok(v) { out = Option.Some(v) }
+            case Result.Err(e) { out = Option.None }
+        }
+        return out
+    }
+
+    /// The error as a `Some`, or `None` for an `Ok`, which is dropped.
+    fn errOption(self) -> Option<E> {
+        local out: Option<E>
+        switch self {
+            case Result.Ok(v) { out = Option.None }
+            case Result.Err(e) { out = Option.Some(e) }
+        }
+        return out
+    }
+
+    /// Takes the success value through `out` and reports whether it was an `Ok`; an `Err` writes
+    /// nothing.
+    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
+    fn takeOk(self: *Result<T, E>, out: *T) -> bool {
+        switch *self {
+            case Result.Ok(v) {
+                *out = v
+                return true
+            }
+            case Result.Err(e) { return false }
+        }
+    }
+
+    /// Takes the error value through `out` and reports whether it was an `Err`; an `Ok` writes
+    /// nothing.
+    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
+    fn takeErr(self: *Result<T, E>, out: *E) -> bool {
+        switch *self {
+            case Result.Ok(v) { return false }
+            case Result.Err(e) {
+                *out = e
+                return true
+            }
         }
     }
 }

@@ -1,0 +1,66 @@
+// Box<T>: a single value on the heap, the owning pointer every container uses internally. It is a
+// thin wrapper over `new T` / `delete p`, so the value is dropped exactly once, by the `Box`.
+from "../mem/mem" import currentAllocator
+
+/// An owning heap pointer to one `T`. Dropping the `Box` drops and frees the value.
+/// @contract `ptr` points to one live `T` (or the `Box` was moved out and is never used again).
+/// @ownership one owner; there is no `clone`, because a copy would free the value twice.
+/// @cost `O(1)` to create and to drop, one allocation.
+export class Box<T> {
+    ptr: *T
+
+    fn init(self) {
+        self.ptr = nil
+    }
+
+    fn drop(self) {
+        if self.ptr != nil {
+            local gone: T = __builtin_read(self.ptr)
+            currentAllocator.free(self.ptr as *void)
+            self.ptr = nil
+        }
+    }
+}
+
+impl<T> Box<T> {
+    /// Moves `v` onto the heap inside this `Box`, dropping the value it held before.
+    /// @ownership `v` is moved in and is dropped by the `Box`.
+    /// @cost one allocation on the first `set`; the raw storage is reused after that.
+    fn set(self: *Box<T>, v: T) {
+        if self.ptr == nil {
+            self.ptr = currentAllocator.alloc(sizeOf(T), alignOf(T)) as *T
+        }
+        __builtin_write(self.ptr, v)
+    }
+
+    /// The value behind the box.
+    /// @cost `O(1)`.
+    fn get(self: *Box<T>) -> *T {
+        return self.ptr
+    }
+
+    /// Whether the `Box` holds a value.
+    /// @cost `O(1)`.
+    fn isEmpty(self: *Box<T>) -> bool {
+        return self.ptr == nil
+    }
+
+    /// Moves the value out and frees the storage, leaving the `Box` empty.
+    /// @ownership the caller owns the returned value and drops it.
+    /// @cost `O(1)` plus one free.
+    fn take(self: *Box<T>) -> T {
+        local out: T = __builtin_read(self.ptr)
+        currentAllocator.free(self.ptr as *void)
+        self.ptr = nil
+        return out
+    }
+}
+
+/// Moves `v` onto the heap behind a new `Box`.
+/// @ownership `v` is moved in and is dropped by the returned `Box`.
+/// @cost one allocation.
+export fn boxOf<T>(v: T) -> Box<T> {
+    local out: Box<T> = Box<T>()
+    out.set(v)
+    return out
+}

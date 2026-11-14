@@ -5,6 +5,7 @@
 from "../mem/mem" import currentAllocator
 from "../mem/memory" import memcpy
 from "../str/fmt" import fmtIndexPanic
+from "../str/string" import String
 from "option" import Option
 
 export class Vec<T> {
@@ -202,6 +203,273 @@ impl<T> Vec<T> {
             }
         }
         self.len = kept
+    }
+
+    /// Swaps elements `i` and `j` bitwise, so nothing is dropped or copied through the allocator.
+    fn swap(self: *Vec<T>, i: usize, j: usize) {
+        if i == j { return }
+        local t: T = __builtin_read(self.slot(i))
+        __builtin_write(self.slot(i), __builtin_read(self.slot(j)))
+        __builtin_write(self.slot(j), t)
+    }
+
+    /// Reverses the order of the elements in place.
+    fn reverse(self: *Vec<T>) {
+        if self.len < 2 { return }
+        local i: usize = 0
+        local j: usize = self.len - 1
+        while i < j {
+            self.swap(i, j)
+            i++
+            j--
+        }
+    }
+
+    /// Sorts ascending with the element's own `fn <`, using a stable merge sort.
+    /// @contract the relative order of elements that compare equal is kept, so a `sort` after a
+    /// @contract `sortBy` on another field uses that field as the tiebreak.
+    /// @ownership the elements are moved, never cloned, so a droppable `T` is dropped exactly once.
+    /// @cost `n log n` comparisons and one auxiliary buffer of `n` elements; a run of 8 or fewer
+    /// @cost elements is insertion-sorted in place with no buffer.
+    /// @todo the element type needs `fn <`, found because this module imports `str/string`; a type
+    /// @todo declared elsewhere without such an import does not resolve here, so it uses `sortBy`.
+    fn sort(self: *Vec<T>) {
+        self.sortBy(compareDefault<T>)
+    }
+
+    /// Sorts with `cmp`, which returns a negative number when its first argument is less, zero when
+    /// they are equal and a positive number when it is greater, using a stable merge sort.
+    /// @contract `cmp` must be a consistent total order; an order that is not transitive leaves the
+    /// @contract result unspecified, because the merge assumes a consistent answer.
+    /// @ownership elements are moved, never cloned; `cmp` borrows each element and must not move
+    /// @ownership or free it.
+    /// @cost `n log n` calls to `cmp` and one buffer of `n` elements; nothing is allocated for a
+    /// @cost vector of 8 or fewer elements.
+    fn sortBy(self: *Vec<T>, cmp: fn(*T, *T) -> i32) {
+        if self.len < 2 { return }
+        // Runs of 8 are insertion-sorted in place: fewer passes than merging them, still stable,
+        // because a swap only happens between strictly out-of-order neighbours.
+        local run: usize = 0
+        while run < self.len {
+            local end: usize = run + 8
+            if end > self.len { end = self.len }
+            local i: usize = run + 1
+            while i < end {
+                local j: usize = i
+                while j > run && cmp(self.slot(j), self.slot(j - 1)) < 0 {
+                    self.swap(j, j - 1)
+                    j--
+                }
+                i++
+            }
+            run = end
+        }
+        if self.len <= 8 { return }
+        // Merge passes alternate the data between `self` and one buffer, so each element moves once
+        // per pass and the final pass leaves the sorted run in `self` or in `buf`.
+        local buf: *T = currentAllocator.alloc(self.len * sizeOf(T), alignOf(T)) as *T
+        local width: usize = 8
+        local inSelf: bool = true
+        while width < self.len {
+            local lo: usize = 0
+            while lo < self.len {
+                local mid: usize = lo + width
+                if mid > self.len { mid = self.len }
+                local hi: usize = mid + width
+                if hi > self.len { hi = self.len }
+                mergeRun(self, buf, lo, mid, hi, inSelf, cmp)
+                lo = hi
+            }
+            inSelf = !inSelf
+            width *= 2
+        }
+        if !inSelf { memcpy(self.data as *void, buf as *void, self.len * sizeOf(T)) }
+        currentAllocator.free(buf as *void)
+    }
+
+    /// `binarySearch` against the vector's own `fn <`, which must be the order it is sorted in.
+    /// @cost `log n` comparisons.
+    /// @todo an element without `fn <` must use `binarySearchBy` with an explicit comparator.
+    fn binarySearch(self: *Vec<T>, v: T) -> Option<usize> {
+        // The search is written out rather than built on `binarySearchBy`, because a closure that
+        // captures the probe cannot be passed where a `fn(*T) -> i32` pointer is expected (`E0773`).
+        local lo: usize = 0
+        local hi: usize = self.len
+        while lo < hi {
+            local mid: usize = lo + (hi - lo) / 2
+            if __builtin_read(self.slot(mid)) < v {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        if lo < self.len && !(__builtin_read(self.slot(lo)) < v) && !(v < __builtin_read(self.slot(lo))) {
+            return Option.Some(lo)
+        }
+        return Option.None
+    }
+
+    /// The index of the first element for which `cmp(element)` returns `0`, assuming the vector is
+    /// already ordered by the same comparator, or `None` when no element matches.
+    /// @contract the vector must be sorted by the order `cmp` describes; otherwise the result is
+    /// @contract meaningless. On ties the leftmost matching index is returned.
+    /// @cost `log n` calls to `cmp`.
+    fn binarySearchBy(self: *Vec<T>, cmp: fn(*T) -> i32) -> Option<usize> {
+        local lo: usize = 0
+        local hi: usize = self.len
+        while lo < hi {
+            local mid: usize = lo + (hi - lo) / 2
+            if cmp(self.slot(mid)) < 0 {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        if lo < self.len && cmp(self.slot(lo)) == 0 { return Option.Some(lo) }
+        return Option.None
+    }
+
+    /// `true` when some element equals `v` by the element's `fn ==`.
+    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+    /// @cost up to `n` comparisons, stopping at the first match.
+    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `containsBy`.
+    fn contains(self: *Vec<T>, v: T) -> bool {
+        for i in 0..self.len {
+            if __builtin_read(self.slot(i)) == v { return true }
+        }
+        return false
+    }
+
+    /// `true` when `pred` holds for some element: the form every element type can use.
+    /// @cost up to `n` calls to `pred`, stopping at the first match.
+    fn containsBy(self: *Vec<T>, pred: fn(*T) -> bool) -> bool {
+        for i in 0..self.len {
+            if pred(self.slot(i)) { return true }
+        }
+        return false
+    }
+
+    /// The index of the first element equal to `v` by the element's `fn ==`, or `None`.
+    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+    /// @cost up to `n` comparisons, stopping at the first match.
+    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `indexOfBy`.
+    fn indexOf(self: *Vec<T>, v: T) -> Option<usize> {
+        for i in 0..self.len {
+            if __builtin_read(self.slot(i)) == v { return Option.Some(i) }
+        }
+        return Option.None
+    }
+
+    /// The index of the first element for which `pred(element)` is true, or `None`: the form a type
+    /// without `fn ==` uses in place of `indexOf`.
+    /// @cost up to `n` calls to `pred`, stopping at the first match.
+    fn indexOfBy(self: *Vec<T>, pred: fn(*T) -> bool) -> Option<usize> {
+        for i in 0..self.len {
+            if pred(self.slot(i)) { return Option.Some(i) }
+        }
+        return Option.None
+    }
+
+    /// Removes each run of adjacent elements that are equal by `fn ==`, keeping the first of the
+    /// run and dropping the rest.
+    /// @contract only *adjacent* equal elements collapse, so a full dedup needs a `sort`/`sortBy`
+    /// @contract first; without it the result keeps every element that differs from its predecessor.
+    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+    /// @ownership each removed element is dropped in place, so every element is dropped once.
+    /// @cost one pass and one move per kept element.
+    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `dedupBy`.
+    fn dedup(self: *Vec<T>) {
+        if self.len < 2 { return }
+        local kept: usize = 1
+        local i: usize = 1
+        while i < self.len {
+            if __builtin_read(self.slot(i)) == __builtin_read(self.slot(kept - 1)) {
+                local dropped: T = __builtin_read(self.slot(i))
+            } else {
+                if kept != i { __builtin_write(self.slot(kept), __builtin_read(self.slot(i))) }
+                kept++
+            }
+            i++
+        }
+        self.len = kept
+    }
+
+    /// `dedup` with an explicit equality: two adjacent elements collapse when `eq(left, right)` is
+    /// true. The form a droppable element type uses, e.g. `str/string.equalsString`.
+    /// @contract only adjacent elements are compared; sort by the same key first for a full dedup.
+    /// @ownership each removed element is dropped in place, so every element is dropped once.
+    /// @cost one pass and one call to `eq` per element after the first.
+    fn dedupBy(self: *Vec<T>, eq: fn(*T, *T) -> bool) {
+        if self.len < 2 { return }
+        local kept: usize = 1
+        local i: usize = 1
+        while i < self.len {
+            if eq(self.slot(kept - 1), self.slot(i)) {
+                local dropped: T = __builtin_read(self.slot(i))
+            } else {
+                if kept != i { __builtin_write(self.slot(kept), __builtin_read(self.slot(i))) }
+                kept++
+            }
+            i++
+        }
+        self.len = kept
+    }
+}
+
+/// The three-way comparator `sort` uses: the element's own `fn <`.
+///
+/// `compareDefault` is safe only for an element type with no drop: `fn <` takes its operands by
+/// value, so a droppable `T` (`String`, a `class`) is moved into the operator and dropped there,
+/// which frees storage the vector still points at. Such an element type is ordered with
+/// `sortBy`/`binarySearchBy` and a comparator that reads through the pointers, e.g.
+/// `str/string.compareString`.
+/// @todo the language cannot declare `fn <(a: *T, b: *T)` (a pointer operator is `E0709`), and a
+/// @todo generic `T` has no borrow, so this split cannot be closed inside the stdlib.
+fn compareDefault<T>(a: *T, b: *T) -> i32 {
+    if __builtin_read(a) < __builtin_read(b) { return -1 }
+    if __builtin_read(b) < __builtin_read(a) { return 1 }
+    return 0
+}
+
+/// The address of element `i` of the raw array `p`, with the element size of `T` applied.
+/// @safety `i` must be within the array `p` points to; the merge below bounds it by the run end.
+fn atPtr<T>(p: *T, i: usize) -> *T {
+    return (p as usize + i * sizeOf(T)) as *T
+}
+
+/// Merges the two runs `[lo, mid)` and `[mid, hi)` of `self` into `buf` (or, when `inSelf` is
+/// false, from `buf` into `self`), keeping equal elements in their original order.
+/// @safety `lo <= mid <= hi <= len`; `sortBy` computes the three from the pass width.
+fn mergeRun<T>(v: *Vec<T>, buf: *T, lo: usize, mid: usize, hi: usize, inSelf: bool, cmp: fn(*T, *T) -> i32) {
+    local src: *T = v.data
+    local dst: *T = buf
+    if !inSelf {
+        src = buf
+        dst = v.data
+    }
+    local i: usize = lo
+    local j: usize = mid
+    local k: usize = lo
+    while i < mid && j < hi {
+        // Take from the left run on a tie, which is what makes the sort stable.
+        if cmp(atPtr(src, i), atPtr(src, j)) <= 0 {
+            __builtin_write(atPtr(dst, k), __builtin_read(atPtr(src, i)))
+            i++
+        } else {
+            __builtin_write(atPtr(dst, k), __builtin_read(atPtr(src, j)))
+            j++
+        }
+        k++
+    }
+    while i < mid {
+        __builtin_write(atPtr(dst, k), __builtin_read(atPtr(src, i)))
+        i++
+        k++
+    }
+    while j < hi {
+        __builtin_write(atPtr(dst, k), __builtin_read(atPtr(src, j)))
+        j++
+        k++
     }
 }
 

@@ -413,3 +413,36 @@ export fn repeat(s: str, n: usize) -> String {
     }
     return out
 }
+
+// The comparison operators live beside the type, because a generic function (`Vec.sort`,
+// `Vec.contains`, `binarySearch`) reaches an operator only when the module that declares it is
+// imported by the generic's own module. `collections/vec` imports this module for exactly that.
+//
+// A `String` owns its bytes, so an operator that takes it by value moves it into the operator and
+// drops it there: using `a < b` and then reading `a` again reads freed storage. A `Vec<String>` is
+// therefore ordered and searched with `compareString`/`equalsString` on element pointers.
+
+/// `==` on two owned `String`s: byte equality. The operands are consumed, so this is for a value
+/// that will not be read again; a borrowed comparison uses `equalsString` or `String.equals`.
+fn ==(a: String, b: String) -> bool {
+    return eq(a.asStr(), b.asStr())
+}
+
+/// `<` on two owned `String`s: byte order. The operands are consumed; see `compareString`.
+fn <(a: String, b: String) -> bool {
+    return compare(a.asStr(), b.asStr()) < 0
+}
+
+/// Three-way byte-order comparison of two `String`s read through pointers: the comparator
+/// `Vec<String>.sortBy`, `binarySearchBy` and `indexOfBy` take, and the only safe way to compare
+/// Strings a container still owns.
+/// @cost `O(min(len))` byte comparisons.
+export fn compareString(a: *String, b: *String) -> i32 {
+    return compare(a.asStr(), b.asStr())
+}
+
+/// Byte equality of two `String`s read through pointers, without consuming either.
+/// @cost `O(min(len))` byte comparisons.
+export fn equalsString(a: *String, b: *String) -> bool {
+    return eq(a.asStr(), b.asStr())
+}

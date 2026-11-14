@@ -4,7 +4,7 @@
 //     local cmd: Command = Command(String("git"))
 //     cmd.arg(String("status"))
 //     cmd.cwd(String("/work"))
-//     if optionIsSome(cmd.output()) { /* could not start */ }
+//     if cmd.output().isSome() { /* could not start */ }
 //     print(&cmd.outText)                         // what it wrote; cmd.status.code is its exit status
 //
 // A `Command` is both the description of a child (program, arguments, environment, working directory, what its standard streams
@@ -27,7 +27,7 @@ from "../io/stream" import Stream
 from "../str/str" import fromParts
 from "../str/string" import String, split
 from "../collections/vec" import Vec
-from "../collections/option" import Option, optionIsSome
+from "../collections/option" import Option
 from "env" import list as environment, set as setVariable, lookup
 
 /// What a standard stream of the child is connected to.
@@ -420,7 +420,7 @@ export class Command {
     /// and stderr produced. None on success (the child may still have failed: see `status`).
     fn run(self) -> Option<ProcessError> {
         local failure: Option<ProcessError> = self.start()
-        if optionIsSome(failure) { return failure }
+        if failure.isSome() { return failure }
         self.collect()
         return Option.None
     }

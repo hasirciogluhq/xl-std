@@ -4,7 +4,7 @@
 //   parent: start, pipes, output capture, exit codes, signals, environment, working directory, redirection, error kinds,
 //           and that no pipe end leaks into a second child.
 //   child:  cat | exit | stderr | env | envcount | wait | marker | lines
-from "std" import print, println, eprint, String, Option, stdin, fsReadAllString, fsRemove, fsWrite, optionIsSome
+from "std" import print, println, eprint, String, Option, stdin, fsReadAllString, fsRemove, fsWrite
 from "std/os/process" import Command, ProcessError, ProcessErrorKind, Stdio, ExitStatus
 from "std/os/process" import id, exists, isElevated, executable
 from "std/os/env" import get, list
@@ -81,7 +81,7 @@ fn helper(role: str) -> Command {
 /// Starts `cmd`; a failure to start fails the test.
 fn started(cmd: *Command, what: str) -> bool {
     local failure: Option<ProcessError> = cmd.start()
-    if optionIsSome(failure) {
+    if failure.isSome() {
         check(false, what)
         return false
     }
@@ -91,8 +91,8 @@ fn started(cmd: *Command, what: str) -> bool {
 /// Runs `cmd` to the end with `output`; a failure to start fails the test.
 fn captured(cmd: *Command, what: str) -> bool {
     local failure: Option<ProcessError> = cmd.output()
-    check(!optionIsSome(failure), what)
-    return !optionIsSome(failure)
+    check(!failure.isSome(), what)
+    return !failure.isSome()
 }
 
 /// Whether `line` holds exactly `want`.
@@ -147,7 +147,7 @@ fn pipesAndOutput() {
     if started(&lines, "start lines") {
         check(isLine(lines.outPipe.readLine(), "one"), "first line")
         check(isLine(lines.outPipe.readLine(), "two"), "second line")
-        check(!optionIsSome(lines.outPipe.readLine()), "end of the lines")
+        check(!lines.outPipe.readLine().isSome(), "end of the lines")
         lines.wait()
     }
 }
@@ -170,7 +170,7 @@ fn statusCodes() {
     local badDir: Command = helper("exit")
     badDir.cwd(String("/xl-no-such-directory-for-the-test"))
     local dirFailure: Option<ProcessError> = badDir.start()
-    check(optionIsSome(dirFailure), "a missing working directory is an error")
+    check(dirFailure.isSome(), "a missing working directory is an error")
 
     local twice: Command = helper("exit")
     twice.stdout(Stdio.Null)
@@ -240,7 +240,7 @@ fn stopping() {
     sleeper.stdin(Stdio.Piped)
     if started(&sleeper, "start wait") {
         check(sleeper.isRunning(), "a blocked child is running")
-        check(!optionIsSome(sleeper.tryWait()), "tryWait is None while it runs")
+        check(!sleeper.tryWait().isSome(), "tryWait is None while it runs")
         check(exists(sleeper.id()), "the child's pid exists")
         check(sleeper.kill(), "kill reaches the child")
         local s: ExitStatus = sleeper.wait()
@@ -268,7 +268,7 @@ fn stopping() {
     if started(&graceful, "start wait for end of input") {
         graceful.inPipe.close()
         check(graceful.wait().success, "the child ends when its input ends")
-        check(optionIsSome(graceful.tryWait()), "tryWait has the status after wait")
+        check(graceful.tryWait().isSome(), "tryWait has the status after wait")
     }
 }
 

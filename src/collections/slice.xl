@@ -1,0 +1,118 @@
+// std/collections/slice: the algorithms `Vec<T>` offers, on a `[]T` / `[]mut T` view, for a caller
+// that already holds an array or a slice instead of a growable vector.
+//
+// These functions never allocate and never change a length, so one implementation serves a slice of
+// a `Vec` (`v.data[0..v.len]`) and a stack array alike. The `Vec` methods of the same name remain
+// the API most code wants; a slice algorithm is the form to reach for when the data is not owned.
+//
+// Each algorithm that orders or matches elements takes a comparator `fn(*T, *T) -> i32` or a
+// predicate `fn(*T) -> bool` rather than a generic `F`: a generic parameter cannot be inferred from
+// a closure that captures (`E0773`), so a plain function pointer is the only form that works at
+// every call site. The comparator returns a negative number for "less", zero for "equal" and a
+// positive number for "greater".
+
+/// Reverses the elements of `s` in place.
+/// @ownership elements are moved through one temporary, so each is moved twice and dropped once.
+/// @cost `n / 2` swaps and no allocation.
+export fn reverseSlice<T>(s: []mut T) {
+    if s.len < 2 { return }
+    local i: usize = 0
+    local j: usize = s.len - 1
+    while i < j {
+        local t: T = s[i]
+        s[i] = s[j]
+        s[j] = t
+        i++
+        j--
+    }
+}
+
+/// The index of the first element equal to `v` by the element's `fn ==`, or `-1` when none matches.
+/// @cost up to `n` comparisons, stopping at the first match.
+/// @todo needs `fn ==(T, T)`; a type without one uses `indexOfBySlice`.
+export fn indexOfSlice<T>(s: []T, v: T) -> i64 {
+    for i in 0..s.len {
+        if s[i] == v { return i as i64 }
+    }
+    return -1
+}
+
+/// The index of the first element for which `pred` is true, or `-1` when none matches.
+/// @cost up to `n` calls to `pred`, stopping at the first match.
+export fn indexOfBySlice<T>(s: []T, pred: fn(*T) -> bool) -> i64 {
+    for i in 0..s.len {
+        if pred(&s[i]) { return i as i64 }
+    }
+    return -1
+}
+
+/// Whether some element equals `v` by the element's `fn ==`.
+/// @cost up to `n` comparisons, stopping at the first match.
+/// @todo needs `fn ==(T, T)`, like `indexOfSlice`.
+export fn containsSlice<T>(s: []T, v: T) -> bool {
+    return indexOfSlice<T>(s, v) >= 0
+}
+
+/// Sorts `s` with `cmp` using a stable insertion sort.
+/// @contract `cmp` must be a consistent total order; the sort keeps equal elements in their order.
+/// @ownership elements are moved by swapping, never cloned, and nothing is dropped.
+/// @cost `O(n^2)` comparisons: for a slice longer than a hundred elements sort a `Vec` instead,
+/// @cost whose merge sort is `n log n`.
+/// @todo this is the quadratic variant because a mutable slice has no room for the merge buffer
+/// @todo the `Vec` sort allocates; a caller with many elements copies into a `Vec` first.
+export fn sortSlice<T>(s: []mut T, cmp: fn(*T, *T) -> i32) {
+    if s.len < 2 { return }
+    local i: usize = 1
+    while i < s.len {
+        local j: usize = i
+        while j > 0 && cmp(&s[j], &s[j - 1]) < 0 {
+            local t: T = s[j]
+            s[j] = s[j - 1]
+            s[j - 1] = t
+            j--
+        }
+        i++
+    }
+}
+
+/// The index of the first element for which `cmp(element)` returns `0`, assuming `s` is already in
+/// the order `cmp` describes, or `-1` when no element matches.
+/// @contract the slice must be sorted by the order `cmp` describes, or the result is meaningless.
+/// @cost `log n` calls to `cmp`.
+export fn binarySearchSlice<T>(s: []T, cmp: fn(*T) -> i32) -> i64 {
+    local lo: usize = 0
+    local hi: usize = s.len
+    while lo < hi {
+        local mid: usize = lo + (hi - lo) / 2
+        if cmp(&s[mid]) < 0 {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    if lo < s.len && cmp(&s[lo]) == 0 { return lo as i64 }
+    return -1
+}
+
+/// Removes each run of adjacent elements equal by `fn ==`, keeping the first of each run, and
+/// returns the new length: the elements from that index on are beyond the end of the data now.
+/// @contract only adjacent equal elements collapse, so a full dedup needs `sortSlice` first.
+/// @ownership the removed elements are dropped in place, once each.
+/// @cost one pass and one move per kept element.
+/// @todo needs `fn ==(T, T)` for the element type.
+export fn dedupSlice<T>(s: []mut T) -> usize {
+    if s.len < 2 { return s.len }
+    local kept: usize = 1
+    local i: usize = 1
+    while i < s.len {
+        if s[i] == s[kept - 1] {
+            // Drop the duplicate by overwriting it with itself read out of the slot.
+            local removed: T = s[i]
+        } else {
+            if kept != i { s[kept] = s[i] }
+            kept++
+        }
+        i++
+    }
+    return kept
+}

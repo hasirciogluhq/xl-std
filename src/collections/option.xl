@@ -7,40 +7,116 @@
 // `o?` takes the value of a `Some` and returns `None` from the enclosing function otherwise, which
 // must itself return an `Option`. A `switch` on an owned `Option` takes the payload as well.
 //
-// The helpers below read an `Option` without a `switch`: `optionOrElse` returns the value or a
-// fallback, `optionIsSome` tests the variant, and `optionTake` moves the value out through an out
-// pointer and reports whether there was one.
+// The methods below read an `Option` without a `switch`: `isSome`/`isNone` test the variant,
+// `unwrap`/`expect` take the value or panic, `unwrapOr` returns a fallback, `map`/`andThen`
+// transform it, and `okOr` turns it into a `Result`.
+from "result" import Result
+from "../str/string" import String
 
 export enum Option<T> {
     None
     Some(T)
 }
 
-/// The value of a `Some`, or `fallback` for a `None`.
-export fn optionOrElse<T>(o: Option<T>, fallback: T) -> T {
-    switch o {
-        case Option.Some(v) { return v }
-        case Option.None { return fallback }
-    }
-}
-
-/// Whether `o` holds a value.
-export fn optionIsSome<T>(o: Option<T>) -> bool {
-    local some: bool = false
-    switch o {
-        case Option.Some(v) { some = true }
-        case Option.None { }
-    }
-    return some
-}
-
-/// The value of a `Some` written through `out`, or `false` for a `None`.
-export fn optionTake<T>(o: *Option<T>, out: *T) -> bool {
-    switch *o {
-        case Option.Some(v) {
-            *out = v
-            return true
+impl<T> Option<T> {
+    /// Whether the value is a `Some`.
+    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+    fn isSome(self: *Option<T>) -> bool {
+        switch *self {
+            case Option.Some(v) { return true }
+            case Option.None { return false }
         }
-        case Option.None { return false }
+    }
+
+    /// Whether the value is a `None`.
+    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+    fn isNone(self: *Option<T>) -> bool {
+        switch *self {
+            case Option.Some(v) { return false }
+            case Option.None { return true }
+        }
+    }
+
+    /// @contract the payload of a `Some`; panics on a `None` with a fixed message, because an
+    /// @contract optional that the caller believes present is a program error, not a value.
+    /// @ownership the payload is moved out of `self`, which is left uninitialized and is not run
+    /// @ownership again, so a droppable payload is owned by the caller exactly once.
+    fn unwrap(self) -> T {
+        switch self {
+            case Option.Some(v) { return v }
+            case Option.None { panic("Option: unwrap of None") }
+        }
+    }
+
+    /// @contract the payload of a `Some`; panics on a `None` with a message ending in `msg`, which
+    /// @contract should name what the caller expected.
+    /// @ownership the payload is moved out of `self` exactly as `unwrap` moves it.
+    /// @cost one `String` built only on the panic path, so the happy path allocates nothing.
+    fn expect(self, msg: str) -> T {
+        switch self {
+            case Option.Some(v) { return v }
+            case Option.None {
+                local text: String = String("Option: expect on None: ")
+                text.append(msg)
+                panic(text.cstr())
+            }
+        }
+    }
+
+    /// The payload of a `Some`, or `fallback` for a `None`.
+    /// @ownership `self` is moved, so an unused payload is dropped here.
+    fn unwrapOr(self, fallback: T) -> T {
+        switch self {
+            case Option.Some(v) { return v }
+            case Option.None { return fallback }
+        }
+    }
+
+    /// `Some(f(value))` for a `Some`, `None` unchanged for a `None`. `f` takes `*T`, so the old
+    /// payload is still owned here and is dropped after the call when `U` differs from `T`.
+    /// @cost one move of the payload through `f`; a droppable `T` is dropped once, at the end.
+    /// @todo `f` is a plain `fn(*T) -> U`, not a generic `F`, because a `U` reached only through an
+    /// @todo `F` parameter is not inferred (`E0724`); a capturing closure must be a named function.
+    fn map<U>(self: *Option<T>, f: fn(*T) -> U) -> Option<U> {
+        local out: Option<U>
+        switch *self {
+            case Option.Some(v) { out = Option.Some(f(&v)) }
+            case Option.None { out = Option.None }
+        }
+        return out
+    }
+
+    /// `f(value)` for a `Some`, `None` unchanged for a `None`: the chain stops at the first `None`.
+    fn andThen<U>(self: *Option<T>, f: fn(*T) -> Option<U>) -> Option<U> {
+        switch *self {
+            case Option.Some(v) { return f(&v) }
+            case Option.None {
+                local out: Option<U> = Option.None
+                return out
+            }
+        }
+    }
+
+    /// `Ok(value)` for a `Some`, `Err(err)` for a `None`.
+    fn okOr<E>(self, err: E) -> Result<T, E> {
+        local out: Result<T, E>
+        switch self {
+            case Option.Some(v) { out = Result.Ok(v) }
+            case Option.None { out = Result.Err(err) }
+        }
+        return out
+    }
+
+    /// Takes the value of a `Some` through `out` and reports whether there was one; a `None`
+    /// writes nothing.
+    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
+    fn take(self: *Option<T>, out: *T) -> bool {
+        switch *self {
+            case Option.Some(v) {
+                *out = v
+                return true
+            }
+            case Option.None { return false }
+        }
     }
 }

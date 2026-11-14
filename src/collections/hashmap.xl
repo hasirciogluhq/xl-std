@@ -1,0 +1,263 @@
+// std/collections/hashmap: `HashMap<K, V>`, an open-addressing table with linear probing.
+//
+// The table is one array of slots and nothing else: no per-bucket list, no allocation per entry, so
+// a lookup is one probe sequence over a contiguous array and the whole table is two allocations (the
+// slots and a parallel occupancy flag). The load factor is kept at or below 3/4, which keeps the
+// expected probe length near two on a miss; growing doubles the slot count, so a rehash is
+// `O(n)` total and `O(1)` amortized per insert.
+//
+// The key type `K` implements `HashKey` (`std/collections/hash`) and must also provide `fn ==`
+// for `K`, because a probe has to compare the found key with the one it is looking for. Because the
+// language cannot implement an interface on a primitive (`E0706`), an integer key is a wrapper
+// struct: `HashMap<I32Key, i32>` or `HashMap<U64Key, String>`; a `String` key needs no wrapper.
+//
+//     local m: HashMap<String, i32> = HashMap<String, i32>()
+//     m.put(String("a"), 1)
+//     local one: Option<i32> = m.get(String("a"))
+//
+// Each table draws a `SipHash13` key from OS entropy (`newSeed`) and passes its first word as the
+// seed of every `hashKey` call, so the slot of a key differs per table and per run, and an
+// attacker who chooses the keys cannot force quadratic behavior (HashDoS).
+//
+// A slot owns its value while it is live, so a droppable `V` is dropped by `remove`, by `clear` and
+// by the table's own `drop`. The key is stored as data and never read out; it is dropped with the
+// slot, through `__builtin_drop`, because a generic field is not dropped by the compiler.
+from "hash" import HashKey, Hash, SipHash13, newSeed
+from "option" import Option
+from "vec" import Vec
+from "../mem/mem" import currentAllocator
+from "../str/string" import String
+
+/// A key/value table with an amortized `O(1)` lookup, insert and remove.
+/// @ownership the table owns every key and value it holds; `remove` moves the value out and drops
+/// @ownership the key, and `drop` releases the slot array through the current allocator.
+/// @cost a lookup is `O(1)` expected and `O(n)` only under an adversarial key stream, which the
+/// @cost keyed hash prevents; an insert grows to twice the slots when the table passes 3/4 full,
+/// @cost moving every live entry once (`O(n)` amortized to `O(1)` per insert).
+export class HashMap<K, V> {
+    keys: *K
+    values: *V
+    live: *u8            // 1 when the slot holds an entry
+    count: usize         // live entries
+    cap: usize           // slots, 0 or a power of two
+    hasher: SipHash13
+
+    fn init(self) {
+        self.keys = nil
+        self.values = nil
+        self.live = nil
+        self.count = 0
+        self.cap = 0
+        self.hasher = newSeed()
+    }
+
+    fn drop(self) {
+        // The slot loop is written out instead of calling `clear`: the `impl` block's `self` is a
+        // pointer, so a method call on it would need `&self` in a place `drop` cannot express.
+        if self.cap > 0 {
+            for i in 0..self.cap {
+                if self.live[i] != 0 {
+                    local goneKey: K = __builtin_read(self.keyAt(i))
+                    local goneValue: V = __builtin_read(self.valueAt(i))
+                    self.live[i] = 0
+                }
+            }
+            currentAllocator.free(self.keys as *void)
+            currentAllocator.free(self.values as *void)
+            currentAllocator.free(self.live as *void)
+        }
+        self.count = 0
+    }
+
+    /// The number of entries.
+    fn length(self) -> usize {
+        return self.count
+    }
+
+    fn isEmpty(self) -> bool {
+        return self.count == 0
+    }
+
+    /// The key at slot `i`.
+    fn keyAt(self, i: usize) -> *K {
+        return (self.keys as usize + i * sizeOf(K)) as *K
+    }
+
+    /// The value at slot `i`.
+    fn valueAt(self, i: usize) -> *V {
+        return (self.values as usize + i * sizeOf(V)) as *V
+    }
+
+    /// The slot `k` hashes to, `0` when the table has no slots yet.
+    fn slotOf(self, k: *K) -> usize {
+        if self.cap == 0 { return 0 }
+        return (k.hashKey(self.hasher.k0) & (self.cap - 1) as u64) as usize
+    }
+
+    /// Grows the slot arrays to `cap` slots, a power of two at least twice the current one, and
+    /// re-inserts every live entry.
+    /// @cost `O(n)` moves, amortized to `O(1)` per insert over the life of the table.
+    fn grow(self, want: usize) {
+        local cap: usize = 4
+        while cap < want {
+            cap *= 2
+        }
+        local keys: *K = currentAllocator.alloc(cap * sizeOf(K), alignOf(K)) as *K
+        local values: *V = currentAllocator.alloc(cap * sizeOf(V), alignOf(V)) as *V
+        local live: *u8 = currentAllocator.alloc(cap, 1) as *u8
+        for i in 0..cap {
+            live[i] = 0
+        }
+        // The old arrays are re-inserted by hash rather than copied, because a slot's index depends
+        // on the table's size.
+        if self.cap > 0 {
+            for i in 0..self.cap {
+                if self.live[i] == 0 { continue }
+                local at: usize = (self.keyAt(i).hashKey(self.hasher.k0) & (cap - 1) as u64) as usize
+                while live[at] != 0 {
+                    at = (at + 1) & (cap - 1)
+                }
+                __builtin_write((keys as usize + at * sizeOf(K)) as *K, __builtin_read(self.keyAt(i)))
+                __builtin_write((values as usize + at * sizeOf(V)) as *V, __builtin_read(self.valueAt(i)))
+                live[at] = 1
+            }
+            currentAllocator.free(self.keys as *void)
+            currentAllocator.free(self.values as *void)
+            currentAllocator.free(self.live as *void)
+        }
+        self.keys = keys
+        self.values = values
+        self.live = live
+        self.cap = cap
+    }
+}
+
+impl<K, V> HashMap<K, V> {
+    /// Inserts `k` with value `v`, replacing the value of an existing equal key and dropping the
+    /// old value and the new key.
+    /// @contract the table owns `k` and `v`; an existing key is kept and the passed `k` is dropped.
+    /// @cost `O(1)` expected, plus `O(n)` on a grow.
+    fn put(self: *HashMap<K, V>, k: K, v: V) {
+        if (self.count + 1) * 4 > self.cap * 3 {
+            local want: usize = 8
+            if self.cap > 0 { want = self.cap * 2 }
+            self.grow(want)
+        }
+        local at: usize = self.slotOf(&k)
+        local probe: usize = 0
+        while self.live[at] != 0 {
+            if self.keyAt(at).equalsKey(&k as *void) {
+                // Replace the value; the old one is dropped by the write.
+                local old: V = __builtin_read(self.valueAt(at))
+                __builtin_write(self.valueAt(at), v)
+                local unused: K = k
+                return
+            }
+            at = (at + 1) & (self.cap - 1)
+            probe++
+            if probe > self.cap { return }
+        }
+        __builtin_write(self.keyAt(at), k)
+        __builtin_write(self.valueAt(at), v)
+        self.live[at] = 1
+        self.count++
+    }
+
+    /// The value for `k` written with its key found, or `None` when no equal key is present.
+    /// @ownership the value is borrowed: it stays in the table and is invalidated by any insert
+    /// @ownership that grows the table, so copy it out if it must outlive the next `put`.
+    fn get(self: *HashMap<K, V>, k: K) -> Option<*V> {
+        if self.cap == 0 { return Option.None }
+        local at: usize = self.slotOf(&k)
+        local probe: usize = 0
+        while self.live[at] != 0 {
+            if self.keyAt(at).equalsKey(&k as *void) {
+                return Option.Some(self.valueAt(at))
+            }
+            at = (at + 1) & (self.cap - 1)
+            probe++
+            if probe > self.cap { break }
+        }
+        return Option.None
+    }
+
+    /// Whether an entry for `k` is present.
+    fn containsKey(self: *HashMap<K, V>, k: K) -> bool {
+        return self.get(k).isSome()
+    }
+
+    /// Removes the entry for `k`, returning its value; the key is dropped and the slot is cleared.
+    /// @ownership the returned value is moved out and owned by the caller.
+    /// @cost linear probing stops at the slot, then the following run of live slots is re-inserted
+    /// @cost so no probe chain is broken; `O(1)` expected.
+    fn remove(self: *HashMap<K, V>, k: K) -> Option<V> {
+        if self.cap == 0 { return Option.None }
+        local at: usize = self.slotOf(&k)
+        local probe: usize = 0
+        while self.live[at] != 0 {
+            if self.keyAt(at).equalsKey(&k as *void) {
+                local out: V = __builtin_read(self.valueAt(at))
+                local gone: K = __builtin_read(self.keyAt(at))
+                self.live[at] = 0
+                self.count--
+                // Re-insert the following run of live slots so that no chain of probes is severed
+                // by the new hole (linear probing only works while a chain is contiguous).
+                local next: usize = (at + 1) & (self.cap - 1)
+                while self.live[next] != 0 {
+                    local movedKey: K = __builtin_read(self.keyAt(next))
+                    local movedValue: V = __builtin_read(self.valueAt(next))
+                    self.live[next] = 0
+                    self.count--
+                    self.put(movedKey, movedValue)
+                    next = (next + 1) & (self.cap - 1)
+                }
+                return Option.Some(out)
+            }
+            at = (at + 1) & (self.cap - 1)
+            probe++
+            if probe > self.cap { break }
+        }
+        return Option.None
+    }
+
+    /// Drops every entry and keeps the slot array.
+    fn clear(self: *HashMap<K, V>) {
+        if self.cap == 0 { return }
+        for i in 0..self.cap {
+            if self.live[i] != 0 {
+                local goneKey: K = __builtin_read(self.keyAt(i))
+                local goneValue: V = __builtin_read(self.valueAt(i))
+                self.live[i] = 0
+            }
+        }
+        self.count = 0
+    }
+}
+
+/// Walks the live entries, yielding a pointer to each key and its value, so `for x, i in map` gives
+/// `(*K, *V)`.
+/// @ownership the pointers borrow the table and are invalidated by the next `put` that grows it.
+export struct HashMapIter<K, V> {
+    map: *HashMap<K, V>
+    at: usize
+}
+
+impl<K, V> HashMapIter<K, V> {
+    fn next(self: *HashMapIter<K, V>) -> Option<(*K, *V)> {
+        while self.at < self.map.cap {
+            local i: usize = self.at
+            self.at++
+            if self.map.live[i] != 0 {
+                return Option.Some((self.map.keyAt(i), self.map.valueAt(i)))
+            }
+        }
+        return Option.None
+    }
+}
+
+impl<K, V> HashMap<K, V> {
+    /// The iterator of `for x, i in map`: each round yields a pointer to the next key and its value.
+    fn iter(self: *HashMap<K, V>) -> HashMapIter<K, V> {
+        return HashMapIter<K, V> { map: self, at: 0 }
+    }
+}

@@ -5,7 +5,7 @@
 //
 //   xlc test/e2e/runner.xl -M std=. --import std -DfeatureDefaultAllocator=true -o e2e-runner
 //   ./e2e-runner <path/to/xlc> <stdlib root> <test/e2e directory> [name-filter]
-from "std" import println, String, Vec, Option, split, fromC, toI64, fsReadAllString, fsRemove, optionIsSome
+from "std" import println, String, Vec, Option, split, fromC, toI64, fsReadAllString, fsRemove
 from "std/os/process" import Command
 
 define BINARY = "xlang_e2e.bin"
@@ -53,12 +53,12 @@ fn runTest(xlc: *String, root: *String, dir: *String, fields: *Vec<String>) -> b
     local none: String = String()
     local source: String = sourceOf(dir, name)
     local build: Command = compiler(xlc, root, &source, &none, BINARY)
-    if optionIsSome(build.output()) || !build.status.success {
+    if build.output().isSome() || !build.status.success {
         fail(name, "build", &build.errText)
         return false
     }
     local program: Command = Command(String("./xlang_e2e.bin"))
-    if optionIsSome(program.output()) {
+    if program.output().isSome() {
         fail(name, "the program does not start", &none)
         return false
     }

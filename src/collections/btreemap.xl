@@ -1,0 +1,151 @@
+// BTreeMap<K, V>: an ordered map kept as a `Vec` of entries sorted by key, searched with binary
+// search. It gives deterministic, always-sorted iteration (the reason to pick it over `HashMap`)
+// at `O(log n)` lookup and `O(n)` insert/remove, which is the right trade for the small maps the
+// stdlib and user code keep in a fixed order. The key order is the explicit
+// `fn(*K, *K) -> i32` comparator, never a value operator, so a droppable key (`String`) works.
+from "vec" import Vec
+from "option" import Option
+
+/// One key with its value. A `struct`, so a `Vec` holds the pairs bitwise.
+struct Entry<K, V> {
+    key: K
+    value: V
+}
+
+/// An ordered map: iteration yields keys in comparator order, always.
+/// @contract `entries` is sorted by `cmp` and holds no two keys that compare `0`.
+/// @cost `O(log n)` lookup, `O(n)` insert and remove, `O(n)` to build from sorted pairs.
+export class BTreeMap<K, V> {
+    entries: Vec<Entry<K, V>>
+    cmp: fn(*K, *K) -> i32
+
+    fn init(self, cmp: fn(*K, *K) -> i32) {
+        self.entries = Vec<Entry<K, V>>()
+        self.cmp = cmp
+    }
+}
+
+impl<K, V> BTreeMap<K, V> {
+    /// The number of entries.
+    /// @cost `O(1)`.
+    fn length(self: *BTreeMap<K, V>) -> usize {
+        return self.entries.length()
+    }
+
+    /// Whether the map holds no entries.
+    /// @cost `O(1)`.
+    fn isEmpty(self: *BTreeMap<K, V>) -> bool {
+        return self.entries.isEmpty()
+    }
+
+    /// The index of `k`, or the index where it would be inserted to keep the order.
+    /// @cost `O(log n)` calls to `cmp`.
+    fn find(self: *BTreeMap<K, V>, k: *K) -> usize {
+        local lo: usize = 0
+        local hi: usize = self.entries.length()
+        while lo < hi {
+            local mid: usize = lo + (hi - lo) / 2
+            local at: *Entry<K, V> = self.entries.slot(mid)
+            local order: i32 = self.cmp(k, &at.key)
+            if order > 0 {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return lo
+    }
+
+    /// The value of `k`, or `None`.
+    /// @cost `O(log n)` calls to `cmp`.
+    fn get(self: *BTreeMap<K, V>, k: *K) -> Option<*V> {
+        local at: usize = self.find(k)
+        if at >= self.entries.length() { return Option.None }
+        local entry: *Entry<K, V> = self.entries.slot(at)
+        if self.cmp(k, &entry.key) != 0 { return Option.None }
+        return Option.Some(&entry.value)
+    }
+
+    /// Whether `k` is present.
+    /// @cost `O(log n)` calls to `cmp`.
+    fn containsKey(self: *BTreeMap<K, V>, k: *K) -> bool {
+        return self.get(k).isSome()
+    }
+
+    /// Inserts `k` with `v`, replacing and dropping the value of an existing equal key.
+    /// @ownership `k` is dropped when an equal key was already present; `v` replaces the old value.
+    /// @cost `O(n)` to move the later entries up by one.
+    fn put(self: *BTreeMap<K, V>, k: K, v: V) {
+        local at: usize = self.find(&k)
+        if at < self.entries.length() {
+            local existing: *Entry<K, V> = self.entries.slot(at)
+            if self.cmp(&k, &existing.key) == 0 {
+                local dropped: V = __builtin_read(&existing.value)
+                __builtin_write(&existing.value, v)
+                local unused: K = k
+                return
+            }
+        }
+        local fresh: Entry<K, V> = Entry<K, V> { key: k, value: v }
+        self.entries.insert(at, fresh)
+    }
+
+    /// Removes `k`, returning its value, or `None`.
+    /// @ownership the removed key is dropped; the caller owns the returned value.
+    /// @cost `O(n)` to move the later entries down by one.
+    fn remove(self: *BTreeMap<K, V>, k: *K) -> Option<V> {
+        local at: usize = self.find(k)
+        if at >= self.entries.length() { return Option.None }
+        local entry: *Entry<K, V> = self.entries.slot(at)
+        if self.cmp(k, &entry.key) != 0 { return Option.None }
+        local gone: Entry<K, V> = self.entries.remove(at)
+        local dropped: K = gone.key
+        return Option.Some(gone.value)
+    }
+
+    /// The smallest key, or `None`.
+    /// @cost `O(1)`.
+    fn firstKey(self: *BTreeMap<K, V>) -> Option<*K> {
+        if self.entries.isEmpty() { return Option.None }
+        return Option.Some(&self.entries.first().key)
+    }
+
+    /// The greatest key, or `None`.
+    /// @cost `O(1)`.
+    fn lastKey(self: *BTreeMap<K, V>) -> Option<*K> {
+        if self.entries.isEmpty() { return Option.None }
+        return Option.Some(&self.entries.last().key)
+    }
+
+    /// Drops every entry.
+    /// @cost `O(n)` drops.
+    fn clear(self: *BTreeMap<K, V>) {
+        self.entries.clear()
+    }
+
+    /// The iterator behind `for kv in map`, in key order.
+    /// @cost `O(1)` to build, one entry per round.
+    fn iter(self: *BTreeMap<K, V>) -> BTreeMapIter<K, V> {
+        return BTreeMapIter<K, V> { map: self, at: 0 }
+    }
+}
+
+/// A `for` over `BTreeMap<K, V>` yields `(*K, *V)` in key order.
+export struct BTreeMapIter<K, V> {
+    map: *BTreeMap<K, V>
+    at: usize
+}
+
+impl<K, V> BTreeMapIter<K, V> {
+    fn next(self: *BTreeMapIter<K, V>) -> Option<(*K, *V)> {
+        if self.at >= self.map.entries.length() { return Option.None }
+        local entry: *Entry<K, V> = self.map.entries.slot(self.at)
+        self.at++
+        local pair: (*K, *V) = (&entry.key, &entry.value)
+        return Option.Some(pair)
+    }
+
+    fn iter(self: *BTreeMapIter<K, V>) -> *BTreeMapIter<K, V> {
+        return self
+    }
+}

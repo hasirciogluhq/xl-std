@@ -1,5 +1,18 @@
 // std/collections: growable containers and the standard sum types. `vec` is the element array
-// `Vec<T>`; `option` and `result` are the two payload enums every fallible API speaks in.
+// `Vec<T>`; `option` and `result` are the two payload enums every fallible API speaks in; `hash` is
+// the key interface and the default SipHash-1-3 hasher the table types use; `hashmap`, `hashset`,
+// `deque`, `binaryheap` and `btreemap` are the containers built on them.
 export * from "vec"
+export * from "slice"
+export * from "iter"
 export * from "option"
 export * from "result"
+export * from "hash"
+export * from "hashmap"
+export * from "hashset"
+export * from "deque"
+export * from "binaryheap"
+export * from "btreemap"
+export * from "box"
+export * from "rc"
+export * from "arc"

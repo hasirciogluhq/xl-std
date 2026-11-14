@@ -1,0 +1,137 @@
+// Deque<T>: a double-ended queue over one ring buffer, so `pushFront` and `popFront` cost the same
+// as `pushBack` and `popBack` with no element moves. The storage is a `Vec<T>` used as the raw slot
+// array: `head` is the index of the oldest element and every element lives at
+// `(head + i) mod capacity`, so the ring wraps without a shift.
+from "../mem/mem" import currentAllocator
+from "../mem/memory" import memcpy
+from "vec" import Vec
+from "option" import Option
+
+/// A growable double-ended queue in `std/collections`.
+/// @contract `len` elements live in the `cap` slots of `slots` starting at `head`, wrapping once.
+/// @contract `cap` is a power of two or `0`, so the wrap is a mask.
+/// @cost `O(1)` at either end, one grow over the whole ring.
+export class Deque<T> {
+    slots: Vec<T>
+    head: usize
+    len: usize
+    cap: usize
+
+    fn init(self) {
+        self.slots = Vec<T>()
+        self.head = 0
+        self.len = 0
+        self.cap = 0
+    }
+}
+
+impl<T> Deque<T> {
+    /// The number of elements.
+    /// @cost `O(1)`.
+    fn length(self: *Deque<T>) -> usize {
+        return self.len
+    }
+
+    /// Whether the deque holds no elements.
+    /// @cost `O(1)`.
+    fn isEmpty(self: *Deque<T>) -> bool {
+        return self.len == 0
+    }
+
+    /// The address of logical position `i`, where `0` is the front.
+    /// @safety `i` must be below `len`; every public method bounds it first.
+    fn slot(self: *Deque<T>, i: usize) -> *T {
+        local at: usize = (self.head + i) & (self.cap - 1)
+        return self.slots.slot(at)
+    }
+
+    /// Allocates at least `want` slots and moves the elements into them in logical order, so the
+    /// ring starts at `0`. The slot count is rounded up to a power of two, which is what makes the
+    /// wrap a mask, and is read back from the fresh `Vec` because `reserve` may over-allocate.
+    /// @cost `O(n)` element moves.
+    fn grow(self: *Deque<T>, want: usize) {
+        local cap: usize = 8
+        while cap < want { cap *= 2 }
+        local fresh: Vec<T> = Vec<T>()
+        fresh.reserve(cap)
+        for i in 0..self.len {
+            fresh.push(__builtin_read(self.slot(i)))
+        }
+        self.slots = fresh
+        self.head = 0
+        self.cap = fresh.capacity()
+    }
+
+    /// Appends `v` at the back.
+    /// @ownership `v` is moved in.
+    /// @cost `O(1)` expected, `O(n)` when the ring doubles.
+    fn pushBack(self: *Deque<T>, v: T) {
+        if self.len == self.cap {
+            local want: usize = 8
+            if self.cap > 0 { want = self.cap * 2 }
+            self.grow(want)
+        }
+        __builtin_write(self.slot(self.len), v)
+        self.len++
+    }
+
+    /// Prepends `v` at the front.
+    /// @ownership `v` is moved in.
+    /// @cost `O(1)` expected, `O(n)` when the ring doubles.
+    fn pushFront(self: *Deque<T>, v: T) {
+        if self.len == self.cap {
+            local want: usize = 8
+            if self.cap > 0 { want = self.cap * 2 }
+            self.grow(want)
+        }
+        self.head = (self.head + self.cap - 1) & (self.cap - 1)
+        __builtin_write(self.slots.slot(self.head), v)
+        self.len++
+    }
+
+    /// Removes and returns the back element, or `None` when empty.
+    /// @ownership the caller owns the returned element and drops it.
+    /// @cost `O(1)`.
+    fn popBack(self: *Deque<T>) -> Option<T> {
+        if self.len == 0 { return Option.None }
+        self.len--
+        return Option.Some(__builtin_read(self.slot(self.len)))
+    }
+
+    /// Removes and returns the front element, or `None` when empty.
+    /// @ownership the caller owns the returned element and drops it.
+    /// @cost `O(1)`.
+    fn popFront(self: *Deque<T>) -> Option<T> {
+        if self.len == 0 { return Option.None }
+        local out: T = __builtin_read(self.slots.slot(self.head))
+        self.head = (self.head + 1) & (self.cap - 1)
+        self.len--
+        return Option.Some(out)
+    }
+
+    /// The front element, or `None` when empty.
+    /// @cost `O(1)`.
+    fn front(self: *Deque<T>) -> Option<*T> {
+        if self.len == 0 { return Option.None }
+        local at: *T = self.slot(0 as usize)
+        return Option.Some(at)
+    }
+
+    /// The back element, or `None` when empty.
+    /// @cost `O(1)`.
+    fn back(self: *Deque<T>) -> Option<*T> {
+        if self.len == 0 { return Option.None }
+        local at: *T = self.slot(self.len - 1)
+        return Option.Some(at)
+    }
+
+    /// Removes every element and drops it.
+    /// @cost `O(n)` drops.
+    fn clear(self: *Deque<T>) {
+        while self.len > 0 {
+            local gone: T = __builtin_read(self.slot(self.len - 1))
+            self.len--
+        }
+        self.head = 0
+    }
+}

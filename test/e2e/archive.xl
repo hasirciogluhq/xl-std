@@ -1,6 +1,6 @@
 // archive: tar and gzip interoperate with the system tools. Archives built here are listed and unpacked by `tar` and checked by `gzip -t`;
 // archives and gzip files made by `tar` and `gzip` are read here. Needs `tar` and `gzip` on PATH (every Linux and macOS host has them).
-from "std" import String, print, fsWrite, fsReadAllString, Vec, optionIsSome
+from "std" import String, print, fsWrite, fsReadAllString, Vec
 from "std/io/files" import makeDirAll, removeAll, exists
 from "std/os/process" import Command
 from "std/compress" import gzip, gunzip, CompressError
@@ -23,7 +23,7 @@ fn run(out: *String, program: str, a: str, b: str, c: str, d: str) -> i32 {
     if b.len > 0 { cmd.arg(String(b)) }
     if c.len > 0 { cmd.arg(String(c)) }
     if d.len > 0 { cmd.arg(String(d)) }
-    if optionIsSome(cmd.output()) { return -1 }
+    if cmd.output().isSome() { return -1 }
     out.append(&cmd.outText)
     return cmd.status.code
 }

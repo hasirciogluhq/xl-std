@@ -1,0 +1,75 @@
+// Rc<T>: shared ownership with a reference count, for a single thread. The value and its count live
+// in one heap block (`RcInner<T>`), so the last owner frees both. `clone` bumps the count and
+// `drop` decrements it; a count of `0` drops the value and frees the block.
+//
+// The count is a plain `usize`, not an atomic, because `Rc` is single-threaded: sharing across
+// threads is `Arc` (`arc.xl`), which is why this module has no `send`.
+
+/// The heap block behind an `Rc`: the value and the number of `Rc` handles on it. A `class`, so a
+/// droppable `T` can be its field; the block itself is freed by the `Rc`'s last `drop`, not by a
+/// field drop, because `strong` and `value` are written through a raw pointer.
+class RcInner<T> {
+    strong: usize
+    value: T
+
+    fn init(self) {
+        self.strong = 0
+    }
+}
+
+/// A shared, single-threaded owner of one heap value.
+/// @contract `inner` is non-nil and `inner.strong` counts the live `Rc` handles on it.
+/// @ownership dropping the last handle drops the value and frees the block.
+/// @cost `O(1)` clone and drop, one allocation.
+export class Rc<T> {
+    inner: *RcInner<T>
+
+    fn init(self) {
+        self.inner = nil
+    }
+
+    fn drop(self) {
+        if self.inner == nil { return }
+        self.inner.strong--
+        if self.inner.strong == 0 {
+            // `delete` runs the class's field drops, so `value` is dropped here and must not be
+            // dropped by hand first.
+            delete self.inner
+        }
+        self.inner = nil
+    }
+}
+
+impl<T> Rc<T> {
+    /// Adds one owner.
+    /// @cost `O(1)`.
+    fn clone(self: *Rc<T>) -> Rc<T> {
+        local out: Rc<T> = Rc<T>()
+        out.inner = self.inner
+        out.inner.strong++
+        return out
+    }
+
+    /// The shared value.
+    /// @cost `O(1)`.
+    fn get(self: *Rc<T>) -> *T {
+        return &self.inner.value
+    }
+
+    /// The number of live handles, including this one.
+    /// @cost `O(1)`.
+    fn strongCount(self: *Rc<T>) -> usize {
+        return self.inner.strong
+    }
+}
+
+/// Allocates a block holding `v` with one owner.
+/// @ownership `v` is moved into the block.
+/// @cost one allocation.
+export fn rcOf<T>(v: T) -> Rc<T> {
+    local out: Rc<T> = Rc<T>()
+    out.inner = new RcInner<T>()
+    out.inner.strong = 1
+    __builtin_write(&out.inner.value, v)
+    return out
+}

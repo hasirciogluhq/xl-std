@@ -1,0 +1,76 @@
+// Arc<T>: shared ownership with an atomic reference count, for use across threads. The layout is the
+// same as `Rc` (`ArcInner<T>` on the heap), but the count is changed with the atomic builtins, so a
+// handle may be cloned or dropped from any thread: `relaxed` for the increment (no other access is
+// ordered by a new owner) and `acq_rel` for the decrement, which publishes the last owner's frees to
+// every thread that released before it. This is the counting C++ `shared_ptr` uses.
+// https://en.cppreference.com/w/cpp/memory/shared_ptr
+/// The heap block behind an `Arc`: the value and the atomic number of `Arc` handles on it. A
+/// `class`, so a droppable `T` can be its field; the block is freed by the `Arc`'s last `drop`.
+class ArcInner<T> {
+    strong: usize
+    value: T
+
+    fn init(self) {
+        self.strong = 1
+    }
+}
+
+/// A shared owner of one heap value, safe to clone and drop from several threads.
+/// @contract `inner` is non-nil and `inner.strong` counts the live `Arc` handles on it.
+/// @ownership dropping the last handle drops the value and frees the block.
+/// @cost `O(1)` clone and drop, one allocation.
+export class Arc<T> {
+    inner: *ArcInner<T>
+
+    fn init(self) {
+        self.inner = nil
+    }
+
+    fn drop(self) {
+        if self.inner == nil { return }
+        // `acq_rel` on the last release pairs with the `acquire` a thread reads the value under, so
+        // the value's drop sees every write made by every other owner. The decrement adds
+        // `usize` max, which wraps to minus one (the stdlib's `atomicAdd` has no subtract form).
+        local left: usize = __builtin_atomicAdd(&self.inner.strong, 18446744073709551615, MemoryOrder.acqRel)
+        if left == 1 {
+            // `delete` runs the class's field drops, so `value` is dropped here and must not be
+            // dropped by hand first.
+            delete self.inner
+        }
+        self.inner = nil
+    }
+}
+
+impl<T> Arc<T> {
+    /// Adds one owner. Safe to call from any thread.
+    /// @cost `O(1)`.
+    fn clone(self: *Arc<T>) -> Arc<T> {
+        local out: Arc<T> = Arc<T>()
+        out.inner = self.inner
+        __builtin_atomicAdd(&self.inner.strong, 1, MemoryOrder.relaxed)
+        return out
+    }
+
+    /// The shared value.
+    /// @cost `O(1)`.
+    fn get(self: *Arc<T>) -> *T {
+        return &self.inner.value
+    }
+
+    /// The number of live handles, including this one.
+    /// @cost `O(1)`.
+    fn strongCount(self: *Arc<T>) -> usize {
+        return __builtin_atomicLoad(&self.inner.strong, MemoryOrder.acquire)
+    }
+}
+
+/// Allocates a block holding `v` with one owner.
+/// @ownership `v` is moved into the block.
+/// @cost one allocation.
+export fn arcOf<T>(v: T) -> Arc<T> {
+    local out: Arc<T> = Arc<T>()
+    out.inner = new ArcInner<T>()
+    __builtin_atomicStore(&out.inner.strong, 1, MemoryOrder.relaxed)
+    __builtin_write(&out.inner.value, v)
+    return out
+}

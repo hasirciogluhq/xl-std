@@ -1,0 +1,137 @@
+// std/collections/iter: the adaptors a `for` loop drives, in the protocol the compiler already
+// uses for iterating (`VecIter.next`): a struct with a `next` method that returns `Option<T>` and
+// returns `None` at the end. `for x in adaptor` therefore needs no new language form.
+//
+//     local evens: Vec<i32> = ...
+//     for x in evens.iter().filter(isEven) { /* x is *i32 */ }
+//
+// Each adaptor borrows what it walks and owns nothing, so a chain is stack-allocated and allocates
+// only at `collect`. A step function is a `fn`-pointer, not a generic `F`: a generic parameter is not
+// inferred from a capturing closure (`E0724`), and a closure passed where a pointer is expected
+// cannot capture (`E0773`), so every step is a plain function or a parameter-less closure.
+
+from "option" import Option
+from "vec" import Vec, VecIter
+
+/// `f(element)` for each element of `v`, in order. The element is borrowed while `f` runs.
+/// @ownership `v` is borrowed; the adaptor owns nothing and stays valid only while `v` lives.
+export fn mapIter<T, U>(v: *Vec<T>, f: fn(*T) -> U) -> MapIter<T, U> {
+    return MapIter<T, U> { src: v, at: 0, f: f }
+}
+
+/// Only the elements of `v` for which `keep` is true, in order.
+/// @ownership `v` is borrowed; the adaptor owns nothing and stays valid only while `v` lives.
+export fn filterIter<T>(v: *Vec<T>, keep: fn(*T) -> bool) -> FilterIter<T> {
+    return FilterIter<T> { src: v, at: 0, keep: keep }
+}
+
+/// `(element, index)` for each element of `v`, with the index as a `usize` from 0.
+/// @ownership `v` is borrowed; the adaptor owns nothing and stays valid only while `v` lives.
+export fn enumerateIter<T>(v: *Vec<T>) -> EnumerateIter<T> {
+    return EnumerateIter<T> { src: v, at: 0 }
+}
+
+/// `(a, b)` pairs of two vectors, stopping when the shorter one ends.
+/// @ownership both vectors are borrowed; the adaptor owns nothing.
+export fn zipIter<A, B>(a: *Vec<A>, b: *Vec<B>) -> ZipIter<A, B> {
+    return ZipIter<A, B> { a: a, b: b, at: 0 }
+}
+
+/// Collects every `U` an adaptor yields into a fresh `Vec<U>`.
+/// @contract the caller passes the element type and the adaptor type explicitly
+/// @contract (`collect<i32, MapIter<i32, i32>>(&it)`), because neither `U` nor `I` is inferred from
+/// @contract an adaptor value (see `xlang-docs/known-limitations.md`).
+/// @ownership the returned vector owns its elements; the adaptor is consumed by the call.
+/// @cost one `Vec` grown by doubling, so `log n` reallocations for `n` elements.
+export fn collect<T, I>(it: *I) -> Vec<T> {
+    local out: Vec<T> = Vec<T>()
+    // The loop runs the same `next` the `for` form calls, so any adaptor with the protocol works.
+    // `for` hands back what `next` produced: `MapIter` yields its `U` by value, the other adaptors
+    // yield a pointer into the source, so `collect` is used with `mapIter` for a plain value walk.
+    for value in it {
+        out.push(value)
+    }
+    return out
+}
+
+/// Walks `v` through `f`, yielding each result.
+export struct MapIter<T, U> {
+    src: *Vec<T>
+    at: usize
+    f: fn(*T) -> U
+}
+
+impl<T, U> MapIter<T, U> {
+    fn next(self: *MapIter<T, U>) -> Option<U> {
+        if self.at >= self.src.len { return Option.None }
+        self.at++
+        return Option.Some(self.f(self.src.slot(self.at - 1)))
+    }
+}
+
+impl<T, U> MapIter<T, U> {
+    /// `for x in adaptor`: the same walk as `next`, so no index is available here.
+    fn iter(self: *MapIter<T, U>) -> *MapIter<T, U> {
+        return self
+    }
+}
+
+/// Walks `v`, skipping the elements for which `keep` is false.
+export struct FilterIter<T> {
+    src: *Vec<T>
+    at: usize
+    keep: fn(*T) -> bool
+}
+
+impl<T> FilterIter<T> {
+    fn next(self: *FilterIter<T>) -> Option<*T> {
+        // Advances over every element the predicate rejects, so the caller sees only matches.
+        while self.at < self.src.len {
+            local p: *T = self.src.slot(self.at)
+            self.at++
+            if self.keep(p) { return Option.Some(p) }
+        }
+        return Option.None
+    }
+
+    fn iter(self: *FilterIter<T>) -> *FilterIter<T> {
+        return self
+    }
+}
+
+/// Walks `v`, yielding each element together with its index.
+export struct EnumerateIter<T> {
+    src: *Vec<T>
+    at: usize
+}
+
+impl<T> EnumerateIter<T> {
+    fn next(self: *EnumerateIter<T>) -> Option<(*T, usize)> {
+        if self.at >= self.src.len { return Option.None }
+        self.at++
+        return Option.Some((self.src.slot(self.at - 1), self.at - 1))
+    }
+
+    fn iter(self: *EnumerateIter<T>) -> *EnumerateIter<T> {
+        return self
+    }
+}
+
+/// Walks two vectors in step, yielding a pair of pointers.
+export struct ZipIter<A, B> {
+    a: *Vec<A>
+    b: *Vec<B>
+    at: usize
+}
+
+impl<A, B> ZipIter<A, B> {
+    fn next(self: *ZipIter<A, B>) -> Option<(*A, *B)> {
+        if self.at >= self.a.len || self.at >= self.b.len { return Option.None }
+        self.at++
+        return Option.Some((self.a.slot(self.at - 1), self.b.slot(self.at - 1)))
+    }
+
+    fn iter(self: *ZipIter<A, B>) -> *ZipIter<A, B> {
+        return self
+    }
+}

@@ -1,0 +1,92 @@
+// HashSet<T>: a set on top of HashMap<T, u8>, so the probing, growth and drop rules live in one
+// place. The stored value is a `u8` because a set has no payload; the key is the whole entry.
+from "hashmap" import HashMap, HashMapIter
+from "hash" import Hash
+from "vec" import Vec
+from "option" import Option
+
+/// An unordered set of distinct keys, kept by hash. A key is `T`, which implements `HashKey`
+/// (`hash` says how it hashes and how two keys compare for equality).
+/// @contract every element appears at most once; two equal keys never coexist.
+/// @cost `O(1)` expected per operation, `O(n)` on a grow.
+export class HashSet<T> {
+    map: HashMap<T, u8>
+
+    fn init(self) {
+        self.map = HashMap<T, u8>()
+    }
+}
+
+impl<T> HashSet<T> {
+    /// The number of elements.
+    /// @cost `O(1)`.
+    fn length(self: *HashSet<T>) -> usize {
+        return self.map.length()
+    }
+
+    /// Whether the set holds no elements.
+    /// @cost `O(1)`.
+    fn isEmpty(self: *HashSet<T>) -> bool {
+        return self.map.isEmpty()
+    }
+
+    /// Adds `k`; adding a key already present changes nothing.
+    /// @contract the first insertion is kept, so a caller that re-adds an equal key does not
+    /// @contract disturb the stored one.
+    /// @ownership `k` is moved in; an already-present equal key is dropped.
+    /// @cost `O(1)` expected, `O(n)` on a grow.
+    fn add(self: *HashSet<T>, k: T) {
+        local present: u8 = 0
+        self.map.put(k, present)
+    }
+
+    /// Whether `k` is present.
+    /// @cost `O(1)` expected.
+    fn contains(self: *HashSet<T>, k: T) -> bool {
+        return self.map.containsKey(k)
+    }
+
+    /// Removes `k`, returning whether it was present.
+    /// @ownership the removed key is dropped.
+    /// @cost `O(1)` expected.
+    fn remove(self: *HashSet<T>, k: T) -> bool {
+        return self.map.remove(k).isSome()
+    }
+
+    /// The keys, in slot order (not sorted).
+    /// @cost `O(capacity)` to walk the slots, `O(n)` keys copied out.
+    fn toVec(self: *HashSet<T>) -> Vec<T> {
+        local out: Vec<T> = Vec<T>()
+        for kv in self.map {
+            local (k, v) = kv
+            out.push(__builtin_read(k))
+        }
+        return out
+    }
+
+    /// The iterator behind `for k in set`.
+    /// @cost `O(1)` to build, one slot per round.
+    fn iter(self: *HashSet<T>) -> HashSetIter<T> {
+        local out: HashSetIter<T> = HashSetIter<T> { inner: self.map.iter() }
+        return out
+    }
+}
+
+/// A `for` over `HashSet<T>` yields `*T`, the key in the set's own storage.
+export struct HashSetIter<T> {
+    inner: HashMapIter<T, u8>
+}
+
+impl<T> HashSetIter<T> {
+    fn next(self: *HashSetIter<T>) -> Option<*T> {
+        local hit: Option<(*T, *u8)> = self.inner.next()
+        if hit.isNone() { return Option.None }
+        local pair: (*T, *u8) = hit.unwrap()
+        local (k, v) = pair
+        return Option.Some(k)
+    }
+
+    fn iter(self: *HashSetIter<T>) -> *HashSetIter<T> {
+        return self
+    }
+}

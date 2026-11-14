@@ -163,5 +163,257 @@ which keeps the view in the same commit as the tag it came from.
 <!-- written by scripts/tags.sh sync; every line below is a tag found in the .xl
      sources, grouped by tag and then by file. Do not edit inside the markers. -->
 
-Total: 0 tag lines.
+### @contract (41)
+
+```
+./collections/hashmap.xl:138:    /// @contract the table owns `k` and `v`; an existing key is kept and the passed `k` is dropped.
+./collections/arc.xl:19:/// @contract `inner` is non-nil and `inner.strong` counts the live `Arc` handles on it.
+./collections/hashset.xl:10:/// @contract every element appears at most once; two equal keys never coexist.
+./collections/hashset.xl:34:    /// @contract the first insertion is kept, so a caller that re-adds an equal key does not
+./collections/hashset.xl:35:    /// @contract disturb the stored one.
+./collections/hash.xl:88:/// @contract every byte of `data` and both key words affect the tag; the same input and key give
+./collections/hash.xl:89:/// @contract the same tag, and a different key gives an unrelated one.
+./collections/hash.xl:163:/// @contract a fresh `SipHash13` keyed from OS entropy, so two calls (and so two tables) almost
+./collections/hash.xl:164:/// @contract never share a key; the key is not reproducible and need not be.
+./collections/result.xl:49:    /// @contract the success value of an `Ok`; panics on an `Err` with a fixed message, because a
+./collections/result.xl:50:    /// @contract result the caller believes successful is a program error, not a value.
+./collections/result.xl:60:    /// @contract the success value of an `Ok`; panics on an `Err` with a message ending in `msg`,
+./collections/result.xl:61:    /// @contract which should name what the caller expected.
+./collections/btreemap.xl:16:/// @contract `entries` is sorted by `cmp` and holds no two keys that compare `0`.
+./collections/rc.xl:21:/// @contract `inner` is non-nil and `inner.strong` counts the live `Rc` handles on it.
+./collections/deque.xl:11:/// @contract `len` elements live in the `cap` slots of `slots` starting at `head`, wrapping once.
+./collections/deque.xl:12:/// @contract `cap` is a power of two or `0`, so the wrap is a mask.
+./collections/binaryheap.xl:9:/// @contract for every `i`, `cmp(parent(i), i) >= 0`, so the greatest element is at index `0`.
+./collections/slice.xl:57:/// @contract `cmp` must be a consistent total order; the sort keeps equal elements in their order.
+./collections/slice.xl:80:/// @contract the slice must be sorted by the order `cmp` describes, or the result is meaningless.
+./collections/slice.xl:99:/// @contract only adjacent equal elements collapse, so a full dedup needs `sortSlice` first.
+./collections/option.xl:40:    /// @contract the payload of a `Some`; panics on a `None` with a fixed message, because an
+./collections/option.xl:41:    /// @contract optional that the caller believes present is a program error, not a value.
+./collections/option.xl:51:    /// @contract the payload of a `Some`; panics on a `None` with a message ending in `msg`, which
+./collections/option.xl:52:    /// @contract should name what the caller expected.
+./collections/iter.xl:41:/// @contract the caller passes the element type and the adaptor type explicitly
+./collections/iter.xl:42:/// @contract (`collect<i32, MapIter<i32, i32>>(&it)`), because neither `U` nor `I` is inferred from
+./collections/iter.xl:43:/// @contract an adaptor value (see `xlang-docs/known-limitations.md`).
+./collections/vec.xl:229:    /// @contract the relative order of elements that compare equal is kept, so a `sort` after a
+./collections/vec.xl:230:    /// @contract `sortBy` on another field uses that field as the tiebreak.
+./collections/vec.xl:242:    /// @contract `cmp` must be a consistent total order; an order that is not transitive leaves the
+./collections/vec.xl:243:    /// @contract result unspecified, because the merge assumes a consistent answer.
+./collections/vec.xl:314:    /// @contract the vector must be sorted by the order `cmp` describes; otherwise the result is
+./collections/vec.xl:315:    /// @contract meaningless. On ties the leftmost matching index is returned.
+./collections/vec.xl:333:    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+./collections/vec.xl:353:    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+./collections/vec.xl:375:    /// @contract only *adjacent* equal elements collapse, so a full dedup needs a `sort`/`sortBy`
+./collections/vec.xl:376:    /// @contract first; without it the result keeps every element that differs from its predecessor.
+./collections/vec.xl:377:    /// @contract `T` must not need drop: the operator takes its operand by value and drops it.
+./collections/vec.xl:399:    /// @contract only adjacent elements are compared; sort by the same key first for a full dedup.
+./collections/box.xl:6:/// @contract `ptr` points to one live `T` (or the `Box` was moved out and is never used again).
+```
+
+### @ownership (58)
+
+```
+./collections/hashmap.xl:32:/// @ownership the table owns every key and value it holds; `remove` moves the value out and drops
+./collections/hashmap.xl:33:/// @ownership the key, and `drop` releases the slot array through the current allocator.
+./collections/hashmap.xl:167:    /// @ownership the value is borrowed: it stays in the table and is invalidated by any insert
+./collections/hashmap.xl:168:    /// @ownership that grows the table, so copy it out if it must outlive the next `put`.
+./collections/hashmap.xl:190:    /// @ownership the returned value is moved out and owned by the caller.
+./collections/hashmap.xl:239:/// @ownership the pointers borrow the table and are invalidated by the next `put` that grows it.
+./collections/arc.xl:20:/// @ownership dropping the last handle drops the value and frees the block.
+./collections/arc.xl:68:/// @ownership `v` is moved into the block.
+./collections/hashset.xl:36:    /// @ownership `k` is moved in; an already-present equal key is dropped.
+./collections/hashset.xl:50:    /// @ownership the removed key is dropped.
+./collections/hash.xl:53:    /// @ownership `data` is borrowed for the call only and is never freed here.
+./collections/hash.xl:92:/// @ownership `data` is borrowed for the call; it is never NUL-terminated, copied or freed.
+./collections/hash.xl:129:/// @ownership `s` is borrowed; its bytes are hashed in place.
+./collections/hash.xl:149:/// @ownership the value holds two words and owns no memory.
+./collections/hash.xl:206:/// @ownership `s` is borrowed; its bytes are hashed in place.
+./collections/hash.xl:212:/// @ownership `s` is borrowed; nothing is copied or freed.
+./collections/result.xl:32:    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+./collections/result.xl:41:    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+./collections/result.xl:51:    /// @ownership the value is moved out of `self`, and the error payload (if any) is dropped here,
+./collections/result.xl:52:    /// @ownership so an `Ok` payload is owned by the caller exactly once.
+./collections/result.xl:62:    /// @ownership the value is moved out exactly as `unwrap` moves it.
+./collections/result.xl:147:    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
+./collections/result.xl:160:    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
+./collections/btreemap.xl:76:    /// @ownership `k` is dropped when an equal key was already present; `v` replaces the old value.
+./collections/btreemap.xl:94:    /// @ownership the removed key is dropped; the caller owns the returned value.
+./collections/rc.xl:22:/// @ownership dropping the last handle drops the value and frees the block.
+./collections/rc.xl:67:/// @ownership `v` is moved into the block.
+./collections/deque.xl:66:    /// @ownership `v` is moved in.
+./collections/deque.xl:79:    /// @ownership `v` is moved in.
+./collections/deque.xl:93:    /// @ownership the caller owns the returned element and drops it.
+./collections/deque.xl:102:    /// @ownership the caller owns the returned element and drops it.
+./collections/binaryheap.xl:73:    /// @ownership `v` is moved in.
+./collections/binaryheap.xl:81:    /// @ownership the caller owns the returned element and drops it.
+./collections/binaryheap.xl:99:    /// @ownership `items` is moved into the heap.
+./collections/slice.xl:15:/// @ownership elements are moved through one temporary, so each is moved twice and dropped once.
+./collections/slice.xl:58:/// @ownership elements are moved by swapping, never cloned, and nothing is dropped.
+./collections/slice.xl:100:/// @ownership the removed elements are dropped in place, once each.
+./collections/option.xl:23:    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+./collections/option.xl:32:    /// @ownership `self` is borrowed, so a payload that needs drop is not dropped by the test.
+./collections/option.xl:42:    /// @ownership the payload is moved out of `self`, which is left uninitialized and is not run
+./collections/option.xl:43:    /// @ownership again, so a droppable payload is owned by the caller exactly once.
+./collections/option.xl:53:    /// @ownership the payload is moved out of `self` exactly as `unwrap` moves it.
+./collections/option.xl:67:    /// @ownership `self` is moved, so an unused payload is dropped here.
+./collections/option.xl:112:    /// @ownership the payload is moved into `*out`; `self` is left unset and not run again.
+./collections/iter.xl:17:/// @ownership `v` is borrowed; the adaptor owns nothing and stays valid only while `v` lives.
+./collections/iter.xl:23:/// @ownership `v` is borrowed; the adaptor owns nothing and stays valid only while `v` lives.
+./collections/iter.xl:29:/// @ownership `v` is borrowed; the adaptor owns nothing and stays valid only while `v` lives.
+./collections/iter.xl:35:/// @ownership both vectors are borrowed; the adaptor owns nothing.
+./collections/iter.xl:44:/// @ownership the returned vector owns its elements; the adaptor is consumed by the call.
+./collections/vec.xl:231:    /// @ownership the elements are moved, never cloned, so a droppable `T` is dropped exactly once.
+./collections/vec.xl:244:    /// @ownership elements are moved, never cloned; `cmp` borrows each element and must not move
+./collections/vec.xl:245:    /// @ownership or free it.
+./collections/vec.xl:378:    /// @ownership each removed element is dropped in place, so every element is dropped once.
+./collections/vec.xl:400:    /// @ownership each removed element is dropped in place, so every element is dropped once.
+./collections/box.xl:7:/// @ownership one owner; there is no `clone`, because a copy would free the value twice.
+./collections/box.xl:27:    /// @ownership `v` is moved in and is dropped by the `Box`.
+./collections/box.xl:49:    /// @ownership the caller owns the returned value and drops it.
+./collections/box.xl:60:/// @ownership `v` is moved in and is dropped by the returned `Box`.
+```
+
+### @spec (4)
+
+```
+./collections/hash.xl:58:// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2.3 for the four initial values.
+./collections/hash.xl:90:/// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2 for the construction; the test
+./collections/hash.xl:91:/// @spec suite checks the output against the reference implementation's SipHash-1-3 vectors.
+./collections/hash.xl:148:/// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2 for the algorithm.
+```
+
+### @cost (96)
+
+```
+./collections/hashmap.xl:34:/// @cost a lookup is `O(1)` expected and `O(n)` only under an adversarial key stream, which the
+./collections/hashmap.xl:35:/// @cost keyed hash prevents; an insert grows to twice the slots when the table passes 3/4 full,
+./collections/hashmap.xl:36:/// @cost moving every live entry once (`O(n)` amortized to `O(1)` per insert).
+./collections/hashmap.xl:99:    /// @cost `O(n)` moves, amortized to `O(1)` per insert over the life of the table.
+./collections/hashmap.xl:139:    /// @cost `O(1)` expected, plus `O(n)` on a grow.
+./collections/hashmap.xl:191:    /// @cost linear probing stops at the slot, then the following run of live slots is re-inserted
+./collections/hashmap.xl:192:    /// @cost so no probe chain is broken; `O(1)` expected.
+./collections/arc.xl:21:/// @cost `O(1)` clone and drop, one allocation.
+./collections/arc.xl:46:    /// @cost `O(1)`.
+./collections/arc.xl:55:    /// @cost `O(1)`.
+./collections/arc.xl:61:    /// @cost `O(1)`.
+./collections/arc.xl:69:/// @cost one allocation.
+./collections/hashset.xl:11:/// @cost `O(1)` expected per operation, `O(n)` on a grow.
+./collections/hashset.xl:22:    /// @cost `O(1)`.
+./collections/hashset.xl:28:    /// @cost `O(1)`.
+./collections/hashset.xl:37:    /// @cost `O(1)` expected, `O(n)` on a grow.
+./collections/hashset.xl:44:    /// @cost `O(1)` expected.
+./collections/hashset.xl:51:    /// @cost `O(1)` expected.
+./collections/hashset.xl:57:    /// @cost `O(capacity)` to walk the slots, `O(n)` keys copied out.
+./collections/hashset.xl:68:    /// @cost `O(1)` to build, one slot per round.
+./collections/hash.xl:93:/// @cost one pass over the input with one round per 8-byte block, then three finalization rounds;
+./collections/hash.xl:94:/// @cost no allocation.
+./collections/hash.xl:165:/// @cost one entropy read.
+./collections/hash.xl:186:/// @cost one SipHash call, no allocation.
+./collections/hash.xl:193:/// @cost one SipHash call, no allocation.
+./collections/result.xl:63:    /// @cost one `String` built only on the panic path, so the happy path allocates nothing.
+./collections/result.xl:92:    /// @cost one move of the payload through `f`; a droppable `T` is dropped once, at the end.
+./collections/btreemap.xl:17:/// @cost `O(log n)` lookup, `O(n)` insert and remove, `O(n)` to build from sorted pairs.
+./collections/btreemap.xl:30:    /// @cost `O(1)`.
+./collections/btreemap.xl:36:    /// @cost `O(1)`.
+./collections/btreemap.xl:42:    /// @cost `O(log n)` calls to `cmp`.
+./collections/btreemap.xl:60:    /// @cost `O(log n)` calls to `cmp`.
+./collections/btreemap.xl:70:    /// @cost `O(log n)` calls to `cmp`.
+./collections/btreemap.xl:77:    /// @cost `O(n)` to move the later entries up by one.
+./collections/btreemap.xl:95:    /// @cost `O(n)` to move the later entries down by one.
+./collections/btreemap.xl:107:    /// @cost `O(1)`.
+./collections/btreemap.xl:114:    /// @cost `O(1)`.
+./collections/btreemap.xl:121:    /// @cost `O(n)` drops.
+./collections/btreemap.xl:127:    /// @cost `O(1)` to build, one entry per round.
+./collections/rc.xl:23:/// @cost `O(1)` clone and drop, one allocation.
+./collections/rc.xl:45:    /// @cost `O(1)`.
+./collections/rc.xl:54:    /// @cost `O(1)`.
+./collections/rc.xl:60:    /// @cost `O(1)`.
+./collections/rc.xl:68:/// @cost one allocation.
+./collections/deque.xl:13:/// @cost `O(1)` at either end, one grow over the whole ring.
+./collections/deque.xl:30:    /// @cost `O(1)`.
+./collections/deque.xl:36:    /// @cost `O(1)`.
+./collections/deque.xl:51:    /// @cost `O(n)` element moves.
+./collections/deque.xl:67:    /// @cost `O(1)` expected, `O(n)` when the ring doubles.
+./collections/deque.xl:80:    /// @cost `O(1)` expected, `O(n)` when the ring doubles.
+./collections/deque.xl:94:    /// @cost `O(1)`.
+./collections/deque.xl:103:    /// @cost `O(1)`.
+./collections/deque.xl:113:    /// @cost `O(1)`.
+./collections/deque.xl:121:    /// @cost `O(1)`.
+./collections/deque.xl:129:    /// @cost `O(n)` drops.
+./collections/binaryheap.xl:10:/// @cost `O(log n)` per push and pop, `O(n)` to build from a vector.
+./collections/binaryheap.xl:23:    /// @cost `O(1)`.
+./collections/binaryheap.xl:29:    /// @cost `O(1)`.
+./collections/binaryheap.xl:35:    /// @cost `O(1)`.
+./collections/binaryheap.xl:42:    /// @cost `O(log n)` swaps.
+./collections/binaryheap.xl:54:    /// @cost `O(log n)` swaps.
+./collections/binaryheap.xl:74:    /// @cost `O(log n)`.
+./collections/binaryheap.xl:82:    /// @cost `O(log n)`.
+./collections/binaryheap.xl:93:    /// @cost `O(n)` drops.
+./collections/binaryheap.xl:100:    /// @cost `O(n)` comparisons, cheaper than `n` pushes.
+./collections/slice.xl:16:/// @cost `n / 2` swaps and no allocation.
+./collections/slice.xl:31:/// @cost up to `n` comparisons, stopping at the first match.
+./collections/slice.xl:41:/// @cost up to `n` calls to `pred`, stopping at the first match.
+./collections/slice.xl:50:/// @cost up to `n` comparisons, stopping at the first match.
+./collections/slice.xl:59:/// @cost `O(n^2)` comparisons: for a slice longer than a hundred elements sort a `Vec` instead,
+./collections/slice.xl:60:/// @cost whose merge sort is `n log n`.
+./collections/slice.xl:81:/// @cost `log n` calls to `cmp`.
+./collections/slice.xl:101:/// @cost one pass and one move per kept element.
+./collections/option.xl:54:    /// @cost one `String` built only on the panic path, so the happy path allocates nothing.
+./collections/option.xl:77:    /// @cost one move of the payload through `f`; a droppable `T` is dropped once, at the end.
+./collections/iter.xl:45:/// @cost one `Vec` grown by doubling, so `log n` reallocations for `n` elements.
+./collections/vec.xl:232:    /// @cost `n log n` comparisons and one auxiliary buffer of `n` elements; a run of 8 or fewer
+./collections/vec.xl:233:    /// @cost elements is insertion-sorted in place with no buffer.
+./collections/vec.xl:246:    /// @cost `n log n` calls to `cmp` and one buffer of `n` elements; nothing is allocated for a
+./collections/vec.xl:247:    /// @cost vector of 8 or fewer elements.
+./collections/vec.xl:291:    /// @cost `log n` comparisons.
+./collections/vec.xl:316:    /// @cost `log n` calls to `cmp`.
+./collections/vec.xl:334:    /// @cost up to `n` comparisons, stopping at the first match.
+./collections/vec.xl:344:    /// @cost up to `n` calls to `pred`, stopping at the first match.
+./collections/vec.xl:354:    /// @cost up to `n` comparisons, stopping at the first match.
+./collections/vec.xl:365:    /// @cost up to `n` calls to `pred`, stopping at the first match.
+./collections/vec.xl:379:    /// @cost one pass and one move per kept element.
+./collections/vec.xl:401:    /// @cost one pass and one call to `eq` per element after the first.
+./collections/box.xl:8:/// @cost `O(1)` to create and to drop, one allocation.
+./collections/box.xl:28:    /// @cost one allocation on the first `set`; the raw storage is reused after that.
+./collections/box.xl:37:    /// @cost `O(1)`.
+./collections/box.xl:43:    /// @cost `O(1)`.
+./collections/box.xl:50:    /// @cost `O(1)` plus one free.
+./collections/box.xl:61:/// @cost one allocation.
+./str/string.xl:439:/// @cost `O(min(len))` byte comparisons.
+./str/string.xl:445:/// @cost `O(min(len))` byte comparisons.
+```
+
+### @todo (17)
+
+```
+./collections/result.xl:93:    /// @todo `f` is a plain `fn(*T) -> U`, not a generic `F`, because a `U` reached only through an
+./collections/result.xl:94:    /// @todo `F` parameter is not inferred (`E0724`); a capturing closure must be a named function.
+./collections/slice.xl:32:/// @todo needs `fn ==(T, T)`; a type without one uses `indexOfBySlice`.
+./collections/slice.xl:51:/// @todo needs `fn ==(T, T)`, like `indexOfSlice`.
+./collections/slice.xl:61:/// @todo this is the quadratic variant because a mutable slice has no room for the merge buffer
+./collections/slice.xl:62:/// @todo the `Vec` sort allocates; a caller with many elements copies into a `Vec` first.
+./collections/slice.xl:102:/// @todo needs `fn ==(T, T)` for the element type.
+./collections/option.xl:78:    /// @todo `f` is a plain `fn(*T) -> U`, not a generic `F`, because a `U` reached only through an
+./collections/option.xl:79:    /// @todo `F` parameter is not inferred (`E0724`); a capturing closure must be a named function.
+./collections/vec.xl:234:    /// @todo the element type needs `fn <`, found because this module imports `str/string`; a type
+./collections/vec.xl:235:    /// @todo declared elsewhere without such an import does not resolve here, so it uses `sortBy`.
+./collections/vec.xl:292:    /// @todo an element without `fn <` must use `binarySearchBy` with an explicit comparator.
+./collections/vec.xl:335:    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `containsBy`.
+./collections/vec.xl:355:    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `indexOfBy`.
+./collections/vec.xl:380:    /// @todo needs `fn ==(T, T)` for the element type; a droppable type uses `dedupBy`.
+./collections/vec.xl:426:/// @todo the language cannot declare `fn <(a: *T, b: *T)` (a pointer operator is `E0709`), and a
+./collections/vec.xl:427:/// @todo generic `T` has no borrow, so this split cannot be closed inside the stdlib.
+```
+
+### @safety (6)
+
+```
+./collections/hash.xl:44:    /// @safety `other` must point to a value of the implementing type; a table only ever passes a
+./collections/hash.xl:45:    /// @safety lookup key of the same `K`, so the cast inside an implementation is sound.
+./collections/hash.xl:136:/// @safety `at + 8` must not exceed the length of `data`; the only caller tests `i + 8 <= n`.
+./collections/deque.xl:42:    /// @safety `i` must be below `len`; every public method bounds it first.
+./collections/vec.xl:435:/// @safety `i` must be within the array `p` points to; the merge below bounds it by the run end.
+./collections/vec.xl:442:/// @safety `lo <= mid <= hi <= len`; `sortBy` computes the three from the pass width.
+```
+
+Total: 222 tag lines.
 <!-- END COLLECTED TAGS -->

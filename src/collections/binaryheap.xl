@@ -1,0 +1,111 @@
+// BinaryHeap<T>: a max-heap over a `Vec<T>` used as a binary tree in level order (the children of
+// `i` are `2*i+1` and `2*i+2`), so `push` and `pop` cost `O(log n)` and `peek` is `O(1)`. The order
+// is the explicit `fn(*T, *T) -> i32` comparator, never a value operator, so a droppable element
+// type (`String`) works the same as a plain one.
+from "vec" import Vec
+from "option" import Option
+
+/// A max-heap: `pop` returns the greatest element under the comparator.
+/// @contract for every `i`, `cmp(parent(i), i) >= 0`, so the greatest element is at index `0`.
+/// @cost `O(log n)` per push and pop, `O(n)` to build from a vector.
+export class BinaryHeap<T> {
+    items: Vec<T>
+    cmp: fn(*T, *T) -> i32
+
+    fn init(self, cmp: fn(*T, *T) -> i32) {
+        self.items = Vec<T>()
+        self.cmp = cmp
+    }
+}
+
+impl<T> BinaryHeap<T> {
+    /// The number of elements.
+    /// @cost `O(1)`.
+    fn length(self: *BinaryHeap<T>) -> usize {
+        return self.items.length()
+    }
+
+    /// Whether the heap holds no elements.
+    /// @cost `O(1)`.
+    fn isEmpty(self: *BinaryHeap<T>) -> bool {
+        return self.items.isEmpty()
+    }
+
+    /// The greatest element, or `None` when empty.
+    /// @cost `O(1)`.
+    fn peek(self: *BinaryHeap<T>) -> Option<*T> {
+        if self.items.isEmpty() { return Option.None }
+        return Option.Some(self.items.first())
+    }
+
+    /// Moves the element at `i` up while it is greater than its parent.
+    /// @cost `O(log n)` swaps.
+    fn siftUp(self: *BinaryHeap<T>, i: usize) {
+        local at: usize = i
+        while at > 0 {
+            local parent: usize = (at - 1) / 2
+            if self.cmp(self.items.slot(at), self.items.slot(parent)) <= 0 { return }
+            self.items.swap(at, parent)
+            at = parent
+        }
+    }
+
+    /// Moves the element at `i` down while a child is greater than it.
+    /// @cost `O(log n)` swaps.
+    fn siftDown(self: *BinaryHeap<T>, i: usize) {
+        local at: usize = i
+        local n: usize = self.items.length()
+        while true {
+            local left: usize = 2 * at + 1
+            if left >= n { return }
+            local best: usize = left
+            local right: usize = left + 1
+            if right < n && self.cmp(self.items.slot(right), self.items.slot(left)) > 0 {
+                best = right
+            }
+            if self.cmp(self.items.slot(best), self.items.slot(at)) <= 0 { return }
+            self.items.swap(at, best)
+            at = best
+        }
+    }
+
+    /// Adds `v`.
+    /// @ownership `v` is moved in.
+    /// @cost `O(log n)`.
+    fn push(self: *BinaryHeap<T>, v: T) {
+        self.items.push(v)
+        self.siftUp(self.items.length() - 1)
+    }
+
+    /// Removes and returns the greatest element, or `None` when empty.
+    /// @ownership the caller owns the returned element and drops it.
+    /// @cost `O(log n)`.
+    fn pop(self: *BinaryHeap<T>) -> Option<T> {
+        if self.items.isEmpty() { return Option.None }
+        local top: T = self.items.swapRemove(0 as usize)
+        if !self.items.isEmpty() {
+            self.siftDown(0 as usize)
+        }
+        return Option.Some(top)
+    }
+
+    /// Drops every element.
+    /// @cost `O(n)` drops.
+    fn clear(self: *BinaryHeap<T>) {
+        self.items.clear()
+    }
+
+    /// Heaps the `Vec` in place with one bottom-up pass and takes ownership of it.
+    /// @ownership `items` is moved into the heap.
+    /// @cost `O(n)` comparisons, cheaper than `n` pushes.
+    fn fromVec(self: *BinaryHeap<T>, items: Vec<T>) {
+        self.items = items
+        local n: usize = self.items.length()
+        if n < 2 { return }
+        local i: usize = n / 2
+        while i > 0 {
+            i--
+            self.siftDown(i)
+        }
+    }
+}
