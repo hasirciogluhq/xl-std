@@ -52,8 +52,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: .github/scripts/install-xlc.sh
-      - name: xlc --check index.xl
-        run: xlc index.xl --check -DfeatureDefaultAllocator=true --target ${{ matrix.target }}
+      - name: xlc --check src/index.xl
+        run: xlc src/index.xl --check -DfeatureDefaultAllocator=true --target ${{ matrix.target }}
 
   # Unit suites and end-to-end programs, built and run natively on each host. The Linux hosts also run the container legs of run.sh.
   test:
@@ -94,5 +94,5 @@ jobs:
       - run: .github/scripts/install-xlc.sh
       - name: Process test
         run: |
-          xlc test/e2e/process.xl -M std="$PWD" --import std -DfeatureDefaultAllocator=true -o process.exe
+          xlc test/e2e/process.xl -M std="$PWD/src" --import std -DfeatureDefaultAllocator=true -o process.exe
           ./process.exe

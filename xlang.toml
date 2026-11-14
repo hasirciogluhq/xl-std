@@ -1,0 +1,9 @@
+# The standard library is a package: its sources are under src/, so a user imports
+# `import "github.com/hasirciogluhq/xl-std"` and `.../sub` and never writes `/src` (see xlang-docs
+# compiler/packages, `[package] root`). Builds against it still pass the module root by hand:
+# `xlc app.xl -M std=<this repo>/src --import std -DfeatureDefaultAllocator=true`.
+[package]
+name = "github.com/hasirciogluhq/xl-std"
+root = "src"
+
+[dependencies]

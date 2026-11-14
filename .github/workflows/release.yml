@@ -73,14 +73,11 @@ jobs:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          # Only what a program imports: index.xl and the area folders. Tests, CI and the README stay in the repository.
+          # Only what a program imports: src/index.xl and the area folders, flattened to the archive root, which is the
+          # module root (`-M std=<unpacked dir>`). Tests, CI and the README stay in the repository.
           name="xl-std_${VERSION}"
           mkdir -p "dist/$name"
-          cp index.xl "dist/$name/"
-          for dir in */; do
-            case "$dir" in test/ | dist/ | scripts/) continue ;; esac
-            cp -R "$dir" "dist/$name/"
-          done
+          cp -R src/. "dist/$name/"
           tar -czf "dist/$name.tar.gz" -C dist "$name"
           (cd dist && sha256sum "$name.tar.gz" >checksums.txt)
       - name: Create the release

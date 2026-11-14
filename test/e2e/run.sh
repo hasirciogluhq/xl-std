@@ -22,7 +22,7 @@
 # server/client pairs keep their own sequential loop, because each one needs a free port and a running peer.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)        # the stdlib: this repository (index.xl at its root)
+root=$(cd "$here/../../src" && pwd)    # the stdlib: this repository's src/ (index.xl at its root, xlang.toml `root`)
 xlc=${1:-${XLC:-xlc}}                  # the compiler under test
 # `xlc` takes the stdlib as a module root and loads it with `--import`; this function keeps the `"$xlang" build <src> <flags>` calls below
 # short. `xlang` holds the function's name, so "$xlang" runs it.

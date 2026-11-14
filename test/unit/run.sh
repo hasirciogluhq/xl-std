@@ -5,7 +5,7 @@
 #   test/unit/run.sh [path/to/xlc] [name-regex]        (compiler default: $XLC, else `xlc` on PATH)
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+root=$(cd "$here/../../src" && pwd)    # the stdlib sources: this repository's src/ (xlang.toml `root`)
 xlc=${1:-${XLC:-xlc}}
 filter=${2:-}
 work=$(mktemp -d)
