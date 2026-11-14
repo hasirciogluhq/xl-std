@@ -15,6 +15,7 @@
 //   no half-built result and an overflow is a single panic at the point of the operation.
 from "../collections/vec" import Vec
 from "../str/string" import String
+from "../str/chars" import hexValue
 from "bignum" import bnZero, bnCopy
 from "bigdiv" import bigMul, bigDivMod, bigLen
 from "bigint" import bigintPow, bigintGcd, bigintLcm, bigintModPow, bigintModInverse
@@ -209,7 +210,7 @@ export class BigInt {
         }
         local i: usize = start
         while i < s.len {
-            local d: i32 = hexDigit(s[i])
+            local d: i32 = hexValue(s[i])
             if d < 0 {
                 out.limbs.clear()
                 return false
@@ -622,14 +623,6 @@ fn store(out: *BigInt, src: *u32, n: usize) {
         out.limbs.push(src[i])
         i = i + 1
     }
-}
-
-/// The value of a hex digit, or -1 when the byte is not one.
-fn hexDigit(c: u8) -> i32 {
-    if c >= 48 && c <= 57 { return (c - 48) as i32 }
-    if c >= 97 && c <= 102 { return ((c - 97) as i32) + 10 }
-    if c >= 65 && c <= 70 { return ((c - 65) as i32) + 10 }
-    return -1
 }
 
 fn hexChar(d: u32) -> u8 {

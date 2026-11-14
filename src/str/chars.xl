@@ -42,11 +42,20 @@ export fn isHex(c: u8) -> bool {
     return isDigit(c) || (c >= b'A' && c <= b'F') || (c >= b'a' && c <= b'f')
 }
 
-/// ASCII whitespace: space, tab, newline, vertical tab, form feed and carriage return (0x09-0x0d and 0x20).
-/// This is the set JSON (RFC 8259 section 2) and the HTTP field grammar (RFC 9110 section 5.6.3) call whitespace.
-/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-2 for the six characters.
+/// ASCII whitespace: space, tab, newline, vertical tab, form feed and carriage return (0x09-0x0d and 0x20), the set
+/// C's `isspace` names in the "C" locale. A superset of JSON's four whitespace bytes (RFC 8259 section 2), so a JSON
+/// scanner that skips with it also accepts VT and FF between tokens.
+/// @spec https://pubs.opengroup.org/onlinepubs/9799919799/functions/isspace.html for the six characters.
 export fn isSpace(c: u8) -> bool {
     return c == b' ' || (c >= b'\t' && c <= b'\r')
+}
+
+/// A blank: space or horizontal tab, nothing else. This is `WSP` of RFC 5234 and the `OWS` byte of an HTTP field
+/// (RFC 9110 section 5.6.3), the class a header or `key: value` line trims around its value.
+/// @spec https://www.rfc-editor.org/rfc/rfc5234#appendix-B.1 for `WSP`.
+/// @spec https://www.rfc-editor.org/rfc/rfc9110#section-5.6.3 for `OWS`.
+export fn isBlank(c: u8) -> bool {
+    return c == b' ' || c == b'\t'
 }
 
 /// A visible character: the printable range of ASCII, space (0x20) to `~` (0x7e). A parser that has to reject a

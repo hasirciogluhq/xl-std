@@ -2,6 +2,7 @@
 // Day counts use the proleptic Gregorian calendar and the civil-from-days algorithm (Howard Hinnant, "chrono-Compatible
 // Low-Level Date Algorithms"), which is exact for all years in the 64-bit range of days. Leap seconds are not represented:
 // a time is seconds since 1970-01-01T00:00:00Z, as POSIX time counts them.
+from "../str/chars" import isDigit
 
 /// A calendar date and time in UTC.
 export struct DateTime {
@@ -144,12 +145,12 @@ export fn parseRfc3339(s: *u8, n: usize) -> ParsedTime {
     if d.year < 0 || d.month < 0 || d.day < 0 || d.hour < 0 || d.minute < 0 || d.second < 0 { return r }
     // optional fraction, then the Z
     local p: usize = 19
-    if p < n && s[p] == 46 {
-        p = p + 1
-        if p >= n || s[p] < 48 || s[p] > 57 { return r }
-        while p < n && s[p] >= 48 && s[p] <= 57 { p = p + 1 }
+    if p < n && s[p] == b'.' {
+        p++
+        if p >= n || !isDigit(s[p]) { return r }
+        while p < n && isDigit(s[p]) { p++ }
     }
-    if p + 1 != n || (s[p] != 90 && s[p] != 122) { return r }
+    if p + 1 != n || (s[p] != b'Z' && s[p] != b'z') { return r }
     if !validDate(d) { return r }
     r.value = d
     r.ok = true
@@ -162,8 +163,8 @@ fn digitsAt(s: *u8, at: usize, width: usize) -> i64 {
     local i: usize = 0
     while i < width {
         local c: u8 = s[at + i]
-        if c < 48 || c > 57 { return -1 }
-        x = x * 10 + ((c - 48) as i64)
+        if !isDigit(c) { return -1 }
+        x = x * 10 + ((c - b'0') as i64)
         i = i + 1
     }
     return x

@@ -12,19 +12,19 @@
 define TOML_MAX_DEPTH = 64
 
 from "../str/str" import fromParts, eq
-from "../str/chars" import isDigit, isHex
+from "../str/chars" import isDigit, isHex, isAlnum, isBlank
 from "../str/string" import String
 
+/// A byte of a bare key: `A-Za-z0-9_-`.
+/// @spec https://toml.io/en/v1.0.0#keys for the bare key alphabet.
 fn isBare(c: u8) -> bool {
-    return isDigit(c) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
+    return isAlnum(c) || c == b'-' || c == b'_'
 }
 
-/// Skips spaces and tabs.
+/// Skips spaces and tabs, TOML's whitespace (`ws` of the ABNF).
 fn skipWs(t: *u8, n: usize, p: usize) -> usize {
     local q: usize = p
-    while q < n && (t[q] == 32 || t[q] == 9) {
-        q = q + 1
-    }
+    while q < n && isBlank(t[q]) { q++ }
     return q
 }
 
@@ -42,7 +42,7 @@ fn skipComment(t: *u8, n: usize, p: usize) -> usize {
 fn skipBlank(t: *u8, n: usize, p: usize) -> usize {
     local q: usize = p
     while q < n {
-        if t[q] == 32 || t[q] == 9 || t[q] == 10 {
+        if isBlank(t[q]) || t[q] == b'\n' {
             q = q + 1
         } else if t[q] == 13 && q + 1 < n && t[q + 1] == 10 {
             q = q + 2
@@ -104,10 +104,9 @@ fn basicBody(t: *u8, n: usize, p: usize, multi: bool) -> usize {
                 q = unicodeEscape(t, n, q + 2, 8)
             } else if e == 98 || e == 116 || e == 110 || e == 102 || e == 114 || e == 34 || e == 92 {
                 q = q + 2
-            } else if multi && (e == 32 || e == 9 || e == 10 || e == 13) {
+            } else if multi && (isBlank(e) || e == b'\n' || e == b'\r') {
                 // line-ending backslash: only whitespace up to the newline, then blank lines
-                local r: usize = q + 1
-                while r < n && (t[r] == 32 || t[r] == 9) { r = r + 1 }
+                local r: usize = skipWs(t, n, q + 1)
                 if r >= n || (t[r] != 10 && t[r] != 13) { return 0 }
                 q = skipBlank(t, n, r)
                 if q == 0 { return 0 }

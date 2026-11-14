@@ -6,7 +6,7 @@ from "../mem/memory" import mapGrow, strlen
 from "../io/io" import eprint
 from "../tls/tls" import TlsConn, TlsCredentials, tlsRead, tlsWrite, tlsClose, tlsListen, tlsAccept
 from "util" import cstrEq, headerEnd, terminateLines
-from "../str/chars" import toLower
+from "../str/chars" import toLower, isDigit, isHex, isBlank, hexValue
 from "context" import Context
 from "../str/str" import fromParts, fromC, eq
 
@@ -30,7 +30,7 @@ fn headerAt(s: *u8, end: usize, name: *u8) -> isize {
         while k < nlen && toLower(s[i + k]) == name[k] { k = k + 1 }
         if k == nlen {
             local p: usize = i + nlen
-            while p < end && (s[p] == 32 || s[p] == 9) { p = p + 1 }
+            while p < end && isBlank(s[p]) { p++ }
             return p as isize
         }
         while i + 1 < end && !(s[i] == 13 && s[i + 1] == 10) { i = i + 1 }
@@ -46,9 +46,9 @@ fn contentLength(s: *u8, end: usize) -> usize {
     if p < 0 { return 0 }
     local v: usize = 0
     local q: usize = p as usize
-    while q < end && s[q] >= 48 && s[q] <= 57 {
-        v = v * 10 + ((s[q] - 48) as usize)
-        q = q + 1
+    while q < end && isDigit(s[q]) {
+        v = v * 10 + ((s[q] - b'0') as usize)
+        q++
     }
     return v
 }
@@ -360,14 +360,6 @@ export fn routerServeTls(r: *void, serve: fn(*void, *Context), ip: u32, port: u1
     return 0
 }
 
-/// Hex digit value, or -1.
-fn hexDigit(c: u8) -> i32 {
-    if c >= 48 && c <= 57 { return (c - 48) as i32 }
-    if c >= 65 && c <= 70 { return (c - 55) as i32 }
-    if c >= 97 && c <= 102 { return (c - 87) as i32 }
-    return -1
-}
-
 /// Decodes the percent-encoded octets of a request target in place (RFC 3986 section 2.1 and 2.4): "%XX" becomes the byte
 /// XX; a '%' that is not followed by two hex digits is kept as it is. The text ends at the NUL that ends the target.
 /// The decoded text is never longer than the encoded one, so the write position never passes the read position.
@@ -375,8 +367,8 @@ fn decodePercent(p: *u8) {
     local r: usize = 0
     local w: usize = 0
     while p[r] != 0 {
-        if p[r] == 37 && hexDigit(p[r + 1]) >= 0 && hexDigit(p[r + 2]) >= 0 {
-            p[w] = ((hexDigit(p[r + 1]) * 16) + hexDigit(p[r + 2])) as u8
+        if p[r] == b'%' && isHex(p[r + 1]) && isHex(p[r + 2]) {
+            p[w] = (hexValue(p[r + 1]) * 16 + hexValue(p[r + 2])) as u8
             r = r + 3
         } else {
             p[w] = p[r]
@@ -406,9 +398,9 @@ fn chunkSize(buf: *u8, total: usize, p: usize, next: *usize) -> isize {
     local i: usize = p
     local v: usize = 0
     local digits: usize = 0
-    while i < total && hexDigit(buf[i]) >= 0 {
+    while i < total && isHex(buf[i]) {
         if digits >= 15 { return -1 }
-        v = v * 16 + (hexDigit(buf[i]) as usize)
+        v = v * 16 + (hexValue(buf[i]) as usize)
         digits = digits + 1
         i = i + 1
     }

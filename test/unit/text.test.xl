@@ -3,14 +3,20 @@
 // (`{:08x}`, `{:.3}`, fill and alignment) and the `Display` interface. Every check prints "FAIL" with its name.
 from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq
 from "std" import print, format, sprintf, snprintf, String, Vec, join
-from "std/str/chars" import isDigit, isAlpha, isAlnum, isHex, isUpper, isLower, isSpace, isPrint, toLower, toUpper, hexValue
+from "std/str/chars" import isDigit, isAlpha, isAlnum, isHex, isUpper, isLower, isSpace, isBlank, isPrint, toLower, toUpper, hexValue
 from "std/str/unicode" import chars, charCount, pushChar
-from "std/str/num" import toF64
+import "std/str/num" as num
 from "std/str/fmt" import Display
 from "std/math/float" import f64Bits
 import "std/encoding/utf8" as utf8
 
 global failures: i32 = 0
+
+/// `num.toF64` on a literal: the parser borrows a `String`, the checks below are written as text.
+fn toF64(s: str, out: *f64) -> bool {
+    local t: String = String(s)
+    return num.toF64(&t, out)
+}
 
 fn check(name: *u8, ok: bool) {
     if !ok {
@@ -35,13 +41,14 @@ fn check(name: *u8, ok: bool) {
 
 fn classChecks(t: *T) {
     failures = 0
-    check("isDigit", isDigit(48) && isDigit(57) && !isDigit(47) && !isDigit(58))
-    check("isAlpha", isAlpha(65) && isAlpha(122) && !isAlpha(64) && !isAlpha(123))
-    check("isAlnum", isAlnum(65) && isAlnum(48) && !isAlnum(32))
-    check("isHex", isHex(48) && isHex(97) && isHex(70) && !isHex(103))
-    check("isUpper / isLower", isUpper(65) && !isUpper(97) && isLower(97) && !isLower(65))
-    check("isSpace is the six ASCII blanks", isSpace(32) && isSpace(9) && isSpace(10) && isSpace(13) && !isSpace(65))
-    check("isPrint", isPrint(32) && isPrint(126) && !isPrint(31) && !isPrint(127))
+    check("isDigit", isDigit(b'0') && isDigit(b'9') && !isDigit(b'/') && !isDigit(b':'))
+    check("isAlpha", isAlpha(b'A') && isAlpha(b'z') && !isAlpha(b'@') && !isAlpha(b'{'))
+    check("isAlnum", isAlnum(b'A') && isAlnum(b'0') && !isAlnum(b' '))
+    check("isHex", isHex(b'0') && isHex(b'a') && isHex(b'F') && !isHex(b'g'))
+    check("isUpper / isLower", isUpper(b'A') && !isUpper(b'a') && isLower(b'a') && !isLower(b'A'))
+    check("isSpace is the six ASCII blanks", isSpace(b' ') && isSpace(b'\t') && isSpace(b'\n') && isSpace(b'\r') && isSpace(11) && isSpace(12) && !isSpace(b'A'))
+    check("isBlank is space and tab only", isBlank(b' ') && isBlank(b'\t') && !isBlank(b'\n') && !isBlank(b'\r'))
+    check("isPrint", isPrint(b' ') && isPrint(b'~') && !isPrint(31) && !isPrint(127))
     check("toLower / toUpper", toLower(b'A') == b'a' && toUpper(b'a') == b'A' && toLower(b'0') == b'0')
     check("hexValue", hexValue(b'0') == 0 && hexValue(b'a') == 10 && hexValue(b'A') == 10 && hexValue(b'F') == 15 && hexValue(b'g') == -1)
     expectEq(t, failures as i64, 0)
@@ -89,7 +96,8 @@ fn textMethodChecks(t: *T) {
     check("String.splitAsciiWhitespace", words.length() == 3 && words.get(2).equals("three"))
     local joined: String = join(&parts, ", ")
     check("join", joined.equals("a, b, c"))
-    check("join of an empty vector", join(&parts, ", ").length() > 0)
+    local none: Vec<String> = Vec<String>()
+    check("join of an empty vector", join(&none, ", ").length() == 0)
 
     local nl: String = String("a\r\nb\n\nc")
     local lines: Vec<String> = nl.lines()
@@ -170,6 +178,15 @@ fn specifierChecks(t: *T) {
     check("snprintf reports the needed length and cuts", need == 6 && small[3] == 0)
 
     check("zero pad after a sign", format("{:+08}", 42).equals("+0000042"))
+    check("the sign goes before the prefix", format("{:+#x}", 31).equals("+0x1f") && format("{:+#06x}", 31).equals("+0x01f"))
+    check("alternate octal and binary", format("{:#o}", 8).equals("0o10") && format("{:#b}", 5).equals("0b101"))
+    check("a space for a positive unsigned", format("[{: }]", 5 as u64).equals("[ 5]"))
+    check("the `-` sign is the default", format("{:-}", 7).equals("7") && format("{:-}", -7).equals("-7"))
+    check("hex digits of a pointer", format("{:p}", 255 as *u8).equals("0xff"))
+    // 2^-20 has an exact 14-digit decimal, so the stack path writes it; its exponent is below the plain range.
+    check("shortest scientific keeps its first digit", format("{}", 0.00000095367431640625).equals("9.5367431640625e-07"))
+    check("shortest large value", format("{}", 1e300).equals("1e+300") && format("{:E}", 1.5e20).equals("1.500000E+20"))
+    check("general form", format("{:.3g}", 0.0001234).equals("0.000123") && format("{:G}", 1e-10).equals("1E-10"))
     expectEq(t, failures as i64, 0)
 }
 

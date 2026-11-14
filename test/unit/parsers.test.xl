@@ -1,0 +1,83 @@
+// Unit: the small text parsers that read bytes through `std/str/chars` — Punycode (RFC 3492 section 7.1 samples),
+// SemVer 2.0.0 parse and precedence, RFC 3339 timestamps, the POSIX TZ footer of a TZif file, and TOML syntax checks.
+from "std/testing" import Suite, T, suiteInit, test, suiteRun, expectEq, expectTrue, expectFalse, expectEqStr
+from "std/encoding/punycode" import punyEncode, punyDecode
+from "std/semver/semver" import semverParse, semverCompare
+from "std/time/date" import parseRfc3339
+from "std/time/tzif" import posixFixed
+from "std/encoding/toml" import tomlValid
+from "std/str/str" import fromParts
+
+/// RFC 3492 section 7.1 style labels: `bücher` has only letters in its delta digits, `münchen` also a digit (26-35).
+fn punycode(t: *T) {
+    local out: [u8; 32]
+    local bucher: [i32; 6] = [b'b' as i32, 0xfc, b'c' as i32, b'h' as i32, b'e' as i32, b'r' as i32]
+    local n: isize = punyEncode(&bucher[0], 6, &out[0], 32)
+    expectEqStr(t, fromParts(&out[0], n as usize), "bcher-kva")
+    local munchen: [i32; 7] = [b'm' as i32, 0xfc, b'n' as i32, b'c' as i32, b'h' as i32, b'e' as i32, b'n' as i32]
+    n = punyEncode(&munchen[0], 7, &out[0], 32)
+    expectEqStr(t, fromParts(&out[0], n as usize), "mnchen-3ya")
+
+    local cps: [i32; 16]
+    local m: isize = punyDecode("mnchen-3ya", 10, &cps[0], 16)
+    expectEq(t, m as i64, 7)
+    expectEq(t, cps[1] as i64, 0xfc)
+    // Digits are case-insensitive on decode (RFC 3492 section 5).
+    m = punyDecode("MNCHEN-3YA", 10, &cps[0], 16)
+    expectEq(t, m as i64, 7)
+    expectEq(t, cps[1] as i64, 0xfc)
+}
+
+/// https://semver.org/spec/v2.0.0.html rules 2, 9 and 11.
+fn semver(t: *T) {
+    local v = semverParse("1.2.3-alpha.1")
+    expectTrue(t, v.valid && v.major == 1 && v.minor == 2 && v.patch == 3)
+    expectFalse(t, semverParse("01.2.3").valid)
+    expectFalse(t, semverParse("1.2.3-01").valid)
+    expectFalse(t, semverParse("1.2.3-a_b").valid)
+    // Rule 11: alpha < alpha.1 < alpha.beta < beta < beta.2 < beta.11 < rc.1 < release.
+    local order: [str; 8] = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2",
+                             "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"]
+    for i in 1..8 {
+        expectEq(t, semverCompare(semverParse(order[i - 1]), semverParse(order[i])) as i64, -1)
+    }
+}
+
+/// RFC 3339 section 5.6: an optional fraction needs a digit, and `z` is allowed for `Z`.
+fn rfc3339(t: *T) {
+    local a = parseRfc3339("2026-11-14T19:16:19.125Z", 24)
+    expectTrue(t, a.ok && a.value.year == 2026 && a.value.second == 19)
+    expectTrue(t, parseRfc3339("2026-11-14 19:16:19z", 20).ok)
+    expectFalse(t, parseRfc3339("2026-11-14T19:16:19.Z", 21).ok)
+    expectFalse(t, parseRfc3339("2026-02-30T00:00:00Z", 20).ok)
+}
+
+/// POSIX.1 section 8.3: a positive offset is west of Greenwich, so `EST5` is UT-5 and `JST-9` is UT+9.
+fn posixTz(t: *T) {
+    local est = posixFixed("EST5", 0, 4)
+    expectTrue(t, est.ok)
+    expectEq(t, est.utoff, -18000)
+    expectEqStr(t, est.abbr, "EST")
+    local jst = posixFixed("JST-9", 0, 5)
+    expectEq(t, jst.utoff, 32400)
+    expectFalse(t, posixFixed("CET-1CEST,M3.5.0,M10.5.0/3", 0, 26).ok)
+}
+
+/// https://toml.io/en/v1.0.0: bare keys, blanks around `=`, and the line-ending backslash of a multi-line string.
+fn toml(t: *T) {
+    local good: str = "bare-key_1 = 1\n\tother\t=\t\"v\"\nm = \"\"\"a \\\n    b\"\"\"\n"
+    expectTrue(t, tomlValid(good.ptr, good.len))
+    local bad: str = "bad key = 1\n"
+    expectFalse(t, tomlValid(bad.ptr, bad.len))
+}
+
+@entry fn main() -> i32 {
+    local s: Suite
+    suiteInit(&s)
+    test(&s, "punycode", punycode)
+    test(&s, "semver", semver)
+    test(&s, "rfc3339", rfc3339)
+    test(&s, "posix tz", posixTz)
+    test(&s, "toml", toml)
+    return suiteRun(&s)
+}

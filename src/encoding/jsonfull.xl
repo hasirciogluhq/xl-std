@@ -3,7 +3,7 @@
 // values are not converted into a tree. A value is located by its raw text (a view of the input), and strings are decoded
 // on request. Nesting deeper than 512 levels is rejected to bound the recursion.
 from "../str/str" import fromParts
-from "../str/chars" import hexValue
+from "../str/chars" import hexValue, isDigit
 from "../str/string" import String
 from "utf8" import utf8Encode
 from "../collections/vec" import Vec
@@ -52,25 +52,24 @@ fn skipString(text: *u8, n: usize, pos: *usize) -> bool {
 
 fn skipNumber(text: *u8, n: usize, pos: *usize) -> bool {
     local start: usize = *pos
-    if *pos < n && text[*pos] == 45 { *pos = *pos + 1 }
-    if *pos >= n { return false }
-    if text[*pos] == 48 {
-        *pos = *pos + 1
-    } else if text[*pos] >= 49 && text[*pos] <= 57 {
-        while *pos < n && text[*pos] >= 48 && text[*pos] <= 57 { *pos = *pos + 1 }
+    // RFC 8259 section 6: `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?`.
+    if *pos < n && text[*pos] == b'-' { *pos += 1 }
+    if *pos >= n || !isDigit(text[*pos]) { return false }
+    if text[*pos] == b'0' {
+        *pos += 1
     } else {
-        return false
+        while *pos < n && isDigit(text[*pos]) { *pos += 1 }
     }
-    if *pos < n && text[*pos] == 46 {
-        *pos = *pos + 1
-        if *pos >= n || text[*pos] < 48 || text[*pos] > 57 { return false }
-        while *pos < n && text[*pos] >= 48 && text[*pos] <= 57 { *pos = *pos + 1 }
+    if *pos < n && text[*pos] == b'.' {
+        *pos += 1
+        if *pos >= n || !isDigit(text[*pos]) { return false }
+        while *pos < n && isDigit(text[*pos]) { *pos += 1 }
     }
-    if *pos < n && (text[*pos] == 101 || text[*pos] == 69) {
-        *pos = *pos + 1
-        if *pos < n && (text[*pos] == 43 || text[*pos] == 45) { *pos = *pos + 1 }
-        if *pos >= n || text[*pos] < 48 || text[*pos] > 57 { return false }
-        while *pos < n && text[*pos] >= 48 && text[*pos] <= 57 { *pos = *pos + 1 }
+    if *pos < n && (text[*pos] == b'e' || text[*pos] == b'E') {
+        *pos += 1
+        if *pos < n && (text[*pos] == b'+' || text[*pos] == b'-') { *pos += 1 }
+        if *pos >= n || !isDigit(text[*pos]) { return false }
+        while *pos < n && isDigit(text[*pos]) { *pos += 1 }
     }
     return *pos > start
 }

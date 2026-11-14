@@ -7,6 +7,7 @@
 // The pre-release text is a view into the parsed input; keep that input alive while the Semver is used.
 
 from "../str/str" import fromParts
+from "../str/chars" import isAlnum, isDigit
 
 export struct Semver {
     major: u64
@@ -19,13 +20,13 @@ export struct Semver {
 /// Parses one decimal number from `text` (no sign, no leading zero unless it is "0", fits in 64 bits); returns false on error.
 fn parseNumber(text: str, out: *u64) -> bool {
     if text.len == 0 { return false }
-    if text.len > 1 && text[0] == 48 { return false }
+    if text.len > 1 && text[0] == b'0' { return false }
     local v: u64 = 0
     local i: usize = 0
     while i < text.len {
         local c: u8 = text[i]
-        if c < 48 || c > 57 { return false }
-        local d: u64 = (c - 48) as u64
+        if !isDigit(c) { return false }
+        local d: u64 = (c - b'0') as u64
         if v > (0xffffffffffffffff - d) / 10 { return false }
         v = v * 10 + d
         i = i + 1
@@ -36,7 +37,7 @@ fn parseNumber(text: str, out: *u64) -> bool {
 
 /// True when `c` is a character of an identifier: [0-9A-Za-z-].
 fn isIdentChar(c: u8) -> bool {
-    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45
+    return isAlnum(c) || c == b'-'
 }
 
 /// Checks dot-separated identifiers (rule 9 for pre-release, rule 10 for build metadata). Numeric identifiers with a leading
@@ -52,11 +53,11 @@ fn validIdentifiers(text: str, noLeadingZero: bool) -> bool {
             local allDigits: bool = true
             while j < i {
                 if !isIdentChar(text[j]) { return false }
-                if text[j] < 48 || text[j] > 57 { allDigits = false }
+                if !isDigit(text[j]) { allDigits = false }
                 j = j + 1
             }
             // a numeric identifier must not have a leading zero (rule 9)
-            if noLeadingZero && allDigits && idLen > 1 && text[start] == 48 { return false }
+            if noLeadingZero && allDigits && idLen > 1 && text[start] == b'0' { return false }
             start = i + 1
         }
         i = i + 1
@@ -127,16 +128,8 @@ export fn semverParse(text: str) -> Semver {
 fn compareIdent(a: str, b: str) -> i32 {
     local an: bool = true
     local bn: bool = true
-    local i: usize = 0
-    while i < a.len {
-        if a[i] < 48 || a[i] > 57 { an = false }
-        i = i + 1
-    }
-    i = 0
-    while i < b.len {
-        if b[i] < 48 || b[i] > 57 { bn = false }
-        i = i + 1
-    }
+    for c in a { if !isDigit(c) { an = false } }
+    for c in b { if !isDigit(c) { bn = false } }
     if an && bn {
         local x: u64 = 0
         local y: u64 = 0
@@ -150,11 +143,9 @@ fn compareIdent(a: str, b: str) -> i32 {
     if bn { return 1 }
     local n: usize = a.len
     if b.len < n { n = b.len }
-    i = 0
-    while i < n {
+    for i in 0..n {
         if a[i] < b[i] { return -1 }
         if a[i] > b[i] { return 1 }
-        i = i + 1
     }
     if a.len < b.len { return -1 }
     if a.len > b.len { return 1 }

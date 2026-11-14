@@ -1,18 +1,20 @@
 // std/str/fmtspec: the placeholder engine — a format string, its arguments, and the text that reaches the sink.
 // `fmt` holds the declarations every caller imports (`Writer`, `Display`, `FmtSink` and the constant kinds); this
 // file holds the bodies, because only a module that imports both `fmt` and `str/string` may call `String` at all
-// and `fmt` cannot (see the header of `fmt` for the module cycle).
+// and `fmt` cannot (see the header of `fmt` for the module cycle). The digits of a float come from `fmtfloat`.
 //
 // A placeholder is `{}` or `{:<spec>}`, where `<spec>` is `[[fill]align][sign][#][0][width][.precision][type]`:
 //
 //   fill       any byte except `{`, `}`, `:`, written before the align character ("fill" then "<" gives "fill<")
 //   align      `<` left, `>` right, `^` center; a spec with fill and no align still needs the align byte
 //   sign       `+` always writes a sign, `-` only a negative one (the default), ` ` writes a space for a positive one
-//   `#`        the alternate form: `0x`/`0b`/`0o` before a hex/binary/octal digit string
+//   `#`        the alternate form: `0x`/`0b`/`0o` before a hex/binary/octal digit string, after the sign
 //   `0`        zero fill, right aligned, after the sign and prefix ("{:+08x}")
-//   width      the minimum number of bytes; the pad goes after the sign/prefix for width, before it for `0`
-//   `.precision` for a float the digits after the point; for a string the maximum bytes written
-//   type       `x` `X` `b` `o` `d` `e` `f` `g` `s` `p` `?`; none means the type of the argument
+//   width      the minimum number of bytes; the pad goes before the sign/prefix, or after it for `0`
+//   `.precision` for a float the digits after the point (`e`, `f`, none) or significant digits (`g`); for a string
+//              the maximum bytes written, never splitting a UTF-8 sequence; at most `PRECISION_MAX`
+//   type       `d` `x` `X` `b` `o` for an integer, `e` `E` `f` `F` `g` `G` for a float, `s` `?` for text, `p` for a
+//              pointer (`*u8`, written as `0x` and its address); none means the type of the argument
 //
 // `{{` and `}}` write one brace. A placeholder count that differs from the argument count is a panic, as is a spec
 // the argument's type cannot use (a spec on a `bool`, a precision on an integer): a format string is fixed text in
@@ -20,18 +22,20 @@
 //
 // The engine writes through `FmtSink`, which is either a file descriptor, a caller buffer or a `String`; the bytes of
 // one value are built in a fixed stack buffer and written once, so formatting allocates only for the `String` target.
-from "string" import String, toLowerAscii, toUpperAscii
-from "fmt" import FmtSink, FmtString, FmtBuffer, Display, Writer
+//
+// @spec https://doc.rust-lang.org/std/fmt/index.html#syntax for the spec grammar this one follows.
+from "string" import String
+from "fmt" import FmtSink, FmtString, FmtBuffer, Display
 from "str" import fromParts, view, fromC
 from "chars" import isDigit
-from "dec" import Dec, decimalOf
-from "num" import toF64
+from "fmtfloat" import floatText, putShortestExact, FLOAT_BUF, PRECISION_MAX
+from "panic" import PanicText, panicText
 from "../math/float" import f64Bits
 
 // ---- the spec ---------------------------------------------------------------------------------
 
 /// One parsed placeholder spec. `fill` is 0 when no fill byte was written and `align` is 0 when the spec named no
-/// alignment; `type` is 0 when no type letter was written. The parser stores what it read and the per-type renderer
+/// alignment; `typeCh` is 0 when no type letter was written. The parser stores what it read and the per-type renderer
 /// asks only for what its type can honour, so a spec is never silently reinterpreted.
 struct Spec {
     fill: u8
@@ -48,16 +52,8 @@ struct Spec {
 
 fn defaultSpec() -> Spec {
     return Spec {
-        fill: 0,
-        align: 0,
-        signPlus: false,
-        signSpace: false,
-        alternate: false,
-        zero: false,
-        width: 0,
-        hasPrecision: false,
-        precision: 0,
-        typeCh: 0,
+        fill: 0, align: 0, signPlus: false, signSpace: false, alternate: false, zero: false,
+        width: 0, hasPrecision: false, precision: 0, typeCh: 0,
     }
 }
 
@@ -69,81 +65,31 @@ fn specIsEmpty(sp: Spec) -> bool {
 
 /// Panics for a spec an argument cannot use. `why` names the rule in a few words; the message adds the type letter.
 fn specPanic(why: str, typeCh: u8) {
-    local buf: [u8; 128]
-    local at: usize = putText(&buf[0], 0, "format: ")
-    at = putText(&buf[0], at, why)
-    at = putText(&buf[0], at, " cannot be used with `")
-    if typeCh != 0 {
-        buf[at] = typeCh
-        at = at + 1
-    } else {
-        at = putText(&buf[0], at, "this type")
-    }
-    at = putText(&buf[0], at, "`")
-    buf[at] = 0
-    panic(&buf[0])
+    local m: PanicText = panicText()
+    m.text("format: ")
+    m.text(why)
+    m.text(" cannot be used with `")
+    if typeCh != 0 { m.byte(typeCh) } else { m.text("this type") }
+    m.text("`")
+    m.raise()
 }
 
-// ---- small text helpers -----------------------------------------------------------------------
-
-/// Writes the bytes of `s` at `buf[at]`; returns the position after them.
-fn putText(buf: *u8, at: usize, s: str) -> usize {
-    for k in 0..s.len {
-        buf[at + k] = s[k]
-    }
-    return at + s.len
+/// The sign a number is written with under `sp`: `-` for a negative value, else `+` or a space when the spec asks.
+fn signOf(sp: Spec, negative: bool) -> str {
+    if negative { return "-" }
+    return sp.signPlus ? "+" : sp.signSpace ? " " : ""
 }
 
-/// Writes the decimal digits of `v` at `buf[at]`; returns the position after them.
-fn putDecimal(buf: *u8, at: usize, v: u64) -> usize {
-    local digits: usize = 1
-    local t: u64 = v
-    while t >= 10 {
-        t = t / 10
-        digits = digits + 1
-    }
-    local k: usize = at + digits
-    local n: u64 = v
-    while k > at {
-        k = k - 1
-        buf[k] = ((n % 10) as u8) + b'0'
-        n = n / 10
-    }
-    return at + digits
-}
+// ---- padding ----------------------------------------------------------------------------------
 
-/// Writes `v` in base `radix` (2, 8, 10 or 16), lowercase digits for 16; returns the position after them.
-fn putRadix(buf: *u8, at: usize, v: u64, radix: u64, upper: bool) -> usize {
-    if v == 0 {
-        buf[at] = b'0'
-        return at + 1
-    }
-    local digits: [u8; 64]
-    local n: usize = 0
-    local t: u64 = v
-    while t > 0 {
-        local d: u8 = (t % radix) as u8
-        if d < 10 {
-            digits[n] = d + b'0'
-        } else if upper {
-            digits[n] = d + 55
-        } else {
-            digits[n] = d + 87
-        }
-        n = n + 1
-        t = t / radix
-    }
-    local k: usize = n
-    while k > 0 {
-        k = k - 1
-        buf[at + (n - 1 - k)] = digits[k]
-    }
-    return at + n
-}
+/// The pad buffer holds a whole padded value up to this many bytes; a wider width is written in `PAD_CHUNK` pieces, so
+/// nothing allocates for a pad and no `String` is built per fill byte.
+define PAD_BUF = 512
+define PAD_CHUNK = 64
 
-/// Writes `sp.width` padding bytes and the buffered text between them, honouring fill, alignment and (for a right
-/// aligned zero-filled number) where the sign and prefix sit. `body` is the number's digits and point, `head` the
-/// sign and prefix already written in front of it at `headLen`. One piece, so a sink sees one write.
+/// Writes `sp.width` padding bytes and the text between them, honouring fill, alignment and (for a zero-filled
+/// number) where the sign and prefix sit. `body` is the digits, `head` the sign and prefix written in front of them.
+/// One piece when the whole value fits `PAD_BUF`, so a sink sees one write.
 fn emitPadded(sink: *FmtSink, sp: Spec, head: str, body: str) {
     local total: usize = head.len + body.len
     if total >= sp.width {
@@ -152,34 +98,27 @@ fn emitPadded(sink: *FmtSink, sp: Spec, head: str, body: str) {
         return
     }
     local pad: usize = sp.width - total
-    local fill: u8 = b' '
-    if sp.fill != 0 { fill = sp.fill }
-    local align: u8 = b'>'
-    if sp.align != 0 { align = sp.align }
-    if sp.zero { align = b'=' }    // zeros go between the sign/prefix and the digits
-    local left: usize = 0
-    local right: usize = 0
-    if align == b'<' {
-        right = pad
-    } else if align == b'^' {
-        left = pad / 2
-        right = pad - left
-    } else {
-        left = pad
-    }
-    if align == b'=' {
-        // The sign and prefix first, then the zeros, then the digits, as one piece.
-        local zeros: [u8; PAD_CHUNK]
-        for k in 0..PAD_CHUNK { zeros[k] = fill }
+    local fill: u8 = sp.fill != 0 ? sp.fill : b' '
+    local chunk: [u8; PAD_CHUNK] = [fill; PAD_CHUNK]
+    if sp.zero {
+        // The sign and prefix first, then the zeros, then the digits.
         sink.writeBytes(head)
-        writePad(sink, &zeros[0], pad)
+        writePad(sink, &chunk[0], pad)
         sink.writeBytes(body)
         return
     }
+    local left: usize = 0
+    local right: usize = 0
+    switch sp.align {
+    case b'<' { right = pad }
+    case b'^' {
+        left = pad / 2
+        right = pad - left
+    }
+    default { left = pad }
+    }
     if total + pad > PAD_BUF {
         // A width past the stack buffer is written in pieces: the pad, the text, the rest of the pad.
-        local chunk: [u8; PAD_CHUNK]
-        for k in 0..PAD_CHUNK { chunk[k] = fill }
         writePad(sink, &chunk[0], left)
         sink.writeBytes(head)
         sink.writeBytes(body)
@@ -188,39 +127,29 @@ fn emitPadded(sink: *FmtSink, sp: Spec, head: str, body: str) {
     }
     local buf: [u8; PAD_BUF]
     local at: usize = 0
-    for k in 0..left {
-        buf[at] = fill
-        at += 1
-    }
-    at = putText(&buf[0], at, head)
-    at = putText(&buf[0], at, body)
-    for k in 0..right {
-        buf[at] = fill
-        at += 1
-    }
-    sink.writeBytes(fromParts(&buf[0], at))
+    for k in 0..left { buf[at + k] = fill }
+    at += left
+    for c, k in head { buf[at + k] = c }
+    at += head.len
+    for c, k in body { buf[at + k] = c }
+    at += body.len
+    for k in 0..right { buf[at + k] = fill }
+    sink.writeBytes(fromParts(&buf[0], at + right))
 }
-
-/// The pad buffer holds a whole padded value up to this many bytes; a wider width is written in `PAD_CHUNK` pieces, so
-/// nothing allocates for a pad and no `String` is built per fill byte.
-define PAD_BUF = 512
-define PAD_CHUNK = 64
 
 /// Writes `n` fill bytes from `chunk`, which holds `PAD_CHUNK` of them.
 fn writePad(sink: *FmtSink, chunk: *u8, n: usize) {
-    local done: usize = 0
-    while done < n {
-        local piece: usize = n - done
-        if piece > PAD_CHUNK { piece = PAD_CHUNK }
+    for local done: usize = 0; done < n; done += PAD_CHUNK {
+        local piece: usize = n - done < PAD_CHUNK ? n - done : PAD_CHUNK
         sink.writeBytes(fromParts(chunk, piece))
-        done += piece
     }
 }
 
 // ---- the spec parser --------------------------------------------------------------------------
 
 /// Parses the spec between `{:` and `}` starting at `text[at]`; returns the parsed spec and sets `end` to the position
-/// of the closing brace. A spec that names a byte no rule allows is a panic, since the format text is fixed.
+/// of the closing brace. A spec without its `}`, or with a precision over `PRECISION_MAX`, is a panic, since the
+/// format text is fixed.
 fn parseSpec(text: str, atIn: usize, end: *usize) -> Spec {
     local sp: Spec = defaultSpec()
     local at: usize = atIn
@@ -228,47 +157,56 @@ fn parseSpec(text: str, atIn: usize, end: *usize) -> Spec {
     if at + 1 < text.len && isAlign(text[at + 1]) && text[at] != b'}' {
         sp.fill = text[at]
         sp.align = text[at + 1]
-        at = at + 2
+        at += 2
     } else if at < text.len && isAlign(text[at]) {
         sp.align = text[at]
-        at = at + 1
+        at++
     }
-    if at < text.len && text[at] == b'+' {
-        sp.signPlus = true
-        at = at + 1
-    } else if at < text.len && text[at] == b' ' {
-        sp.signSpace = true
-        at = at + 1
+    if at < text.len {
+        switch text[at] {
+        case b'+' {
+            sp.signPlus = true
+            at++
+        }
+        case b' ' {
+            sp.signSpace = true
+            at++
+        }
+        // `-` is the default: a sign only for a negative value.
+        case b'-' { at++ }
+        default {}
+        }
     }
     if at < text.len && text[at] == b'#' {
         sp.alternate = true
-        at = at + 1
+        at++
     }
     if at < text.len && text[at] == b'0' {
         sp.zero = true
         sp.fill = b'0'
-        at = at + 1
+        at++
     }
     while at < text.len && isDigit(text[at]) {
         sp.width = sp.width * 10 + (text[at] - b'0') as usize
-        at = at + 1
+        at++
     }
     if at < text.len && text[at] == b'.' {
         sp.hasPrecision = true
-        at = at + 1
+        at++
         while at < text.len && isDigit(text[at]) {
             sp.precision = sp.precision * 10 + (text[at] - b'0') as usize
-            at = at + 1
+            if sp.precision > PRECISION_MAX { specPanic("a precision over 1024", 0) }
+            at++
         }
     }
     if at < text.len && text[at] != b'}' {
         sp.typeCh = text[at]
-        at = at + 1
+        at++
     }
     if at >= text.len || text[at] != b'}' {
         specPanic("a spec without a closing `}`", 0)
     }
-    end[0] = at
+    *end = at
     return sp
 }
 
@@ -278,638 +216,84 @@ fn isAlign(c: u8) -> bool {
 
 // ---- per-type rendering -----------------------------------------------------------------------
 
-/// The text of an unsigned integer under `sp`. `typeCh` picks the base; the sign and alternate prefixes are built
-/// into `head`, the digits into `body`, and `emitPadded` puts the fill between them.
-fn renderUnsigned(sink: *FmtSink, sp: Spec, v: u64, negativeHead: str) {
+/// The text of an integer of magnitude `v` under `sp`. `typeCh` picks the base; the sign and the alternate prefix go
+/// into `head` (sign first: `+0x1f`), the digits into `body`, and `emitPadded` puts the fill between them.
+fn renderInteger(sink: *FmtSink, sp: Spec, v: u64, negative: bool) {
     local radix: u64 = 10
-    local upper: bool = false
+    local prefix: str = ""
     switch sp.typeCh {
     case 0, b'd' {}
-    case b'x' { radix = 16 }
+    case b'x' {
+        radix = 16
+        prefix = "0x"
+    }
     case b'X' {
         radix = 16
-        upper = true
+        prefix = "0X"
     }
-    case b'b' { radix = 2 }
-    case b'o' { radix = 8 }
+    case b'b' {
+        radix = 2
+        prefix = "0b"
+    }
+    case b'o' {
+        radix = 8
+        prefix = "0o"
+    }
     default { specPanic("this base", sp.typeCh) }
     }
-    if sp.hasPrecision && sp.typeCh != 0 && sp.typeCh != b'd' {
-        specPanic("a precision on an integer", sp.typeCh)
-    }
-    local body: [u8; 80]
-    local bodyLen: usize = putRadix(&body[0], 0, v, radix, upper)
-    local head: [u8; 8]
-    local headLen: usize = 0
-    if sp.alternate {
-        if radix == 16 {
-            head[0] = b'0'
-            if upper {
-                head[1] = b'X'
-            } else {
-                head[1] = b'x'
-            }
-            headLen = 2
-        } else if radix == 2 {
-            head[0] = b'0'
-            head[1] = b'b'
-            headLen = 2
-        } else if radix == 8 {
-            head[0] = b'0'
-            headLen = 1
-        }
-    }
-    if negativeHead.len > 0 {
-        local h: str = fromParts(&head[0], headLen)
-        local parts: [u8; 16]
-        local n: usize = putText(&parts[0], 0, negativeHead)
-        n = putText(&parts[0], n, h)
-        emitPadded(sink, sp, fromParts(&parts[0], n), fromParts(&body[0], bodyLen))
-        return
-    }
-    if sp.signPlus || sp.signSpace {
-        // Only an unsigned value with an explicit sign: `+` writes `+`; a space writes nothing for a non-negative
-        // value, which is the point of the space flag.
-        if sp.signPlus {
-            head[headLen] = b'+'
-            headLen = headLen + 1
-        }
-        local h: str = fromParts(&head[0], headLen)
-        emitPadded(sink, sp, h, fromParts(&body[0], bodyLen))
-        return
-    }
-    emitPadded(sink, sp, fromParts(&head[0], headLen), fromParts(&body[0], bodyLen))
-}
-
-/// The text of a signed integer under `sp`.
-fn renderSigned(sink: *FmtSink, sp: Spec, v: i64) {
-    local mag: u64 = v as u64
-    local sign: str = ""
-    if v < 0 {
-        // Two's complement negation, so `i64`'s minimum (which `0 - v` cannot represent) gives its own magnitude.
-        sign = "-"
-        mag = (~(v as u64)) + 1
-    } else if sp.signPlus {
-        sign = "+"
-    } else if sp.signSpace {
-        sign = " "
-    }
-    renderUnsigned(sink, sp, mag, sign)
-}
-// ---- floats -----------------------------------------------------------------------------------
-//
-// Every digit written here comes from `str/dec`, the exact binary expansion of the value, because a format's last
-// digit and a shortest form are both properties of the exact value. Rounding a `f64` by `x * 10^N` is not: the product
-// is itself rounded, so `{:.1}` of `0.95` lost its carry and `{}` of `1e300` saturated the `u64` it was cast to.
-//
-// `{}` prints the SHORTEST decimal that parses back to the same bits. The exact digits are cut to a length, rounded
-// half up at that length, and `toF64` decides whether the result still names the same double; the first length that
-// does is the answer. A number of significant digits between 1 and 17 always names its double, so the search ends;
-// specifiers with an explicit precision skip the search and round at the requested place directly.
-//
-// Notation: plain for an exponent in [-5, 16], scientific outside it. That is the JavaScript `toString` rule narrowed
-// from `[-7, 21]`, because the printed text is usually a log line where a long plain form is harder to read and a value
-// like `1e20` is clearer in scientific form. A whole value in plain notation keeps a `.0`, so a `f64` always reads as
-// one (`1.0`, not `1`); zero is `0.0`, and `-0.0` keeps its sign.
-//
-// @spec https://tc39.es/ecma262/#sec-number.prototype.tostring for the shortest form and its two notations.
-// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form satisfies.
-
-/// The most significant digits a `f64` needs: 17 always round-trips, so the shortest search never looks past it.
-export define FLOAT_MAX_DIGITS = 17
-
-/// The digit capacity of a rounded form: a precision may ask for a hundred places or more, so the buffer holds the
-/// most a `{:.N}` can name (see `PRECISION_MAX`), plus the one place a carry adds.
-define DIGIT_CAP = 1100
-
-/// The most fraction places or significant digits a precision may ask for. A caller that writes more is refused by
-/// `specPanic` rather than silently cut: the text is fixed, so an absurd width is a mistake in the program.
-export define PRECISION_MAX = 1024
-
-/// The exponent range that stays in plain notation (see the header).
-define PLAIN_MIN_EXP = -5
-define PLAIN_MAX_EXP = 16
-
-/// The rounded significant digits of a decimal at a cut, and the decimal point that goes with them.
-/// The digits live in a fixed buffer: at most `FLOAT_MAX_DIGITS` are kept and a carry adds one place, so `DIGIT_CAP`
-/// is never reached by a caller.
-class RoundDigits {
-    buf: [u8; DIGIT_CAP]
-    len: usize
-    point: i32       // how many digits sit left of the point
-
-    fn init(self) {
-        self.len = 0
-        self.point = 0
-    }
-}
-
-impl RoundDigits {
-    /// The digit at `at`: `'0'` past the end, which is what rounding and padding read a missing place as.
-    fn digit(self: *RoundDigits, at: usize) -> u8 {
-        if at >= self.len { return b'0' }
-        return self.buf[at]
-    }
-
-    fn set(self: *RoundDigits, at: usize, c: u8) {
-        self.buf[at] = c
-    }
-
-    fn append(self: *RoundDigits, c: u8) {
-        self.buf[self.len] = c
-        self.len = self.len + 1
-    }
-}
-
-/// Rounds the exact decimal `d` to `keep` significant digits, half up: a following digit of 5 or more adds one at the
-/// last kept place and the carry ripples left. A carry out of the leading digit lengthens the string by one place and
-/// moves the point up by one, which is what `999` rounded to two digits (`1.0e3`) needs.
-fn rounded(d: *Dec, keep: i32) -> RoundDigits {
-    local r: RoundDigits = RoundDigits()
-    if keep <= 0 {
-        // Below half of this cut's last place: the value rounds to nothing.
-        return r
-    }
-    local n: i32 = d.length() as i32
-    if keep >= n {
-        // Nothing to round: every digit is kept and the places up to the cut are implicit zeros.
-        for i in 0..n as usize {
-            r.append(d.digit(i) + b'0')
-        }
-        r.point = d.point
-        return r
-    }
-    local kept: usize = keep as usize
-    for i in 0..kept {
-        r.append(d.digit(i) + b'0')
-    }
-    r.point = d.point
-    local next: u8 = d.digit(kept)
-    // Half to even only on an exact tie: a `5` with nothing after it, and an even last kept digit, stays put.
-    if next == 5 && !d.restNonZero(kept + 1) && ((r.digit(kept - 1) - b'0') % 2) == 0 { return r }
-    if next < 5 { return r }
-    local i: i32 = keep - 1
-    while i >= 0 {
-        local c: u8 = r.digit(i as usize)
-        if c < b'9' {
-            r.set(i as usize, c + 1)
-            return r
-        }
-        r.set(i as usize, b'0')
-        i = i - 1
-    }
-    // Every kept digit was a nine: `1000...`, one digit more than the cut asked for.
-    r = RoundDigits()
-    r.append(b'1')
-    for k in 0..kept {
-        r.append(b'0')
-    }
-    r.point = d.point + 1
-    return r
-}
-
-/// Appends the value `text` (`0.<digits> * 10^point`) in plain notation, with `places` fraction places written after
-/// the point. `places` may exceed the digits the rounding kept, which pads the fraction with zeros; a negative value
-/// pads the fraction with leading zeros instead. `dropZeros` removes the fraction's trailing zeros and the point when
-/// nothing is left — the `g` rule; a whole value then keeps a `.0` only when the caller asked for a fraction.
-fn appendPlain(out: *String, text: *RoundDigits, places: i32, wholeMarker: bool) {
-    local point: i32 = text.point
-    local frac: String = String()
-    local written: i32 = 0
-    // The fraction: zeros up to the point when it sits left of the first digit, then the digits after it.
-    if point < 0 {
-        for k in 0..(0 - point) {
-            frac.push(b'0')
-            written = written + 1
-        }
-    }
-    // The fraction starts at the point: a point past the digits kept leaves an empty fraction, and a point inside
-    // them starts after the digits that sit left of it.
-    local at: usize = 0
-    if point > 0 { at = point as usize }
-    if at > text.len { at = text.len }
-    for i in at..text.len {
-        frac.push(text.digit(i))
-        written = written + 1
-    }
-    while written < places {
-        frac.push(b'0')
-        written = written + 1
-    }
-    if point <= 0 {
-        // A value below one has a whole part of zero; the digits are the fraction.
-        out.push(b'0')
-    } else {
-        // Every place up to the point is written, a place the rounding did not keep being a zero.
-        for i in 0..point as usize {
-            out.push(text.digit(i))
-        }
-    }
-    if wholeMarker && places == 0 {
-        out.push(b'.')
-        out.push(b'0')
-        return
-    }
-    if frac.length() == 0 { return }
-    out.push(b'.')
-    out.append(&frac)
-}
-
-/// Writes `d` in fixed notation with `digits` fraction places, rounded half up at the last place: `{:.2}` of `2` is
-/// `2.00` and of `0.005` is `0.01`.
-fn putFixed(out: *String, d: *Dec, digits: usize) {
-    // The significant digits that survive are `point + digits`; a value below one still needs one kept digit so the
-    // rounding can see whether it carries into the whole part (`{:.0}` of `0.95` is `1`).
-    if digits == 0 {
-        // No fraction: the answer is the whole part, 0 or 1 for a value below one, and the exact lower half rounds
-        // down while anything above it rounds up.
-        local whole: u8 = b'0'
-        local keep: i32 = d.point
-        if keep == 0 {
-            local first: u8 = d.digit(0)
-            if first > 5 { whole = b'1' }
-            if first == 5 && d.restNonZero(1) { whole = b'1' }
-        } else if keep > 0 {
-            local text: RoundDigits = rounded(d, keep)
-            local s: String = String()
-            appendPlain(&s, &text, 0, false)
-            out.append(&s)
-            return
-        }
-        out.push(whole)
-        return
-    }
-    // A value with fewer significant digits than the places asked for is all zeros in the fraction; rounding cannot
-    // carry into the whole part then, because the first digit sits further right than the half of the last place.
-    local keep: i32 = d.point + digits as i32
-    if keep < 0 {
-        // The value is below half of the smallest place written: the whole part is 0 and so is every place.
-        out.push(b'0')
-        out.push(b'.')
-        for i in 0..digits { out.push(b'0') }
-        return
-    }
-    if keep == 0 {
-        // The first significant digit is the tenths place of the last place written, so a rounding up there adds one
-        // to that place and leaves every place above it a zero.
-        out.push(b'0')
-        out.push(b'.')
-        for i in 0..digits - 1 { out.push(b'0') }
-        local up: bool = d.digit(0) > 5 || (d.digit(0) == 5 && d.restNonZero(1))
-        if up { out.push(b'1') } else { out.push(b'0') }
-        return
-    }
-    local text: RoundDigits = rounded(d, keep)
-    appendPlain(out, &text, digits as i32, false)
-}
-
-/// Writes `d` in scientific notation: one digit, the point and `digits` fraction places, then `e` and the exponent.
-fn putScientific(out: *String, d: *Dec, digits: usize) {
-    // `1 + digits` significant digits carry the rounding from the fraction into a new leading digit, which moves the
-    // exponent up by one, so the exponent is read from the rounded form rather than from the input.
-    local text: RoundDigits = rounded(d, 1 + digits as i32)
-    putScientificTrimmed(out, &text, 1 + digits)
-}
-
-/// Appends `text`'s first `keep` digits in scientific form: `d[.frac]e[+-]NN`.
-fn putScientificTrimmed(out: *String, text: *RoundDigits, keep: usize) {
-    if text.len == 0 {
-        // Zero has no digits and no exponent: one leading zero, the fraction places, `e+00`.
-        out.push(b'0')
-        if keep > 1 {
-            out.push(b'.')
-            for k in 1..keep {
-                out.push(b'0')
-            }
-        }
-        out.push(b'e')
-        out.push(b'+')
-        out.push(b'0')
-        out.push(b'0')
-        return
-    }
-    out.push(text.digit(0))
-    if keep > 1 {
-        out.push(b'.')
-        for i in 1..keep {
-            out.push(text.digit(i))
-        }
-    }
-    local exp: i32 = text.point - 1
-    out.push(b'e')
-    if exp < 0 {
-        out.push(b'-')
-        exp = 0 - exp
-    } else {
-        out.push(b'+')
-    }
-    if exp < 10 { out.push(b'0') }
-    appendSmallDecimal(out, exp as u64)
-}
-
-/// The `g` form: `digits` significant digits (at least one), the fraction's trailing zeros dropped, in scientific
-/// notation when the exponent is outside the plain range or too large for the significant digits asked for.
-fn putGeneral(out: *String, d: *Dec, digits: usize) {
-    local sig: usize = digits
-    if sig == 0 { sig = 1 }
-    local text: RoundDigits = rounded(d, sig as i32)
-    local exp: i32 = text.point - 1
-    if exp < (0 - 4) || exp >= sig as i32 {
-        local keep: usize = sig
-        while keep > 1 && text.digit(keep - 1) == b'0' {
-            keep = keep - 1
-        }
-        putScientificTrimmed(out, &text, keep)
-        return
-    }
-    // Plain, with the fraction places that leave `sig` significant digits; `appendPlain` drops their trailing zeros.
-    local places: i32 = sig as i32 - text.point
-    if places < 0 { places = 0 }
-    local plain: String = String()
-    appendPlain(&plain, &text, places, false)
-    out.append(trimFractionZeros(plain.asStr()))
-}
-
-/// The text of `s` without the trailing zeros of its fraction, and without the point when nothing is left: the `g`
-/// rule after a plain write. A `str` view, so no allocation and no change to `s`.
-fn trimFractionZeros(s: str) -> str {
-    local n: usize = s.len
-    local dot: i64 = -1
-    for i in 0..n {
-        if s[i] == b'.' { dot = i as i64 }
-    }
-    if dot < 0 { return s }
-    local end: usize = n
-    while end > dot as usize + 1 && s[end - 1] == b'0' {
-        end = end - 1
-    }
-    if end == dot as usize + 1 { end = dot as usize }
-    return view(s, 0, end)
-}
-
-/// The `{}` form of a non-zero, non-negative finite `x`: the shortest digit string that parses back to the same bits,
-/// in plain or scientific notation by `PLAIN_MIN_EXP`/`PLAIN_MAX_EXP`.
-fn putShortest(out: *String, x: f64) {
-    local buf: [u8; FLOAT_BUF]
-    local at: usize = 0
-    if putShortestExact(&buf[0], FLOAT_BUF, &at, x) {
-        for i in 0..at {
-            out.push(buf[i])
-        }
-        return
-    }
-    local d: Dec = decimalOf(x)
-    local text: RoundDigits = rounded(&d, 1)
-    local n: usize = 1
-    while n <= FLOAT_MAX_DIGITS {
-        text = rounded(&d, n as i32)
-        if roundTrips(&text, x) { break }
-        n = n + 1
-    }
-    // 17 digits always name a double, so the loop always finds its length; the last candidate stands if it did not.
-    // A shortest form carries no trailing zero: a rounded zero at the end is not part of the answer, and a whole value
-    // is written by the `.0` marker instead.
-    local keep: usize = n
-    while keep > 1 && text.digit(keep - 1) == b'0' {
-        keep = keep - 1
-    }
-    local exp: i32 = text.point - 1
-    if exp < PLAIN_MIN_EXP || exp > PLAIN_MAX_EXP {
-        putScientificTrimmed(out, &text, keep)
-        return
-    }
-    local places: i32 = keep as i32 - text.point
-    if places < 0 { places = 0 }
-    appendPlain(out, &text, places, true)
-}
-
-/// True when the digits of `text` (`0.<digits> * 10^point`) parse back to exactly the bits of `x`.
-/// The shortest text of a value whose exact decimal fits a `u64` with at most 15 significant digits and an exponent
-/// within ±22: those digits are already the shortest that read back as `x` (a double carries at most 17, and below 15
-/// no shorter form exists at such a small exponent), so no `BigInt` and no `String` is built. This is the path
-/// `print(2.5)` and `format("{}", 0.1)` take, and it must not reach the allocator.
-/// @ownership writes at most `cap - at` bytes to `buf` and grows `at`; false when the value is out of its range.
-/// @cost a few integer operations, no allocation.
-fn putShortestExact(buf: *u8, cap: usize, at: *usize, x: f64) -> bool {
-    local bits: u64 = f64Bits(x)
-    local expBits: u64 = (bits >> 52) & 0x7ff
-    if expBits == 0 { return false }                       // zero and the subnormals take the exact path
-    local biased: i64 = expBits as i64 - 1075              // the exponent of the integer mantissa
-    local mant: u64 = (bits & 0xfffffffffffff) | 0x10000000000000
-    while biased < 0 && (mant & 1) == 0 {                  // drop the powers of two the decimal does not need
-        mant = mant >> 1
-        biased += 1
-    }
-    // The exact value is `mant * 2^biased`; a negative exponent needs a factor of five per two, and past 22 twos a
-    // `u64` cannot hold the scaled integer.
-    if biased < -22 || biased > 22 { return false }
-    local digits: u64 = mant
-    if biased < 0 {
-        for i in 0..(0 - biased) as usize {
-            if digits > 0xffffffffffffffff / 5 { return false }
-            digits *= 5
-        }
-    } else {
-        for i in 0..biased as usize {
-            if digits > 0xffffffffffffffff / 2 { return false }
-            digits *= 2
-        }
-    }
-    // `digits` over `10^-biased`, so the point sits `len + biased` digits in.
-    local rev: [u8; 24]
-    local len: usize = 0
-    local v: u64 = digits
-    while v > 0 {
-        rev[len] = ((v % 10) as u8) + b'0'
-        v /= 10
-        len += 1
-    }
-    if len > 15 { return false }
-    local text: [u8; 24]
-    for i in 0..len {
-        text[i] = rev[len - 1 - i]
-    }
-    local kept: usize = len
-    while kept > 1 && text[kept - 1] == b'0' {
-        kept -= 1
-    }
-    local point: i32 = (len as i32) + biased as i32
-    local exp: i32 = point - 1
-    // The largest form is the scientific one (a point, the digits, `e`, a sign and three digits) or a plain one with
-    // the zeros of the point; `24` digits plus `9` covers both, and the caller's buffer is checked before a write.
-    local need: usize = kept + 12
-    if need > cap - *at { return false }
+    if sp.hasPrecision { specPanic("a precision on an integer", sp.typeCh) }
+    // The digits, least significant first, then turned around: at most 64 for base 2.
+    local rev: [u8; 64]
     local n: usize = 0
-    if exp < PLAIN_MIN_EXP || exp > PLAIN_MAX_EXP {
-        n = 0
-        if kept > 1 {
-            buf[*at + n] = b'.'
-            n += 1
-            for i in 1..kept {
-                buf[*at + n] = text[i]
-                n += 1
-            }
-        }
-        buf[*at + n] = b'e'
-        n += 1
-        if exp < 0 {
-            buf[*at + n] = b'-'
-        } else {
-            buf[*at + n] = b'+'
-        }
-        n += 1
-        local e: i32 = exp
-        if e < 0 { e = 0 - e }
-        if e >= 100 {
-            buf[*at + n] = ((e / 100) as u8) + b'0'
-            n += 1
-        }
-        buf[*at + n] = (((e / 10) % 10) as u8) + b'0'
-        n += 1
-        buf[*at + n] = ((e % 10) as u8) + b'0'
-        n += 1
-    } else if point <= 0 {
-        buf[*at + n] = b'0'
-        n += 1
-        buf[*at + n] = b'.'
-        n += 1
-        for i in 0..(0 - point) as usize {
-            buf[*at + n] = b'0'
-            n += 1
-        }
-        for i in 0..kept {
-            buf[*at + n] = text[i]
-            n += 1
-        }
-    } else if point as usize >= kept {
-        for i in 0..kept {
-            buf[*at + n] = text[i]
-            n += 1
-        }
-        for i in kept..point as usize {
-            buf[*at + n] = b'0'
-            n += 1
-        }
-        buf[*at + n] = b'.'
-        n += 1
-        buf[*at + n] = b'0'
-        n += 1
-    } else {
-        for i in 0..point as usize {
-            buf[*at + n] = text[i]
-            n += 1
-        }
-        buf[*at + n] = b'.'
-        n += 1
-        for i in point as usize..kept {
-            buf[*at + n] = text[i]
-            n += 1
+    local alphabet: str = sp.typeCh == b'X' ? "0123456789ABCDEF" : "0123456789abcdef"
+    for local t: u64 = v; n == 0 || t > 0; t /= radix {
+        rev[n] = alphabet[(t % radix) as usize]
+        n++
+    }
+    local body: [u8; 64]
+    for i in 0..n { body[i] = rev[n - 1 - i] }
+    local sign: str = signOf(sp, negative)
+    local head: [u8; 4]
+    local headLen: usize = 0
+    for c in sign {
+        head[headLen] = c
+        headLen++
+    }
+    if sp.alternate {
+        for c in prefix {
+            head[headLen] = c
+            headLen++
         }
     }
-    *at += n
-    return true
+    emitPadded(sink, sp, fromParts(&head[0], headLen), fromParts(&body[0], n))
 }
 
-/// The buffer a float's text is built in. A double needs at most 24 digits, a point and `e+308`.
-define FLOAT_BUF = 48
-
-fn roundTrips(text: *RoundDigits, x: f64) -> bool {
-    local s: String = String()
-    local places: i32 = text.len as i32 - text.point
-    if places < 0 { places = 0 }
-    appendPlain(&s, text, places, false)
-    local back: f64 = 0.0
-    if !toF64(s.asStr(), &back) { return false }
-    return f64Bits(back) == f64Bits(x)
-}
-
-/// Appends the decimal digits of `v` (0 <= v <= 999) with no leading zero.
-fn appendSmallDecimal(out: *String, v: u64) {
-    if v >= 100 { out.push(((v / 100) as u8) + b'0') }
-    if v >= 10 { out.push((((v / 10) % 10) as u8) + b'0') }
-    out.push(((v % 10) as u8) + b'0')
-}
-
-/// The text of a non-negative finite `x` with no sign and no padding. `typeCh` is the placeholder's letter (0 for
-/// `{}`); `digits` is the precision the caller asked for — significant digits for `e`/`g`, fraction places for `f` — and
-/// is ignored when the spec had none, except that `f` then keeps all the places the value has.
-fn floatText(out: *String, x: f64, typeCh: u8, digits: usize, hasPrecision: bool) {
-    out.clear()
-    if typeCh == 0 {
-        // No type: `.N` asks for `N` fraction places (the fixed form), and no precision for the shortest form.
-        if hasPrecision {
-            local dd: Dec = decimalOf(x)
-            putFixed(out, &dd, digits)
-            return
-        }
-        if x != 0.0 { putShortest(out, x) } else { putShortestZero(out) }
-        return
-    }
-    local d: Dec = decimalOf(x)
-    if typeCh == b'e' {
-        putScientific(out, &d, digits)
-    } else if typeCh == b'g' {
-        putGeneral(out, &d, digits)
-    } else {
-        putFixed(out, &d, digits)
-    }
-}
-
-/// The `{}` text of zero: plain `0.0`, the same neighbour marker a whole value carries.
-fn putShortestZero(out: *String) {
-    out.push(b'0')
-    out.push(b'.')
-    out.push(b'0')
+/// The text of a signed integer under `sp`. The magnitude is the two's complement negation, so `i64`'s minimum (which
+/// `0 - v` cannot represent) gives its own magnitude.
+fn renderSigned(sink: *FmtSink, sp: Spec, v: i64) {
+    renderInteger(sink, sp, v < 0 ? ~(v as u64) + 1 : v as u64, v < 0)
 }
 
 /// Renders `v` under `sp`: the sign, the text `floatText` builds, then the padding of `emitPadded`.
-fn renderFloatValue(sink: *FmtSink, sp: Spec, v: f64) {
-    local typeCh: u8 = sp.typeCh
-    local upper: bool = false
-    local lowerType: u8 = typeCh
-    switch typeCh {
-    case 0, b'e', b'f', b'g' {}
-    case b'E' {
-        upper = true
-        lowerType = b'e'
+fn renderFloat(sink: *FmtSink, sp: Spec, v: f64) {
+    local upper: bool = sp.typeCh == b'E' || sp.typeCh == b'F' || sp.typeCh == b'G'
+    local lowerType: u8 = upper ? sp.typeCh + (b'a' - b'A') : sp.typeCh
+    if lowerType != 0 && lowerType != b'e' && lowerType != b'f' && lowerType != b'g' {
+        specPanic("this base", sp.typeCh)
     }
-    case b'F' {
-        upper = true
-        lowerType = b'f'
-    }
-    case b'G' {
-        upper = true
-        lowerType = b'g'
-    }
-    default { specPanic("this base", typeCh) }
-    }
-    local sign: str = ""
-    if v < 0.0 || (v == 0.0 && (f64Bits(v) >> 63) == 1) {
-        sign = "-"
-    } else if sp.signPlus {
-        sign = "+"
-    } else if sp.signSpace {
-        sign = " "
-    }
-    // A non-finite value has no digits: one of the three names, with no precision applied and padded like text.
-    local expBits: u64 = (f64Bits(v) >> 52) & 0x7ff
-    local frac: u64 = f64Bits(v) & 0xfffffffffffff
-    if expBits == 0x7ff {
-        if frac != 0 {
-            emitPadded(sink, sp, sign, named(upper, "NaN", "nan"))
-        } else {
-            emitPadded(sink, sp, sign, named(upper, "INF", "inf"))
-        }
+    local bits: u64 = f64Bits(v)
+    local sign: str = signOf(sp, bits >> 63 == 1)
+    // A non-finite value has no digits: one of the names, with no precision applied and padded like text.
+    if (bits >> 52) & 0x7ff == 0x7ff {
+        local nan: bool = bits & 0xfffffffffffff != 0
+        emitPadded(sink, sp, nan ? "" : sign, nan ? (upper ? "NaN" : "nan") : (upper ? "INF" : "inf"))
         return
     }
-    local digits: usize = 6
-    if sp.hasPrecision { digits = sp.precision }
-    local x: f64 = v
-    if sign == "-" { x = 0.0 - x }
+    local x: f64 = bits >> 63 == 1 ? 0.0 - v : v
     // The shortest form of a value whose exact decimal fits a `u64` is written straight into a stack buffer, so the
     // common float print never reaches the allocator (the print family promises no allocator call). Every other case
     // needs `BigInt` for the exact digits and goes through a `String`.
-    if !upper && !sp.hasPrecision && lowerType == 0 {
+    if !sp.hasPrecision && lowerType == 0 {
         local buf: [u8; FLOAT_BUF]
         local at: usize = 0
         if putShortestExact(&buf[0], FLOAT_BUF, &at, x) {
@@ -918,55 +302,30 @@ fn renderFloatValue(sink: *FmtSink, sp: Spec, v: f64) {
         }
     }
     local text: String = String()
-    floatText(&text, x, lowerType, digits, sp.hasPrecision)
-    local shown: str = text.asStr()
-    local upperText: String = String()
-    if upper {
-        upperText = upperExponent(shown)
-        shown = upperText.asStr()
-    }
-    emitPadded(sink, sp, sign, shown)
-}
-
-/// `s` with its exponent marker as `E`, for the uppercase types: the digits are unaffected.
-fn upperExponent(s: str) -> String {
-    local out: String = String()
-    for i in 0..s.len {
-        if s[i] == b'e' { out.push(b'E') } else { out.push(s[i]) }
-    }
-    return out
-}
-
-/// `a` when `cond`, `b` otherwise: the two spellings of a non-finite name.
-fn named(cond: bool, a: str, b: str) -> str {
-    if cond { return a }
-    return b
+    floatText(&text, x, lowerType, sp.hasPrecision ? sp.precision : 6, sp.hasPrecision)
+    if upper { text = text.replaceAll("e", "E") }
+    emitPadded(sink, sp, sign, text.asStr())
 }
 
 /// The text of `t` under `sp`: `.precision` cuts it to that many bytes (never splitting a UTF-8 sequence), and the
 /// width pads it like any other text.
 fn renderText(sink: *FmtSink, sp: Spec, t: str) {
-    if sp.typeCh != 0 && sp.typeCh != 115 && sp.typeCh != 63 {
-        specPanic("this type", sp.typeCh)
-    }
-    local out: str = t
+    if sp.typeCh != 0 && sp.typeCh != b's' && sp.typeCh != b'?' { specPanic("this type", sp.typeCh) }
+    local cut: usize = t.len
     if sp.hasPrecision && sp.precision < t.len {
-        local cut: usize = sp.precision
         // Back up over a continuation byte so the cut never lands inside a character.
-        while cut > 0 && (t[cut] & 0xc0) == 0x80 {
-            cut = cut - 1
-        }
-        out = view(t, 0, cut)
+        cut = sp.precision
+        while cut > 0 && (t[cut] & 0xc0) == 0x80 { cut-- }
     }
-    emitPadded(sink, sp, "", out)
+    emitPadded(sink, sp, "", view(t, 0, cut))
 }
 
-/// The text of a pointer: the default is `0x` and the address in lowercase hex digits.
-fn renderPointer(sink: *FmtSink, sp: Spec, v: u64) {
+/// The text of a pointer for `{:p}`: `0x` and the address in lowercase hex digits, padded like a number.
+fn renderPointer(sink: *FmtSink, sp: Spec, p: *u8) {
     local isp: Spec = sp
-    isp.typeCh = 120
+    isp.typeCh = b'x'
     isp.alternate = true
-    renderUnsigned(sink, isp, v, "")
+    renderInteger(sink, isp, p as u64, false)
 }
 
 // ---- the engine ------------------------------------------------------------------------------
@@ -976,18 +335,14 @@ fn placeholders(text: str) -> usize {
     local n: usize = 0
     local i: usize = 0
     while i < text.len {
-        if text[i] == 123 {
-            if i + 1 < text.len && text[i + 1] == 123 {
-                i = i + 2
-            } else {
-                n = n + 1
-                i = i + 1
-            }
-        } else if text[i] == 125 && i + 1 < text.len && text[i + 1] == 125 {
-            i = i + 2
-        } else {
-            i = i + 1
+        local c: u8 = text[i]
+        local doubled: bool = i + 1 < text.len && text[i + 1] == c
+        if (c == b'{' || c == b'}') && doubled {
+            i += 2
+            continue
         }
+        if c == b'{' { n++ }
+        i++
     }
     return n
 }
@@ -995,18 +350,15 @@ fn placeholders(text: str) -> usize {
 /// Panics for a format whose placeholder count differs from its argument count; the message names both counts and the
 /// format text cut to 160 bytes, and is built on the stack.
 fn mismatchPanic(n: usize, arity: usize, text: str) {
-    local buf: [u8; 256]
-    local at: usize = putText(&buf[0], 0, "format: ")
-    at = putDecimal(&buf[0], at, n as u64)
-    at = putText(&buf[0], at, " placeholders, got ")
-    at = putDecimal(&buf[0], at, arity as u64)
-    at = putText(&buf[0], at, " arguments in \"")
-    local shown: usize = text.len
-    if shown > 160 { shown = 160 }
-    at = putText(&buf[0], at, view(text, 0, shown))
-    at = putText(&buf[0], at, "\"")
-    buf[at] = 0
-    panic(&buf[0])
+    local m: PanicText = panicText()
+    m.text("format: ")
+    m.number(n as u64)
+    m.text(" placeholders, got ")
+    m.number(arity as u64)
+    m.text(" arguments in \"")
+    m.text(view(text, 0, text.len < 160 ? text.len : 160))
+    m.text("\"")
+    m.raise()
 }
 
 /// One format being written: `at` is the next byte of `text` not yet written.
@@ -1024,9 +376,7 @@ class Format {
     /// Checks that the format has exactly `arity` placeholders; panics otherwise.
     fn check(self, arity: usize) {
         local n: usize = placeholders(self.text)
-        if n != arity {
-            mismatchPanic(n, arity, self.text)
-        }
+        if n != arity { mismatchPanic(n, arity, self.text) }
     }
 
     /// Writes the text up to the next placeholder, or to the end. `{{` and `}}` each write one brace.
@@ -1034,28 +384,26 @@ class Format {
         local start: usize = self.at
         while self.at < self.text.len {
             local c: u8 = self.text[self.at]
-            local next: u8 = 0
-            if self.at + 1 < self.text.len { next = self.text[self.at + 1] }
-            if c == 123 && (next == 125 || next == 58) {
-                break
-            }
-            if (c == 123 || c == 125) && next == c {
-                if self.at > start { self.sink.writeBytes(view(self.text, start, self.at - start)) }
-                self.sink.writeBytes(view(self.text, self.at, 1))
-                self.at = self.at + 2
+            local next: u8 = self.at + 1 < self.text.len ? self.text[self.at + 1] : 0
+            if c == b'{' && (next == b'}' || next == b':') { break }
+            if (c == b'{' || c == b'}') && next == c {
+                // Everything before the escape, then one brace of it.
+                self.sink.writeBytes(view(self.text, start, self.at + 1 - start))
+                self.at += 2
                 start = self.at
             } else {
-                self.at = self.at + 1
+                self.at++
             }
         }
         if self.at > start { self.sink.writeBytes(view(self.text, start, self.at - start)) }
     }
 
-    /// The spec of the placeholder at the cursor and moves past its `}`.
-    fn spec(self) -> Spec {
+    /// Writes the text before the next placeholder, then returns its spec and moves past its `}`.
+    fn next(self) -> Spec {
+        self.literal()
         // `at` is on `{`; the placeholder is `{}` or `{:spec}`.
-        if self.at + 1 < self.text.len && self.text[self.at + 1] == 125 {
-            self.at = self.at + 2
+        if self.at + 1 < self.text.len && self.text[self.at + 1] == b'}' {
+            self.at += 2
             return defaultSpec()
         }
         local end: usize = self.at + 2
@@ -1063,68 +411,52 @@ class Format {
         self.at = end + 1
         return sp
     }
-
-    fn finish(self) {
-        self.literal()
-    }
 }
 
 fn formatArg(f: *Format, v: i64) {
-    f.literal()
-    local sp: Spec = f.spec()
-    renderSigned(f.sink, sp, v)
+    renderSigned(f.sink, f.next(), v)
 }
 
 fn formatArg(f: *Format, v: u64) {
-    f.literal()
-    local sp: Spec = f.spec()
-    renderUnsigned(f.sink, sp, v, "")
+    renderInteger(f.sink, f.next(), v, false)
 }
 
 fn formatArg(f: *Format, v: f64) {
-    f.literal()
-    local sp: Spec = f.spec()
-    renderFloatValue(f.sink, sp, v)
+    renderFloat(f.sink, f.next(), v)
 }
 
 fn formatArg(f: *Format, v: bool) {
-    f.literal()
-    local sp: Spec = f.spec()
-    if !specIsEmpty(sp) {
-        specPanic("a spec on a bool", sp.typeCh)
-    }
-    if v { f.sink.writeBytes("true") } else { f.sink.writeBytes("false") }
+    local sp: Spec = f.next()
+    if !specIsEmpty(sp) { specPanic("a spec on a bool", sp.typeCh) }
+    f.sink.writeBytes(v ? "true" : "false")
 }
 
 fn formatArg(f: *Format, v: str) {
-    f.literal()
-    local sp: Spec = f.spec()
-    renderText(f.sink, sp, v)
+    renderText(f.sink, f.next(), v)
 }
 
 fn formatArg(f: *Format, v: *String) {
-    f.literal()
-    local sp: Spec = f.spec()
-    renderText(f.sink, sp, v.asStr())
+    renderText(f.sink, f.next(), v.asStr())
 }
 
 /// A `String` by value, which is how `format("{}", text)` and an interpolated `String` reach the engine. The width
 /// and precision rules are the `str` ones, so the text renders exactly as a literal would.
 fn formatArg(f: *Format, v: String) {
-    f.literal()
-    local sp: Spec = f.spec()
-    renderText(f.sink, sp, v.asStr())
+    renderText(f.sink, f.next(), v.asStr())
 }
 
+/// A `*u8` is NUL-terminated text, or with `{:p}` the address itself.
 fn formatArg(f: *Format, v: *u8) {
-    f.literal()
-    local sp: Spec = f.spec()
+    local sp: Spec = f.next()
+    if sp.typeCh == b'p' {
+        renderPointer(f.sink, sp, v)
+        return
+    }
     renderText(f.sink, sp, fromC(v))
 }
 
 fn formatArg(f: *Format, v: *Display) {
-    f.literal()
-    local sp: Spec = f.spec()
+    local sp: Spec = f.next()
     local text: String = String()
     v.display(&text)
     renderText(f.sink, sp, text.asStr())
@@ -1144,15 +476,15 @@ export fn fmtWrite(out: *FmtSink, v: i64) {
 }
 
 export fn fmtWrite(out: *FmtSink, v: u64) {
-    renderUnsigned(out, defaultSpec(), v, "")
+    renderInteger(out, defaultSpec(), v, false)
 }
 
 export fn fmtWrite(out: *FmtSink, v: f64) {
-    renderFloatValue(out, defaultSpec(), v)
+    renderFloat(out, defaultSpec(), v)
 }
 
 export fn fmtWrite(out: *FmtSink, b: bool) {
-    if b { out.writeBytes("true") } else { out.writeBytes("false") }
+    out.writeBytes(b ? "true" : "false")
 }
 
 export fn fmtWrite(out: *FmtSink, s: *String) {
@@ -1170,62 +502,33 @@ export fn fmtWrite(out: *FmtSink, d: *Display) {
 export fn fmtEmit(sink: *FmtSink, fmt: str, ..args) {
     local f: Format = Format(sink, fmt)
     f.check(args.len as usize)
-    for a in args {
-        formatArg(&f, a)
-    }
-    f.finish()
+    for a in args { formatArg(&f, a) }
+    f.literal()
 }
 
 // ---- the String and buffer entry points -------------------------------------------------------
 
+/// The `{}` text of `v` in a new `String`: one body for every `toString` overload, which `fmtWrite` picks by type.
+fn textOf<T>(v: T) -> String {
+    local out: String = String()
+    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, &out)
+    fmtWrite(&sink, v)
+    return out
+}
+
 /// A new String holding the text of `v`, the same bytes `{}` gives.
 /// @cost one allocation of the worst-case length of the value, no more than 400 bytes.
-export fn toString(v: i64) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: u64) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: f64) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: bool) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(v: str) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtWrite(&sink, v)
-    return out
-}
-
-export fn toString(p: *u8) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtWrite(&sink, p)
-    return out
-}
+export fn toString(v: i64) -> String { return textOf(v) }
+export fn toString(v: u64) -> String { return textOf(v) }
+export fn toString(v: f64) -> String { return textOf(v) }
+export fn toString(v: bool) -> String { return textOf(v) }
+export fn toString(v: str) -> String { return textOf(v) }
+export fn toString(p: *u8) -> String { return textOf(p) }
 
 /// Appends `fmt` to `out`; each `{}` takes the next argument and `{{` and `}}` are single braces.
 /// @ownership `out` is borrowed and grows; the arguments are borrowed for the call.
 export fn fmtAppend(out: *String, fmt: str, ..args) {
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, out)
+    local sink: FmtSink = FmtSink(FmtString, 0, nil, 0, out)
     fmtEmit(&sink, fmt, ..args)
 }
 
@@ -1235,23 +538,19 @@ export fn fmtAppend(out: *String, fmt: str, ..args) {
 /// @cost one allocation for the text, which grows as it is built.
 export fn format(fmt: str, ..args) -> String {
     local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtEmit(&sink, fmt, ..args)
+    fmtAppend(&out, fmt, ..args)
     return out
 }
 
 export fn sprintf(fmt: str, ..args) -> String {
-    local out: String = String()
-    local sink: FmtSink = FmtSink(FmtString, 0,nil, 0, &out)
-    fmtEmit(&sink, fmt, ..args)
-    return out
+    return format(fmt, ..args)
 }
 
 /// Writes `fmt` into `buf` (`cap` bytes) with its placeholders replaced. The text is cut to `cap - 1` bytes and
 /// NUL-terminated when `cap > 0`. Returns the length the full text needs, so a caller can tell that it did not fit and
 /// size a second buffer — the `snprintf` rule. `buf` must be at least `cap` writable bytes, or nil with `cap` 0.
 /// @safety `buf` must hold `cap` writable bytes.
-/// @cost the same work as `format`, an allocation only for a pad wider than the 512-byte stack buffer.
+/// @cost the same work as `format`, an allocation only for a `String` or `Display` argument.
 export fn snprintf(buf: *u8, cap: usize, fmt: str, ..args) -> usize {
     local sink: FmtSink = FmtSink(FmtBuffer, 0, buf, cap, nil)
     fmtEmit(&sink, fmt, ..args)

@@ -68,48 +68,6 @@ export fn endsWith(s: str, suffix: str) -> bool {
     return eq(view(s, s.len - suffix.len, suffix.len), suffix)
 }
 
-/// Parses decimal digits only (no sign, no spaces). Returns false, and leaves `out` alone, when `s`
-/// is empty, has another byte, or does not fit in a u64.
-export fn toU64(s: str, out: *u64) -> bool {
-    if s.len == 0 { return false }
-    local v: u64 = 0
-    local i: usize = 0
-    while i < s.len {
-        local c: u8 = s[i]
-        if c < 48 || c > 57 { return false }
-        local d: u64 = (c - 48) as u64
-        if v > 1844674407370955161 || (v == 1844674407370955161 && d > 5) { return false }
-        v = v * 10 + d
-        i = i + 1
-    }
-    *out = v
-    return true
-}
-
-/// Parses an optional leading '-' and decimal digits. Returns false, and leaves `out` alone, when
-/// the value does not fit in an i64.
-export fn toI64(s: str, out: *i64) -> bool {
-    local negative: bool = s.len > 0 && s[0] == 45
-    local digits: str = s
-    if negative {
-        digits = view(s, 1, s.len - 1)
-    }
-    local m: u64 = 0
-    if !toU64(digits, &m) { return false }
-    if !negative {
-        if m > 9223372036854775807 { return false }
-        *out = m as i64
-        return true
-    }
-    if m > 9223372036854775808 { return false }
-    if m == 0 {
-        *out = 0
-    } else {
-        *out = 0 - ((m - 1) as i64) - 1
-    }
-    return true
-}
-
 /// Byte offset of the last occurrence of `needle` in `s`, or -1 when there is none. The search runs backwards from the
 /// last position the needle fits at, so a caller that looks for a closing delimiter (a last `)`, a trailing `/`) does
 /// not have to scan the string twice. An empty `needle` counts as found at `s.len`.

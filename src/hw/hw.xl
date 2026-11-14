@@ -10,6 +10,7 @@
 #if os == "linux"
 
 from "../sys/linux" import sysOpenRead, sysRead, sysClose
+from "../str/chars" import isDigit, isBlank
 
 /// Reads the whole file at `path` into `buf` (capacity `cap`); returns the byte count (0 when the file cannot be read).
 fn readFile(path: *u8, buf: *u8, cap: usize) -> usize {
@@ -49,9 +50,9 @@ fn lineValue(text: *u8, n: usize, key: *u8, out: *u8, cap: usize) -> usize {
             if colon < eol {
                 local s: usize = colon + 1
                 if key[klen - 1] == 58 { s = at + klen }
-                while s < eol && (text[s] == 32 || text[s] == 9) { s = s + 1 }
+                while s < eol && isBlank(text[s]) { s++ }
                 local e: usize = eol
-                while e > s && (text[e - 1] == 32 || text[e - 1] == 9 || text[e - 1] == 13) { e = e - 1 }
+                while e > s && (isBlank(text[e - 1]) || text[e - 1] == b'\r') { e-- }
                 local len: usize = 0
                 while s + len < e && len + 1 < cap {
                     out[len] = text[s + len]
@@ -96,9 +97,9 @@ export fn hwMemoryBytes() -> i64 {
     if lineValue(&text[0], n, "MemTotal:", &digits[0], 32) == 0 { return -1 }
     local kb: i64 = 0
     local i: usize = 0
-    while digits[i] >= 48 && digits[i] <= 57 {
-        kb = kb * 10 + ((digits[i] - 48) as i64)
-        i = i + 1
+    while isDigit(digits[i]) {
+        kb = kb * 10 + ((digits[i] - b'0') as i64)
+        i++
     }
     return kb * 1024
 }
@@ -217,9 +218,9 @@ export fn hwCacheLineSize() -> usize {
     local n: usize = readFile("/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size", &buf[0], 32)
     local v: usize = 0
     local i: usize = 0
-    while i < n && buf[i] >= 48 && buf[i] <= 57 {
-        v = v * 10 + ((buf[i] - 48) as usize)
-        i = i + 1
+    while i < n && isDigit(buf[i]) {
+        v = v * 10 + ((buf[i] - b'0') as usize)
+        i++
     }
     if v == 0 { return 64 }
     return v

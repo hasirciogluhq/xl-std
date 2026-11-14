@@ -4,6 +4,17 @@ from "std" import print, format, fmtAppend, String, Vec, find, contains, startsW
 
 global failures: i32 = 0
 
+/// `toI64` / `toU64` on a literal: the parsers borrow a `String`.
+fn i64Of(s: str, out: *i64) -> bool {
+    local t: String = String(s)
+    return toI64(&t, out)
+}
+
+fn u64Of(s: str, out: *u64) -> bool {
+    local t: String = String(s)
+    return toU64(&t, out)
+}
+
 fn check(name: *u8, ok: bool) {
     if !ok {
         failures = failures + 1
@@ -37,17 +48,19 @@ fn checks(t: *T) {
     check("split pieces", parts.get(0).equals("a") && parts.get(1).len == 0 && parts.get(2).equals("bc") && parts.get(3).len == 0)
 
     local n: i64 = 0
-    check("i64 positive", toI64("12345", &n) && n == 12345)
-    check("i64 negative", toI64("-42", &n) && n == -42)
-    check("i64 minimum", toI64("-9223372036854775808", &n) && n == (0 - 9223372036854775807) - 1)
-    check("i64 overflow", !toI64("9223372036854775808", &n))
-    check("i64 lone sign", !toI64("-", &n))
-    check("i64 junk", !toI64("12a", &n))
+    check("i64 positive", i64Of("12345", &n) && n == 12345)
+    check("i64 negative", i64Of("-42", &n) && n == -42)
+    check("i64 minimum", i64Of("-9223372036854775808", &n) && n == (0 - 9223372036854775807) - 1)
+    check("i64 overflow", !i64Of("9223372036854775808", &n))
+    check("i64 below the minimum", !i64Of("-9223372036854775809", &n))
+    check("i64 lone sign", !i64Of("-", &n))
+    check("i64 junk", !i64Of("12a", &n) && !i64Of("+1", &n))
+    check("i64 leaves out alone on failure", n == (0 - 9223372036854775807) - 1)
 
     local u: u64 = 0
-    check("u64 maximum", toU64("18446744073709551615", &u) && u + 1 == 0)
-    check("u64 overflow", !toU64("18446744073709551616", &u))
-    check("u64 empty", !toU64("", &u))
+    check("u64 maximum", u64Of("18446744073709551615", &u) && u + 1 == 0)
+    check("u64 overflow", !u64Of("18446744073709551616", &u))
+    check("u64 empty", !u64Of("", &u))
 
     local src: String = String("MiXeD 1")
     local low: String = src.toLowerAscii()

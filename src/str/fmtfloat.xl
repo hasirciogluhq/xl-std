@@ -1,0 +1,390 @@
+// std/str/fmtfloat: the digits of a `f64` for the format engine (`fmtspec`): the shortest form of `{}`, the fixed
+// `f`, the scientific `e` and the general `g`. The text has no sign and no padding; `fmtspec` adds both.
+//
+// Every digit written here comes from `str/dec`, the exact binary expansion of the value, because a format's last
+// digit and a shortest form are both properties of the exact value. Rounding a `f64` by `x * 10^N` is not: the product
+// is itself rounded, so `{:.1}` of `0.95` lost its carry and `{}` of `1e300` saturated the `u64` it was cast to.
+//
+// `{}` prints the SHORTEST decimal that parses back to the same bits. The exact digits are cut to a length, rounded
+// half up at that length, and `toF64` decides whether the result still names the same double; the first length that
+// does is the answer. A number of significant digits between 1 and 17 always names its double, so the search ends;
+// specifiers with an explicit precision skip the search and round at the requested place directly.
+//
+// Notation: plain for an exponent in [-5, 16], scientific outside it. That is the JavaScript `toString` rule narrowed
+// from `[-7, 21]`, because the printed text is usually a log line where a long plain form is harder to read and a value
+// like `1e20` is clearer in scientific form. A whole value in plain notation keeps a `.0`, so a `f64` always reads as
+// one (`1.0`, not `1`); zero is `0.0`, and `-0.0` keeps its sign.
+//
+// @spec https://tc39.es/ecma262/#sec-number.prototype.tostring for the shortest form and its two notations.
+// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form satisfies.
+from "string" import String
+from "dec" import Dec, decimalOf
+from "num" import toF64
+from "../math/float" import f64Bits
+
+/// The most significant digits a `f64` needs: 17 always round-trips, so the shortest search never looks past it.
+export define FLOAT_MAX_DIGITS = 17
+
+/// The most fraction places or significant digits a precision may ask for. `fmtspec` refuses more with a panic rather
+/// than cutting it: the format text is fixed, so an absurd precision is a mistake in the program.
+export define PRECISION_MAX = 1024
+
+/// The buffer the allocation-free shortest form is built in. A double needs at most 24 digits, a point and `e+308`.
+export define FLOAT_BUF = 48
+
+/// The digit capacity of a rounded form. `rounded` keeps at most the digits of the exact decimal (767 significant
+/// digits for the smallest subnormal) plus the one place a carry adds, whatever precision was asked for: the places past
+/// the kept digits are zeros that `appendPlain` writes without storing them.
+define DIGIT_CAP = 1100
+
+/// The exponent range that stays in plain notation (see the header).
+define PLAIN_MIN_EXP = -5
+define PLAIN_MAX_EXP = 16
+
+/// The rounded significant digits of a decimal at a cut, as ASCII, and the decimal point that goes with them: the value
+/// is `0.<digits> * 10^point`.
+class RoundDigits {
+    buf: [u8; DIGIT_CAP]
+    len: usize
+    point: i32       // how many digits sit left of the point
+
+    fn init(self) {
+        self.len = 0
+        self.point = 0
+    }
+}
+
+impl RoundDigits {
+    /// The digit at `at`: `'0'` past the end, which is what rounding and padding read a missing place as.
+    fn digit(self: *RoundDigits, at: usize) -> u8 {
+        return at < self.len ? self.buf[at] : b'0'
+    }
+
+    fn set(self: *RoundDigits, at: usize, c: u8) {
+        self.buf[at] = c
+    }
+
+    fn append(self: *RoundDigits, c: u8) {
+        self.buf[self.len] = c
+        self.len++
+    }
+
+    /// The kept length without the trailing zeros, at least one digit: a shortest or `g` form carries none.
+    fn trimmed(self: *RoundDigits, keep: usize) -> usize {
+        local n: usize = keep
+        while n > 1 && self.digit(n - 1) == b'0' { n-- }
+        return n
+    }
+}
+
+/// Rounds the exact decimal `d` to `keep` significant digits, half to even: a following digit above 5, or 5 with a
+/// non-zero digit after it, adds one at the last kept place and the carry ripples left. A carry out of the leading digit
+/// lengthens the string by one place and moves the point up by one, which is what `999` rounded to two digits needs.
+fn rounded(d: *Dec, keep: i32) -> RoundDigits {
+    local r: RoundDigits = RoundDigits()
+    // Below half of this cut's last place: the value rounds to nothing.
+    if keep <= 0 { return r }
+    local n: i32 = d.length() as i32
+    r.point = d.point
+    if keep >= n {
+        // Nothing to round: every digit is kept and the places up to the cut are implicit zeros.
+        for i in 0..n as usize { r.append(d.digit(i) + b'0') }
+        return r
+    }
+    local kept: usize = keep as usize
+    for i in 0..kept { r.append(d.digit(i) + b'0') }
+    local next: u8 = d.digit(kept)
+    if next < 5 { return r }
+    // Half to even only on an exact tie: a `5` with nothing after it, and an even last kept digit, stays put.
+    if next == 5 && !d.restNonZero(kept + 1) && (r.digit(kept - 1) - b'0') % 2 == 0 { return r }
+    for i in 0..kept {
+        local at: usize = kept - 1 - i
+        local c: u8 = r.digit(at)
+        if c < b'9' {
+            r.set(at, c + 1)
+            return r
+        }
+        r.set(at, b'0')
+    }
+    // Every kept digit was a nine: `1000...`, one digit more than the cut asked for.
+    r = RoundDigits()
+    r.append(b'1')
+    for k in 0..kept { r.append(b'0') }
+    r.point = d.point + 1
+    return r
+}
+
+/// Appends the value `text` (`0.<digits> * 10^point`) in plain notation, with `places` fraction places written after
+/// the point. `places` may exceed the digits the rounding kept, which pads the fraction with zeros; a point left of the
+/// first digit pads the fraction with leading zeros instead. `wholeMarker` writes `.0` for a value with no fraction,
+/// the shortest form's rule that a `f64` always reads as one.
+fn appendPlain(out: *String, text: *RoundDigits, places: i32, wholeMarker: bool) {
+    local point: i32 = text.point
+    local frac: String = String()
+    // The fraction: zeros up to the point when it sits left of the first digit, then the digits after it.
+    if point < 0 {
+        for k in 0..(0 - point) { frac.push(b'0') }
+    }
+    // A point past the digits kept leaves an empty fraction; a point inside them starts after the digits left of it.
+    local at: usize = point > 0 ? point as usize : 0
+    if at > text.len { at = text.len }
+    for i in at..text.len { frac.push(text.digit(i)) }
+    while (frac.length() as i32) < places { frac.push(b'0') }
+    if point <= 0 {
+        // A value below one has a whole part of zero; the digits are the fraction.
+        out.push(b'0')
+    } else {
+        // Every place up to the point is written, a place the rounding did not keep being a zero.
+        for i in 0..point as usize { out.push(text.digit(i)) }
+    }
+    if wholeMarker && places == 0 {
+        out.append(".0")
+        return
+    }
+    if frac.length() == 0 { return }
+    out.push(b'.')
+    out.append(&frac)
+}
+
+/// Writes `d` in fixed notation with `digits` fraction places, rounded half to even at the last place: `{:.2}` of `2`
+/// is `2.00` and of `0.005` is `0.01` (the double just above it).
+fn putFixed(out: *String, d: *Dec, digits: usize) {
+    // The significant digits that survive are `point + digits`.
+    local keep: i32 = d.point + digits as i32
+    if digits == 0 && keep <= 0 {
+        // No fraction and a value below one: the whole part is 0, or 1 when the value is above one half.
+        local up: bool = keep == 0 && (d.digit(0) > 5 || (d.digit(0) == 5 && d.restNonZero(1)))
+        out.push(up ? b'1' : b'0')
+        return
+    }
+    if keep < 0 {
+        // The value is below half of the smallest place written: the whole part is 0 and so is every place.
+        out.append("0.")
+        for i in 0..digits { out.push(b'0') }
+        return
+    }
+    if keep == 0 {
+        // The first significant digit is the tenths of the last place written, so a rounding up there adds one to that
+        // place and leaves every place above it a zero.
+        out.append("0.")
+        for i in 0..digits - 1 { out.push(b'0') }
+        local up: bool = d.digit(0) > 5 || (d.digit(0) == 5 && d.restNonZero(1))
+        out.push(up ? b'1' : b'0')
+        return
+    }
+    local text: RoundDigits = rounded(d, keep)
+    appendPlain(out, &text, digits as i32, false)
+}
+
+/// Writes `d` in scientific notation: one digit, the point and `digits` fraction places, then `e` and the exponent.
+/// `1 + digits` significant digits carry the rounding into a new leading digit, which moves the exponent up by one, so
+/// the exponent is read from the rounded form rather than from the input.
+fn putScientific(out: *String, d: *Dec, digits: usize) {
+    local text: RoundDigits = rounded(d, 1 + digits as i32)
+    putScientificTrimmed(out, &text, 1 + digits)
+}
+
+/// Appends `text`'s first `keep` digits in scientific form: `d[.frac]e[+-]NN`. Zero has no digits: `0[.000]e+00`.
+fn putScientificTrimmed(out: *String, text: *RoundDigits, keep: usize) {
+    out.push(text.digit(0))
+    if keep > 1 {
+        out.push(b'.')
+        for i in 1..keep { out.push(text.digit(i)) }
+    }
+    if text.len == 0 {
+        out.append("e+00")
+        return
+    }
+    appendExponent(out, text.point - 1)
+}
+
+/// Appends `e`, the sign and at least two digits of `exp` (`e-07`, `e+308`).
+fn appendExponent(out: *String, exp: i32) {
+    out.append(exp < 0 ? "e-" : "e+")
+    local e: u32 = (exp < 0 ? 0 - exp : exp) as u32
+    if e >= 100 { out.push((e / 100) as u8 + b'0') }
+    out.push((e / 10 % 10) as u8 + b'0')
+    out.push((e % 10) as u8 + b'0')
+}
+
+/// The `g` form: `digits` significant digits (at least one), the fraction's trailing zeros dropped, in scientific
+/// notation when the exponent is below -4 or not below the significant digits asked for (C's `%g` rule).
+/// @spec https://pubs.opengroup.org/onlinepubs/9799919799/functions/printf.html for the `g` conversion.
+fn putGeneral(out: *String, d: *Dec, digits: usize) {
+    local sig: usize = digits == 0 ? 1 : digits
+    local text: RoundDigits = rounded(d, sig as i32)
+    local exp: i32 = text.point - 1
+    if exp < -4 || exp >= sig as i32 {
+        putScientificTrimmed(out, &text, text.trimmed(sig))
+        return
+    }
+    // Plain, with the fraction places that leave `sig` significant digits, then their trailing zeros dropped.
+    local places: i32 = sig as i32 - text.point
+    local plain: String = String()
+    appendPlain(&plain, &text, places < 0 ? 0 : places, false)
+    local kept: String = plain.slice(0, fractionEnd(&plain))
+    out.append(&kept)
+}
+
+/// The length of `s` without the trailing zeros of its fraction, and without the point when nothing is left after it:
+/// the `g` rule after a plain write. A text without a point is kept whole.
+fn fractionEnd(s: *String) -> usize {
+    local dot: i64 = s.findLast(".")
+    if dot < 0 { return s.length() }
+    local end: usize = s.length()
+    while end > dot as usize + 1 && s.at(end - 1) == b'0' { end-- }
+    return end == dot as usize + 1 ? dot as usize : end
+}
+
+/// The `{}` form of a non-zero, non-negative finite `x`: the shortest digit string that parses back to the same bits,
+/// in plain or scientific notation by `PLAIN_MIN_EXP`/`PLAIN_MAX_EXP`.
+fn putShortest(out: *String, x: f64) {
+    local buf: [u8; FLOAT_BUF]
+    local at: usize = 0
+    if putShortestExact(&buf[0], FLOAT_BUF, &at, x) {
+        for i in 0..at { out.push(buf[i]) }
+        return
+    }
+    local d: Dec = decimalOf(x)
+    // 17 digits always name a double, so the search always ends; the 17-digit form stands if nothing shorter did.
+    local text: RoundDigits = rounded(&d, FLOAT_MAX_DIGITS)
+    local n: usize = FLOAT_MAX_DIGITS
+    for len in (1 as usize)..FLOAT_MAX_DIGITS {
+        local candidate: RoundDigits = rounded(&d, len as i32)
+        if roundTrips(&candidate, x) {
+            text = candidate
+            n = len
+            break
+        }
+    }
+    // A shortest form carries no trailing zero: a whole value is written by the `.0` marker instead.
+    local keep: usize = text.trimmed(n)
+    local exp: i32 = text.point - 1
+    if exp < PLAIN_MIN_EXP || exp > PLAIN_MAX_EXP {
+        putScientificTrimmed(out, &text, keep)
+        return
+    }
+    local places: i32 = keep as i32 - text.point
+    appendPlain(out, &text, places < 0 ? 0 : places, true)
+}
+
+/// The shortest text of a value whose exact decimal fits a `u64` with at most 15 significant digits and an exponent
+/// within ±22: those digits are already the shortest that read back as `x` (a double carries at most 17, and below 15
+/// no shorter form exists at such a small exponent), so no `BigInt` and no `String` is built. This is the path
+/// `print(2.5)` and `format("{}", 0.1)` take, and it must not reach the allocator, so it writes a caller's stack buffer.
+/// @ownership writes at most `cap - at` bytes to `buf` and grows `at`; false when the value is out of its range.
+/// @cost a few integer operations, no allocation.
+export fn putShortestExact(buf: *u8, cap: usize, at: *usize, x: f64) -> bool {
+    local bits: u64 = f64Bits(x)
+    local expBits: u64 = (bits >> 52) & 0x7ff
+    // Zero and the subnormals take the exact path.
+    if expBits == 0 { return false }
+    // The value is `mant * 2^biased`, with the powers of two the decimal does not need dropped first.
+    local biased: i64 = expBits as i64 - 1075
+    local mant: u64 = (bits & 0xfffffffffffff) | 0x10000000000000
+    while biased < 0 && (mant & 1) == 0 {
+        mant >>= 1
+        biased++
+    }
+    // A negative exponent needs a factor of five per two, and past 22 a `u64` cannot hold the scaled integer.
+    if biased < -22 || biased > 22 { return false }
+    local digits: u64 = mant
+    local factor: u64 = biased < 0 ? 5 : 2
+    for i in 0..(biased < 0 ? 0 - biased : biased) as usize {
+        if digits > 0xffffffffffffffff / factor { return false }
+        digits *= factor
+    }
+    // The decimal digits of `digits`, most significant first; the value is `digits * 10^min(biased, 0)`.
+    local rev: [u8; 24]
+    local len: usize = 0
+    for local v: u64 = digits; v > 0; v /= 10 {
+        rev[len] = (v % 10) as u8 + b'0'
+        len++
+    }
+    if len > 15 { return false }
+    local text: [u8; 24]
+    for i in 0..len { text[i] = rev[len - 1 - i] }
+    local kept: usize = len
+    while kept > 1 && text[kept - 1] == b'0' { kept-- }
+    // A positive `biased` is folded into `digits` (and leaves more than 15 of them), so only a negative one moves the
+    // point left.
+    local point: i32 = len as i32 + (biased < 0 ? biased as i32 : 0)
+    local exp: i32 = point - 1
+    // The longest form is the scientific one (the digits, a point, `e`, a sign and three digits) or a plain one with
+    // the zeros of the point: `kept + 12` covers both at this exponent range, checked before any write.
+    if kept + 12 > cap - *at { return false }
+    local c: Cursor = Cursor { p: &buf[*at], n: 0 }
+    if exp < PLAIN_MIN_EXP || exp > PLAIN_MAX_EXP {
+        // `d[.ddd]e[+-]NN`: the leading digit, then the rest of the kept digits after the point.
+        c.put(text[0])
+        if kept > 1 {
+            c.put(b'.')
+            for i in 1..kept { c.put(text[i]) }
+        }
+        c.put(b'e')
+        c.put(exp < 0 ? b'-' : b'+')
+        local e: i32 = exp < 0 ? 0 - exp : exp
+        if e >= 100 { c.put((e / 100) as u8 + b'0') }
+        c.put((e / 10 % 10) as u8 + b'0')
+        c.put((e % 10) as u8 + b'0')
+    } else if point <= 0 {
+        // `0.000ddd`: the zeros between the point and the first digit.
+        c.put(b'0')
+        c.put(b'.')
+        for i in 0..(0 - point) as usize { c.put(b'0') }
+        for i in 0..kept { c.put(text[i]) }
+    } else if point as usize >= kept {
+        // A whole value: the digits, the zeros up to the point, and the `.0` marker.
+        for i in 0..kept { c.put(text[i]) }
+        for i in kept..point as usize { c.put(b'0') }
+        c.put(b'.')
+        c.put(b'0')
+    } else {
+        for i in 0..point as usize { c.put(text[i]) }
+        c.put(b'.')
+        for i in point as usize..kept { c.put(text[i]) }
+    }
+    *at += c.n
+    return true
+}
+
+/// A write position in a caller's stack buffer: the allocation-free path cannot build a `String`.
+/// @safety `p` must have room for every `put`; `putShortestExact` checks the whole length before the first one.
+struct Cursor {
+    p: *u8
+    n: usize
+}
+
+impl Cursor {
+    fn put(self: *Cursor, b: u8) {
+        self.p[self.n] = b
+        self.n++
+    }
+}
+
+/// True when the digits of `text` (`0.<digits> * 10^point`) parse back to exactly the bits of `x`.
+fn roundTrips(text: *RoundDigits, x: f64) -> bool {
+    local s: String = String()
+    local places: i32 = text.len as i32 - text.point
+    appendPlain(&s, text, places < 0 ? 0 : places, false)
+    local back: f64 = 0.0
+    return toF64(&s, &back) && f64Bits(back) == f64Bits(x)
+}
+
+/// The text of a non-negative finite `x` with no sign and no padding, replacing what `out` held. `typeCh` is the
+/// lowercase placeholder letter (0 for `{}`); `digits` is the precision — significant digits for `g`, fraction places
+/// for `e` and `f` — and `{}` with a precision is the fixed form, without one the shortest.
+/// @ownership `out` is borrowed and cleared first.
+export fn floatText(out: *String, x: f64, typeCh: u8, digits: usize, hasPrecision: bool) {
+    out.clear()
+    if typeCh == 0 && !hasPrecision {
+        if x != 0.0 { putShortest(out, x) } else { out.append("0.0") }
+        return
+    }
+    local d: Dec = decimalOf(x)
+    switch typeCh {
+    case b'e' { putScientific(out, &d, digits) }
+    case b'g' { putGeneral(out, &d, digits) }
+    default { putFixed(out, &d, digits) }
+    }
+}

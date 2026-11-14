@@ -5,6 +5,7 @@
 // Member order is kept and a new member goes last (RFC 6902 section 4.1: member order is not significant).
 from "../str/string" import String
 from "../str/fmtspec" import toString
+from "../str/chars" import isDigit
 from "../collections/vec" import Vec
 from "jsonfull" import JsonSpan, JsonWriter, jsonValid, jsonValueAt, jsonMembers, jsonPointerGet, jsonText, jsonPointerToken
 
@@ -65,7 +66,7 @@ fn sameScalar(a: *String, sa: JsonSpan, b: *String, sb: JsonSpan) -> bool {
     local c: u8 = a.at(sa.at)
     local x: String = c == 34 ? jsonText(a, sa.at, sa.end) : text(a, sa)
     local y: String = b.at(sb.at) == 34 ? jsonText(b, sb.at, sb.end) : text(b, sb)
-    if c == 45 || (c >= 48 && c <= 57) {
+    if c == b'-' || isDigit(c) {
         local nx: String = canonNumber(&x)
         local ny: String = canonNumber(&y)
         return nx.equals(&ny)

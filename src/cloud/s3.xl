@@ -21,6 +21,7 @@ from "../auth/sigv4" import sigv4Signature, sigv4StringToSign
 from "../auth/oauth" import pctEncode
 from "../str/str" import fromParts, eq, fromC
 from "../str/string" import String
+from "../str/chars" import isDigit
 from "../collections/vec" import Vec
 from "../sys" import sysClockSeconds
 from "../time/date" import civilFromDays, DateTime
@@ -653,9 +654,9 @@ fn numberText(v: i64) -> String {
 fn parseI64(v: str) -> i64 {
     local n: i64 = 0
     local i: usize = 0
-    while i < v.len && v[i] >= 48 && v[i] <= 57 {
-        n = n * 10 + ((v[i] - 48) as i64)
-        i = i + 1
+    while i < v.len && isDigit(v[i]) {
+        n = n * 10 + ((v[i] - b'0') as i64)
+        i++
     }
     return n
 }

@@ -6,7 +6,7 @@
 from "../sys" import sysUdpSocket, sysTcpConnect, sysSetRecvTimeout, sysClose, sysRead, sysWrite
 from "../mem/memory" import strlen
 from "../io/fs" import fsReadAll
-from "../str/chars" import isDigit, isSpace, toLower
+from "../str/chars" import isDigit, isSpace, isBlank, toLower
 
 /// Server used when `/etc/resolv.conf` has no usable `nameserver` line (1.1.1.1).
 define DNS_FALLBACK_SERVER = 16843009
@@ -15,6 +15,13 @@ define DNS_ATTEMPTS = 3
 define DNS_TYPE_A = 1
 
 global queryId: u32 = 19000
+
+/// The gap between the fields of one `hosts` or `resolv.conf` line: a blank, or the CR of a CRLF file. Never the LF,
+/// so a skip stops at the end of the line and a name on the next line is not taken for an alias of this one.
+/// @spec https://man7.org/linux/man-pages/man5/hosts.5.html for the field separators.
+fn isFieldGap(c: u8) -> bool {
+    return isBlank(c) || c == b'\r'
+}
 
 /// Parses a dotted-quad IPv4 literal that ends at NUL, whitespace or newline. Returns the index just
 /// past it, or 0 when `s` is not an IPv4 literal.
@@ -27,7 +34,7 @@ fn parseIPv4At(s: *u8, begin: usize, out: *u32) -> usize {
         local n: u32 = 0
         local digits: usize = 0
         while isDigit(s[i]) {
-            n = n * 10 + ((s[i] - 48) as u32)
+            n = n * 10 + ((s[i] - b'0') as u32)
             if n > 255 { return 0 }
             digits = digits + 1
             i = i + 1
@@ -39,7 +46,7 @@ fn parseIPv4At(s: *u8, begin: usize, out: *u32) -> usize {
             i = i + 1
         }
     }
-    if s[i] != 0 && !isSpace(s[i]) && s[i] != 10 { return 0 }
+    if s[i] != 0 && !isSpace(s[i]) { return 0 }
     *out = value
     return i
 }
@@ -58,7 +65,7 @@ fn tokenEquals(s: *u8, at: usize, name: *u8) -> bool {
         i = i + 1
     }
     local c: u8 = s[at + i]
-    return c == 0 || isSpace(c) || c == 10
+    return c == 0 || isSpace(c)
 }
 
 fn skipLine(s: *u8, i: usize) -> usize {
@@ -76,10 +83,10 @@ export fn dnsServer(out: *u32) -> bool {
     local p: usize = 0
     while buf[p] != 0 {
         local q: usize = p
-        while isSpace(buf[q]) { q = q + 1 }
+        while isFieldGap(buf[q]) { q++ }
         if tokenEquals(&buf[0], q, "nameserver") {
-            q = q + 10
-            while isSpace(buf[q]) { q = q + 1 }
+            q += 10
+            while isFieldGap(buf[q]) { q++ }
             local ip: u32 = 0
             if parseIPv4At(&buf[0], q, &ip) != 0 {
                 *out = ip
@@ -98,20 +105,20 @@ export fn dnsHostsLookup(name: *u8, out: *u32) -> bool {
     local p: usize = 0
     while buf[p] != 0 {
         local q: usize = p
-        while isSpace(buf[q]) { q = q + 1 }
+        while isFieldGap(buf[q]) { q++ }
         local ip: u32 = 0
         local after: usize = 0
-        if buf[q] != 35 { after = parseIPv4At(&buf[0], q, &ip) }
+        if buf[q] != b'#' { after = parseIPv4At(&buf[0], q, &ip) }
         if after != 0 {
             local r: usize = after
-            while buf[r] != 0 && buf[r] != 10 && buf[r] != 35 {
-                while isSpace(buf[r]) { r = r + 1 }
-                if buf[r] != 0 && buf[r] != 10 && buf[r] != 35 {
+            while buf[r] != 0 && buf[r] != b'\n' && buf[r] != b'#' {
+                while isFieldGap(buf[r]) { r++ }
+                if buf[r] != 0 && buf[r] != b'\n' && buf[r] != b'#' {
                     if tokenEquals(&buf[0], r, name) {
                         *out = ip
                         return true
                     }
-                    while buf[r] != 0 && !isSpace(buf[r]) && buf[r] != 10 { r = r + 1 }
+                    while buf[r] != 0 && !isSpace(buf[r]) { r++ }
                 }
             }
         }

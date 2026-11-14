@@ -97,14 +97,14 @@ impl Dec {
     /// @cost `O(1)`.
     fn digit(self: *Dec, at: usize) -> u8 {
         if at >= self.digits.length() { return 0 }
-        return self.digits.at(at) - 48
+        return self.digits.at(at) - b'0'
     }
 
     /// True when any digit at or past `at` is non-zero: the sticky flag of a rounding.
     /// @cost `O(n)` over the tail.
     fn restNonZero(self: *Dec, at: usize) -> bool {
         for i in at..self.digits.length() {
-            if self.digits.at(i) != 48 { return true }
+            if self.digits.at(i) != b'0' { return true }
         }
         return false
     }

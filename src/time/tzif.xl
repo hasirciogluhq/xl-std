@@ -11,6 +11,7 @@
 // The result views (abbreviations, footer) point into the file buffer, which the caller keeps alive.
 
 from "../str/str" import fromParts
+from "../str/chars" import isDigit, isAlpha
 
 /// A parsed TZif file: byte offsets into `data` (length `n`), so the struct holds no pointers.
 export struct TzFile {
@@ -182,7 +183,7 @@ export fn posixFixed(data: *u8, off: usize, len: usize) -> PosixFixed {
         p = p + 1
     } else {
         local s: usize = 0
-        while p < len && ((data[off + p] >= 65 && data[off + p] <= 90) || (data[off + p] >= 97 && data[off + p] <= 122)) { p = p + 1 }
+        while p < len && isAlpha(data[off + p]) { p++ }
         if p < 3 { return r }
         name = fromParts(&data[off], p)
     }
@@ -197,8 +198,8 @@ export fn posixFixed(data: *u8, off: usize, len: usize) -> PosixFixed {
     while part < 3 {
         local v: i64 = 0
         local digits: usize = 0
-        while p < len && data[off + p] >= 48 && data[off + p] <= 57 {
-            v = v * 10 + ((data[off + p] - 48) as i64)
+        while p < len && isDigit(data[off + p]) {
+            v = v * 10 + ((data[off + p] - b'0') as i64)
             digits = digits + 1
             p = p + 1
         }

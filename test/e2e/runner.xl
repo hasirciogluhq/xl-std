@@ -63,7 +63,7 @@ fn runTest(xlc: *String, root: *String, dir: *String, fields: *Vec<String>) -> b
         return false
     }
     local want: i64 = 0
-    toI64(fields.get(2).asStr(), &want)
+    toI64(fields.get(2), &want)
     local text: *String = fields.get(3)
     if exitCode(&program) as i64 != want {
         fail(name, "exit status differs from the table", &program.outText)

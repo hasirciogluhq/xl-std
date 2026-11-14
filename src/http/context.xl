@@ -10,7 +10,7 @@ from "../str/str" import fromParts, fromC, eq
 from "../str/string" import String
 from "../collections/vec" import Vec
 from "util" import formatUInt
-from "../str/chars" import hexValue, toLower
+from "../str/chars" import hexValue, toLower, isBlank
 from "multipart" import MultipartPart, multipartFind, multipartBoundary
 
 /// A request handler or middleware: it takes the context of the exchange and answers through its methods.
@@ -388,9 +388,9 @@ fn headerValue(block: str, name: str) -> str {
         while colon < eol && block[colon] != 58 { colon = colon + 1 }
         if colon - i == name.len && eqCI(fromParts(&block.ptr[i], name.len), name) {
             local s: usize = colon + 1
-            while s < eol && (block[s] == 32 || block[s] == 9) { s = s + 1 }
+            while s < eol && isBlank(block[s]) { s++ }
             local e: usize = eol
-            while e > s && (block[e - 1] == 32 || block[e - 1] == 9) { e = e - 1 }
+            while e > s && isBlank(block[e - 1]) { e-- }
             return fromParts(&block.ptr[s], e - s)
         }
         i = eol + 2

@@ -6,6 +6,7 @@
 from "../str/string" import String
 from "../str/str" import fromC
 from "../collections/vec" import Vec
+from "../str/chars" import isBlank
 
 /// The `argc` arguments behind `argv` (C strings), each copied into a String.
 export fn fromArgv(argc: i32, argv: **u8) -> Vec<String> {
@@ -14,10 +15,6 @@ export fn fromArgv(argc: i32, argv: **u8) -> Vec<String> {
         out.push(String(fromC(argv[i])))
     }
     return out
-}
-
-fn isBlank(c: u8) -> bool {
-    return c == 32 || c == 9
 }
 
 /// Splits a Windows command line the way the C runtime does (UCRT, "Parsing C++ command-line arguments",

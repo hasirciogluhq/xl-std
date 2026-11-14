@@ -8,10 +8,12 @@ from "../crypto/hash/digest" import digest, DIGEST_SHA256
 from "../str/string" import String
 from "../str/str" import fromParts
 from "../mem/mem" import currentAllocator
+from "../str/chars" import isAlnum
 
 /// True for the RFC 3986 unreserved characters: ALPHA, DIGIT, '-', '.', '_', '~'.
+/// @spec https://www.rfc-editor.org/rfc/rfc3986#section-2.3 for `unreserved`.
 fn isUnreserved(c: u8) -> bool {
-    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95 || c == 126
+    return isAlnum(c) || c == b'-' || c == b'.' || c == b'_' || c == b'~'
 }
 
 /// Writes the percent-encoded form of `value[0..n)` to `out` in the uppercase hex of RFC 3986 section 2.1; returns the number of

@@ -4,28 +4,9 @@ Open work only, in dependency order: each phase uses only what the phases before
 Finished work lives in the code, `xlang-docs/std/` and git history.
 
 ## 0. Language prerequisites
-Check each against `xlc` and record the gap in `xlang-docs/known-limitations.md` before phase 1.
-- How generic code reaches `hash`, `==` and `<` for a `T` (no constraints today): HashMap, sort and `Display` depend on it.
-- Thread-local storage, for per-thread state (errno-style results, the allocator cache).
-
-## 1. Core types
-- `Option` and `Result` methods: `isNone`, `unwrap`, `expect`, `map`, `andThen`, `okOr`; remove the free `optionOrElse` / `resultIsOk` family.
-- Hashing: one hash interface plus SipHash-1-3 as the default (HashDoS-resistant); FNV stays for checksums.
-- `HashMap<K, V>`, `HashSet<T>`.
-- Slice and `Vec` algorithms: `sort`, `sortBy` (stable), `binarySearch`, `reverse`, `dedup`, `contains`, `indexOf`.
-- Iterator adaptors: `map`, `filter`, `enumerate`, `zip`, `collect`.
-- `Deque` (ring buffer), `BinaryHeap`, `BTreeMap` (ordered, deterministic output).
-- `Box`, `Rc`, `Arc`.
-- Export `checksum` from `src/index.xl`.
-
-## 2. Text
-- `String` methods for what exists only as free `str` functions: `split`, `trim`, `lines`; add `join`.
-- Character classes (`isDigit`, `isAlpha`, `isHex`, ...) in `str`; remove the private copies in `dns`, `json` and the other modules.
-- Unicode on `String`: codepoint iteration and length; `utf8*` functions take `*String`.
-- Float parsing (`toF64`, correctly rounded).
-- Format specifiers: width, fill, alignment, precision, hex/binary (`{:08x}`, `{:.3}`).
-- A `Display` interface so user types format through `{}`.
-- A writer interface that `FmtSink`, `String` and files implement.
+- Thread-local storage, for per-thread state (errno-style results, the allocator cache): `xlc` has no thread-local
+  global, and an unknown attribute such as `@threadLocal` is accepted without effect. Needs a compiler change before
+  phase 4.
 
 ## 3. Time
 - `Duration` and monotonic `Instant` (`now`, `elapsed`).
@@ -73,6 +54,7 @@ Check each against `xlc` and record the gap in `xlang-docs/known-limitations.md`
 
 ## 9. TLS
 - Public API and record/handshake buffers on `String`, `Vec` and the phase 5 streams (`tlsConnect`, `tlsRead`, `tlsWrite`, credential loaders).
+- One PEM reader: `tls/truststore` keeps its own copy of `encoding/pem` (block scan and base64 table).
 - TLS 1.3: HelloRetryRequest; P-256 / P-384 key shares.
 - ALPN (RFC 7301); server-side SNI with several certificates; client certificates.
 - Session resumption: 1.3 PSK tickets, 1.2 tickets (RFC 5077).

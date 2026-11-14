@@ -163,7 +163,7 @@ which keeps the view in the same commit as the tag it came from.
 <!-- written by scripts/tags.sh sync; every line below is a tag found in the .xl
      sources, grouped by tag and then by file. Do not edit inside the markers. -->
 
-### @contract (45)
+### @contract (49)
 
 ```
 ./collections/arc.xl:19:/// @contract `inner` is non-nil and `inner.strong` counts the live `Arc` handles on it.
@@ -208,12 +208,16 @@ which keeps the view in the same commit as the tag it came from.
 ./str/fmt.xl:34:/// @contract a negative return means closed or failed; the caller does not retry a partial accept.
 ./str/fmt.xl:48:/// @contract `display` appends the whole text of `self` and nothing else, allocates only if the type's own text does,
 ./str/fmt.xl:49:/// @contract and never panics on a value the type allows.
-./str/num.xl:48:/// @contract `s` as the nearest `f64`, ties to even. Returns false, and leaves `out` alone, when `s` is not a number
-./str/num.xl:49:/// @contract in the grammar the file header states, or when it rounds past DBL_MAX; a value under half the smallest
-./str/num.xl:50:/// @contract subnormal gives a signed zero.
+./str/num.xl:49:/// @contract `text` as a `u64`: decimal digits only, no sign and no spaces. Returns false, and leaves `out` alone, when
+./str/num.xl:50:/// @contract `text` is empty, holds another byte, or is above `2^64 - 1`.
+./str/num.xl:68:/// @contract `text` as an `i64`: an optional leading `-`, then the digits `toU64` reads. Returns false, and leaves
+./str/num.xl:69:/// @contract `out` alone, for a lone sign, another byte, or a value outside `[-2^63, 2^63 - 1]`.
+./str/num.xl:86:/// @contract `text` as the nearest `f64`, ties to even. Returns false, and leaves `out` alone, when `text` is not a
+./str/num.xl:87:/// @contract number in the grammar the file header states, or when it rounds past DBL_MAX; a value under half the
+./str/num.xl:88:/// @contract smallest subnormal gives a signed zero.
 ```
 
-### @ownership (75)
+### @ownership (78)
 
 ```
 ./collections/arc.xl:20:/// @ownership dropping the last handle drops the value and frees the block.
@@ -281,10 +285,13 @@ which keeps the view in the same commit as the tag it came from.
 ./str/fmt.xl:58:/// @ownership `p` is borrowed for the call; the writer copies what it keeps.
 ./str/fmt.xl:67:/// @ownership owns nothing; `fd` stays the caller's to close.
 ./str/fmt.xl:85:/// @ownership owns nothing: the buffer and the target `String` stay the caller's.
-./str/fmtspec.xl:691:/// @ownership writes at most `cap - at` bytes to `buf` and grows `at`; false when the value is out of its range.
-./str/fmtspec.xl:1226:/// @ownership `out` is borrowed and grows; the arguments are borrowed for the call.
-./str/fmtspec.xl:1234:/// @ownership the arguments are borrowed for the call; the result is a fresh String.
-./str/num.xl:51:/// @ownership `s` is borrowed; the result is written through `out`.
+./str/fmtfloat.xl:275:/// @ownership writes at most `cap - at` bytes to `buf` and grows `at`; false when the value is out of its range.
+./str/fmtfloat.xl:377:/// @ownership `out` is borrowed and cleared first.
+./str/fmtspec.xl:529:/// @ownership `out` is borrowed and grows; the arguments are borrowed for the call.
+./str/fmtspec.xl:537:/// @ownership the arguments are borrowed for the call; the result is a fresh String.
+./str/num.xl:51:/// @ownership `text` is borrowed; the result is written through `out`.
+./str/num.xl:70:/// @ownership `text` is borrowed; a negative value's digits are copied into one short `String`.
+./str/num.xl:89:/// @ownership `text` is borrowed; the result is written through `out`.
 ./str/string.xl:362:/// @ownership `parts` is borrowed; the result is a fresh String that the caller frees.
 ./str/string.xl:395:/// @ownership `s` is borrowed; the result is a fresh String that the caller frees.
 ./str/string.xl:407:/// @ownership `s` is borrowed; the result is a fresh String that the caller frees.
@@ -293,28 +300,35 @@ which keeps the view in the same commit as the tag it came from.
 ./str/unicode.xl:110:/// @ownership `s` is borrowed and grows by at most four bytes.
 ```
 
-### @spec (16)
+### @spec (23)
 
 ```
+./auth/oauth.xl:14:/// @spec https://www.rfc-editor.org/rfc/rfc3986#section-2.3 for `unreserved`.
 ./collections/hash.xl:58:// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2.3 for the four initial values.
 ./collections/hash.xl:90:/// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2 for the construction; the test
 ./collections/hash.xl:91:/// @spec suite checks the output against the reference implementation's SipHash-1-3 vectors.
 ./collections/hash.xl:148:/// @spec https://www.aumasson.jp/siphash/siphash.pdf section 2 for the algorithm.
+./encoding/toml.xl:19:/// @spec https://toml.io/en/v1.0.0#keys for the bare key alphabet.
+./net/dns.xl:21:/// @spec https://man7.org/linux/man-pages/man5/hosts.5.html for the field separators.
 ./str/chars.xl:40:/// @spec https://www.rfc-editor.org/rfc/rfc5234#section-2.3 for the digit set.
-./str/chars.xl:47:/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-2 for the six characters.
-./str/chars.xl:54:/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-7 for the control-byte rule.
-./str/chars.xl:66:/// @spec https://www.rfc-editor.org/rfc/rfc4648#section-8 for the uppercase-only base16 alphabet.
+./str/chars.xl:48:/// @spec https://pubs.opengroup.org/onlinepubs/9799919799/functions/isspace.html for the six characters.
+./str/chars.xl:55:/// @spec https://www.rfc-editor.org/rfc/rfc5234#appendix-B.1 for `WSP`.
+./str/chars.xl:56:/// @spec https://www.rfc-editor.org/rfc/rfc9110#section-5.6.3 for `OWS`.
+./str/chars.xl:63:/// @spec https://www.rfc-editor.org/rfc/rfc8259#section-7 for the control-byte rule.
+./str/chars.xl:75:/// @spec https://www.rfc-editor.org/rfc/rfc4648#section-8 for the uppercase-only base16 alphabet.
 ./str/dec.xl:15:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form must satisfy.
-./str/fmtspec.xl:375:// @spec https://tc39.es/ecma262/#sec-number.prototype.tostring for the shortest form and its two notations.
-./str/fmtspec.xl:376:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form satisfies.
-./str/num.xl:25:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the number grammar.
-./str/num.xl:26:// @spec https://dl.acm.org/doi/10.1145/93542.93559 (Clinger, PLDI 1990) for the correctly rounded conversion.
+./str/fmtfloat.xl:18:// @spec https://tc39.es/ecma262/#sec-number.prototype.tostring for the shortest form and its two notations.
+./str/fmtfloat.xl:19:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the round-trip rule a shortest form satisfies.
+./str/fmtfloat.xl:212:/// @spec https://pubs.opengroup.org/onlinepubs/9799919799/functions/printf.html for the `g` conversion.
+./str/fmtspec.xl:26:// @spec https://doc.rust-lang.org/std/fmt/index.html#syntax for the spec grammar this one follows.
+./str/num.xl:26:// @spec https://www.rfc-editor.org/rfc/rfc8259#section-6 for the number grammar.
+./str/num.xl:27:// @spec https://dl.acm.org/doi/10.1145/93542.93559 (Clinger, PLDI 1990) for the correctly rounded conversion.
 ./str/unicode.xl:16:/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-6 for the decoder's substitution rule.
 ./str/unicode.xl:62:/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-3 for the sequence lengths counted.
 ./str/unicode.xl:111:/// @spec https://www.rfc-editor.org/rfc/rfc3629#section-3 for the encoding of a scalar value.
 ```
 
-### @cost (117)
+### @cost (120)
 
 ```
 ./collections/arc.xl:21:/// @cost `O(1)` clone and drop, one allocation.
@@ -418,12 +432,15 @@ which keeps the view in the same commit as the tag it came from.
 ./str/dec.xl:104:    /// @cost `O(n)` over the tail.
 ./str/dec.xl:114:    /// @cost `O(1)`.
 ./str/fmt.xl:68:/// @cost one system call per `write`, no allocation.
-./str/fmtspec.xl:692:/// @cost a few integer operations, no allocation.
-./str/fmtspec.xl:1182:/// @cost one allocation of the worst-case length of the value, no more than 400 bytes.
-./str/fmtspec.xl:1235:/// @cost one allocation for the text, which grows as it is built.
-./str/fmtspec.xl:1254:/// @cost the same work as `format`, an allocation only for a pad wider than the 512-byte stack buffer.
-./str/num.xl:52:/// @cost a few multiplications for an ordinary number; a wide-integer binary search otherwise, no allocation beyond
-./str/num.xl:53:/// @cost `BigInt`'s limb vector.
+./str/fmtfloat.xl:276:/// @cost a few integer operations, no allocation.
+./str/fmtspec.xl:520:/// @cost one allocation of the worst-case length of the value, no more than 400 bytes.
+./str/fmtspec.xl:538:/// @cost one allocation for the text, which grows as it is built.
+./str/fmtspec.xl:553:/// @cost the same work as `format`, an allocation only for a `String` or `Display` argument.
+./str/num.xl:52:/// @cost one pass, no allocation.
+./str/num.xl:71:/// @cost one pass; one allocation for a negative value.
+./str/num.xl:90:/// @cost a few multiplications for an ordinary number; a wide-integer binary search otherwise, no allocation beyond
+./str/num.xl:91:/// @cost `BigInt`'s limb vector.
+./str/panic.xl:12:/// @cost no allocation; the buffer is part of the caller's frame.
 ./str/string.xl:247:    /// @cost one pass over the bytes, one allocation.
 ./str/string.xl:253:    /// @cost one pass over the bytes, one allocation.
 ./str/string.xl:363:/// @cost `O(total bytes)` copies and one grow of the output, which is reserved once when
@@ -450,7 +467,7 @@ which keeps the view in the same commit as the tag it came from.
 ./collections/vec.xl:235:    /// @todo declared elsewhere without such an import does not resolve here, so it uses `sortBy`.
 ```
 
-### @safety (11)
+### @safety (12)
 
 ```
 ./collections/deque.xl:42:    /// @safety `i` must be below `len`; every public method bounds it first.
@@ -460,11 +477,12 @@ which keeps the view in the same commit as the tag it came from.
 ./collections/vec.xl:361:/// @safety `i` must be within the array `p` points to; the merge below bounds it by the run end.
 ./collections/vec.xl:368:/// @safety `lo <= mid <= hi <= len`; `sortBy` computes the three from the pass width.
 ./str/fmt.xl:59:/// @safety `p` must point to `n` readable bytes, and a `Writer` must only read its argument (the `Writer` contract).
-./str/fmtspec.xl:1253:/// @safety `buf` must hold `cap` writable bytes.
+./str/fmtfloat.xl:352:/// @safety `p` must have room for every `put`; `putShortestExact` checks the whole length before the first one.
+./str/fmtspec.xl:552:/// @safety `buf` must hold `cap` writable bytes.
 ./str/unicode.xl:22:/// @safety `at` must be below `s.len`; every caller checks the position before the call.
 ./str/unicode.xl:49:/// @safety `k` must be the length `validSeqLen` returned for `at`, so the continuation bytes exist.
 ./str/unicode.xl:70:/// @safety `at` must be at or below `s.length()`.
 ```
 
-Total: 273 tag lines.
+Total: 291 tag lines.
 <!-- END COLLECTED TAGS -->

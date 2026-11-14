@@ -14,6 +14,7 @@
 // std library has no chmod or utime yet). A `.tar.gz` is `std/compress` `gunzip` followed by `list`.
 from "../str/string" import String, split
 from "../str/str" import findLast
+from "../str/chars" import isDigit
 from "../collections/vec" import Vec
 from "../collections/result" import Result
 from "../io/files" import makeDirAll, isDir, exists
@@ -136,11 +137,11 @@ fn applyPax(body: str, e: *Entry, sizeOverride: *i64) -> bool {
     while at < body.len {
         local len: usize = 0
         local i: usize = at
-        while i < body.len && body[i] >= 48 && body[i] <= 57 {
-            len = len * 10 + ((body[i] - 48) as usize)
+        while i < body.len && isDigit(body[i]) {
+            len = len * 10 + ((body[i] - b'0') as usize)
             i++
         }
-        if i >= body.len || body[i] != 32 || len == 0 || at + len > body.len { return false }
+        if i >= body.len || body[i] != b' ' || len == 0 || at + len > body.len { return false }
         local record: String = String(body).slice(i + 1, at + len - i - 2)       // without the trailing newline
         local eq: i64 = record.find("=")
         if eq < 0 { return false }

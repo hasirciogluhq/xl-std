@@ -4,6 +4,7 @@
 // a '-' follows them, and then one variable-length integer per non-basic code point, digits a-z and 0-9.
 // The "xn--" ACE prefix (RFC 3490, section 5) is added by punyLabelToAscii. Name preparation (nameprep, RFC 3491) is not done:
 // the caller passes labels already in the form it wants (no case folding or normalization here).
+from "../str/chars" import isDigit, isUpper, isLower
 
 define PUNY_BASE = 36
 define PUNY_TMIN = 1
@@ -39,15 +40,15 @@ fn punyThreshold(k: i64, bias: i64) -> i64 {
 
 /// Digit value 0 to 35 as a character: 0-25 are a-z, 26-35 are 0-9.
 fn punyDigit(d: i64) -> u8 {
-    if d < 26 { return (97 + d) as u8 }
-    return (22 + d) as u8
+    if d < 26 { return b'a' + d as u8 }
+    return b'0' + (d - 26) as u8
 }
 
 /// The value of a digit character (a-z and A-Z are 0-25, 0-9 are 26-35), or -1.
 fn punyDigitValue(c: u8) -> i64 {
-    if c >= 48 && c <= 57 { return (c as i64) - 22 }
-    if c >= 65 && c <= 90 { return (c as i64) - 65 }
-    if c >= 97 && c <= 122 { return (c as i64) - 97 }
+    if isDigit(c) { return (c - b'0') as i64 + 26 }
+    if isUpper(c) { return (c - b'A') as i64 }
+    if isLower(c) { return (c - b'a') as i64 }
     return -1
 }
 

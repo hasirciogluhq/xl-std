@@ -1,7 +1,7 @@
 // std/http/util: string, number and header-block helpers shared by the HTTP server and client.
 // Everything here works on NUL-terminated byte strings and caller-provided buffers.
 from "../mem/memory" import strlen
-from "../str/chars" import toLower
+from "../str/chars" import toLower, hexValue, isHex, isBlank
 
 export fn cstrEq(a: *u8, b: *u8) -> bool {
     local i: usize = 0
@@ -91,13 +91,6 @@ export fn append(buf: *u8, at: usize, cap: usize, s: *u8) -> usize {
     return n
 }
 
-export fn hexDigit(c: u8) -> i32 {
-    if c >= 48 && c <= 57 { return (c - 48) as i32 }
-    if c >= 97 && c <= 102 { return (c - 87) as i32 }
-    if c >= 65 && c <= 70 { return (c - 55) as i32 }
-    return -1
-}
-
 /// Index of the `\r\n\r\n` that ends the headers, or -1.
 export fn headerEnd(s: *u8, n: usize) -> isize {
     local i: usize = 0
@@ -130,7 +123,7 @@ export fn headerLookup(block: *u8, name: *u8) -> *u8 {
         while k < nl && toLower(block[p + k]) == toLower(name[k]) { k = k + 1 }
         if k == nl && block[p + nl] == 58 {
             local v: usize = p + nl + 1
-            while block[v] == 32 || block[v] == 9 { v = v + 1 }
+            while isBlank(block[v]) { v++ }
             return &block[v]
         }
         while block[p] != 10 { p = p + 1 }
@@ -158,12 +151,13 @@ export fn urlDecode(s: *u8) -> usize {
     local wr: usize = 0
     while s[rd] != 0 {
         local c: u8 = s[rd]
-        if c == 43 {
-            s[wr] = 32
+        if c == b'+' {
+            s[wr] = b' '
             rd = rd + 1
         } else {
-            if c == 37 && hexDigit(s[rd + 1]) >= 0 && s[rd + 1] != 0 && hexDigit(s[rd + 2]) >= 0 {
-                s[wr] = ((hexDigit(s[rd + 1]) * 16 + hexDigit(s[rd + 2])) as u8)
+            // `isHex` of the first digit is false for the NUL, so the second read never passes the end.
+            if c == b'%' && isHex(s[rd + 1]) && isHex(s[rd + 2]) {
+                s[wr] = (hexValue(s[rd + 1]) * 16 + hexValue(s[rd + 2])) as u8
                 rd = rd + 3
             } else {
                 s[wr] = c

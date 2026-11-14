@@ -1,55 +1,74 @@
-// std/str/panic: the panic messages a container needs, each built on the stack so the failing path allocates nothing.
+// std/str/panic: panic messages built on the stack, so a failing path allocates nothing and calls no `format`.
 // They live beside `fmt` rather than inside it because `collections/vec` imports them while `fmt` imports `String`,
 // which imports `Vec`: keeping them here is what lets `fmt` declare the `Writer` interface that `String` implements
-// (a module may not import one that imports it). The text is plain ASCII; the number is written by hand, so no
-// `format` call happens on a path that is already failing.
+// (a module may not import one that imports it). The text is plain ASCII.
 
-/// Writes the decimal digits of `v` at `buf[at]`; returns the position after them.
-fn putDecimal(buf: *u8, at: usize, v: u64) -> usize {
-    local digits: usize = 1
-    local t: u64 = v
-    while t >= 10 {
-        t = t / 10
-        digits = digits + 1
-    }
-    local k: usize = at + digits
-    local n: u64 = v
-    while k > at {
-        k = k - 1
-        buf[k] = ((n % 10) as u8) + 48
-        n = n / 10
-    }
-    return at + digits
+/// The capacity of a panic message, the terminating NUL included. A longer message is cut, never overrun.
+define PANIC_TEXT_CAP = 256
+
+/// A panic message being built in a fixed stack buffer: `text`, `byte` and `number` append, `raise` panics with it.
+/// Every append stops at the capacity, so a long caller text (a format string quoted in a message) is cut rather than
+/// written past the buffer.
+/// @cost no allocation; the buffer is part of the caller's frame.
+export struct PanicText {
+    buf: [u8; PANIC_TEXT_CAP]
+    at: usize
 }
 
-/// Copies the bytes of `s` to `buf[at]`; returns the position after them.
-fn putText(buf: *u8, at: usize, s: str) -> usize {
-    for i in 0..s.len {
-        buf[at + i] = s[i]
+impl PanicText {
+    /// Appends one byte, or nothing when only the NUL's place is left.
+    fn byte(self: *PanicText, c: u8) {
+        if self.at + 1 < PANIC_TEXT_CAP {
+            self.buf[self.at] = c
+            self.at++
+        }
     }
-    return at + s.len
+
+    /// Appends the bytes of `s`, as many as fit.
+    fn text(self: *PanicText, s: str) {
+        for c in s { self.byte(c) }
+    }
+
+    /// Appends the decimal digits of `v`.
+    fn number(self: *PanicText, v: u64) {
+        local digits: [u8; 20]
+        local n: usize = 0
+        for local t: u64 = v; n == 0 || t > 0; t /= 10 {
+            digits[n] = (t % 10) as u8 + b'0'
+            n++
+        }
+        for i in 0..n { self.byte(digits[n - 1 - i]) }
+    }
+
+    /// Panics with the text built so far.
+    fn raise(self: *PanicText) {
+        self.buf[self.at] = 0
+        panic(&self.buf[0])
+    }
 }
 
-/// Panics with "Vec: index I out of range for length L". Built on the stack, so it allocates nothing.
+/// An empty message, ready for `text` and `number`.
+export fn panicText() -> PanicText {
+    return PanicText { buf: [0; PANIC_TEXT_CAP], at: 0 }
+}
+
+/// Panics with "Vec: index I out of range for length L".
 export fn fmtIndexPanic(i: usize, n: usize) {
-    local buf: [u8; 96]
-    local at: usize = putText(&buf[0], 0, "Vec: index ")
-    at = putDecimal(&buf[0], at, i as u64)
-    at = putText(&buf[0], at, " out of range for length ")
-    at = putDecimal(&buf[0], at, n as u64)
-    buf[at] = 0
-    panic(&buf[0])
+    local m: PanicText = panicText()
+    m.text("Vec: index ")
+    m.number(i as u64)
+    m.text(" out of range for length ")
+    m.number(n as u64)
+    m.raise()
 }
 
-/// Panics with "String: no room for BUFFER" style text: `what` names the buffer that a write did not fit in and
-/// `need` is the byte count it asked for. A writer with a fixed capacity (`FmtBuffer`) calls it instead of a
-/// `format`, so a full buffer reports the size it needed.
+/// Panics with "BUFFER: the text needs N bytes": `what` names the buffer that a write did not fit in and `need` is the
+/// byte count it asked for. A writer with a fixed capacity (`FmtBuffer`) calls it instead of a `format`.
 export fn fmtOverflowPanic(what: str, need: usize) {
-    local buf: [u8; 128]
-    local at: usize = putText(&buf[0], 0, what)
-    at = putText(&buf[0], at, ": the text needs ")
-    at = putDecimal(&buf[0], at, need as u64)
-    at = putText(&buf[0], at, " bytes")
-    buf[at] = 0
-    panic(&buf[0])
+    local m: PanicText = panicText()
+    m.text(what)
+    m.text(": the text needs ")
+    m.number(need as u64)
+    m.text(" bytes")
+    m.raise()
 }

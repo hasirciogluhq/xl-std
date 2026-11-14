@@ -1,7 +1,7 @@
 // std/encoding/json: read-only access to the top-level members of a JSON object held in a NUL-terminated
 // buffer. Nothing is allocated and the text is never modified; each lookup scans the object once.
 // Not covered: nested paths (find the member, then pass its text on), `\u` escapes, validation.
-from "../str/chars" import isSpace
+from "../str/chars" import isSpace, isDigit
 
 fn skipSpace(s: *u8, i: usize) -> usize {
     local p: usize = i
@@ -92,11 +92,11 @@ export fn jsonInt(json: *u8, key: *u8, out: *i64) -> bool {
         neg = true
         i = i + 1
     }
-    if json[i] < 48 || json[i] > 57 { return false }
+    if !isDigit(json[i]) { return false }
     local v: i64 = 0
-    while json[i] >= 48 && json[i] <= 57 {
-        v = v * 10 + ((json[i] - 48) as i64)
-        i = i + 1
+    while isDigit(json[i]) {
+        v = v * 10 + ((json[i] - b'0') as i64)
+        i++
     }
     if neg { v = 0 - v }
     out[0] = v
